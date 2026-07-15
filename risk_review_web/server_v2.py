@@ -1,0 +1,2176 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import json
+import os
+import platform
+import re
+import shlex
+import signal
+import shutil
+import subprocess
+import threading
+import time
+import uuid
+import xml.etree.ElementTree as ET
+from io import BytesIO
+from io import StringIO
+from concurrent.futures import CancelledError
+from zipfile import ZipFile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+from risk_review_web.api_docs import get_api_doc, list_api_docs
+from risk_review_web.artifacts import (
+    STANDARD_DIMENSIONS,
+    STANDARD_JSON_SCHEMA_VERSION,
+    STANDARD_JSON_TOP_LEVEL_FIELDS,
+    compute_standard_json_checksum,
+    compute_phase1_checksum,
+    compute_review_checksum,
+    find_cached_phase1_standard,
+    normalize_phase1_output,
+    normalize_review_output,
+    read_phase1_standard,
+    save_standard_json_summary,
+    standard_summary_name_for,
+    validate_phase1_standard_output,
+    validate_standard_json_summary,
+)
+from risk_review_web.business_rules import (
+    BUSINESS_RULES_LOCK,
+    normalize_business_rule,
+    parse_business_rules,
+    save_business_rules,
+    validate_business_rule,
+)
+from risk_review_web.paths import (
+    BUSINESS_RULES_PATH,
+    EXAMPLES_DIR,
+    EXAMPLES_PATH,
+    OUTPUTS_DIR,
+    PHASE1_SKILL_PATH,
+    PHASE2_SKILL_PATH,
+    CORE_RULES_PROMPT_PATH,
+    RULE_ENGINE_BUILD_PATH,
+    RULE_ENGINE_PHASE1_OUTPUT_PATH,
+    RULE_ENGINE_PHASE2_OUTPUT_PATH,
+    ROOT,
+    STATIC_DIR,
+    resolve_validation_set_path,
+)
+from risk_review_web.prompt_builder import (
+    build_phase1_prompt,
+    build_phase2_prompt,
+    build_reviewer_prompt,
+)
+from risk_review_web.scheduled_tasks import ScheduledTaskError, build_service as build_scheduled_task_service
+from risk_review_web.task_pool import GLOBAL_TASK_POOL
+from risk_review_web.utils import atomic_write_text, parse_frontmatter, read_text
+
+TASKS = {}
+TASK_LOCK = threading.Lock()
+RUNNING_PROCS = {}
+RUNNING_PROCS_LOCK = threading.Lock()
+EXAMPLES_LOCK = threading.Lock()
+SCHEDULED_TASK_SERVICE = None
+
+# 任务记录回收：终态任务保留 N 分钟后删除；TASKS 总量不超过上限。
+TASK_TTL_SECONDS = int(os.environ.get("RISK_REVIEW_TASK_TTL", "1800"))
+TASK_MAX_COUNT = int(os.environ.get("RISK_REVIEW_TASK_MAX", "400"))
+
+
+def task_output_token(task_id: str) -> str:
+    """Return a stable file token unique to the complete task id.
+
+    Regression and batch child tasks share their parent UUID prefix, so using
+    only task_id[:8] makes different cases overwrite one another.
+    """
+    value = str(task_id or "task")
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    readable_prefix = re.sub(r"[^a-zA-Z0-9]", "", value)[:8] or "task"
+    return f"{readable_prefix}-{digest}"
+
+
+def _is_terminal_status(status: str | None) -> bool:
+    return status in ("done", "error", "cancelled")
+
+
+def gc_tasks(force: bool = False) -> int:
+    """回收终态且超过 TTL 的任务记录；超容量时按最早创建顺序清理。返回清理数量。"""
+    now = time.time()
+    removed = 0
+    with TASK_LOCK:
+        if force or len(TASKS) > TASK_MAX_COUNT:
+            overflow = max(0, len(TASKS) - TASK_MAX_COUNT + 1)
+            ordered = sorted(TASKS.items(), key=lambda kv: kv[1].get("created", 0))
+            for tid, task in ordered:
+                if overflow <= 0:
+                    break
+                if _is_terminal_status(task.get("status")):
+                    TASKS.pop(tid, None)
+                    removed += 1
+                    overflow -= 1
+        for tid, task in list(TASKS.items()):
+            if not _is_terminal_status(task.get("status")):
+                continue
+            updated = task.get("updated") or task.get("created") or 0
+            if now - updated > TASK_TTL_SECONDS:
+                TASKS.pop(tid, None)
+                removed += 1
+    if removed:
+        with RUNNING_PROCS_LOCK:
+            for tid in list(RUNNING_PROCS.keys()):
+                proc = RUNNING_PROCS.get(tid)
+                if proc is not None and proc.poll() is not None:
+                    RUNNING_PROCS.pop(tid, None)
+    return removed
+
+
+def json_response(handler, status: int, payload: dict):
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
+def success_response(handler, data, *, status: int = 200):
+    json_response(handler, status, {"success": True, "data": data})
+
+
+def error_response(handler, status: int, message: str, detail=None):
+    payload = {"success": False, "error": message}
+    if detail is not None:
+        payload["detail"] = detail
+    json_response(handler, status, payload)
+
+
+def text_response(handler, status: int, content: bytes, content_type: str):
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(content)))
+    handler.end_headers()
+    handler.wfile.write(content)
+
+
+
+def parse_xlsx(data: bytes) -> list[list[str]]:
+    """Parse .xlsx file using only Python stdlib."""
+    rows = []
+    ns = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+    try:
+        with ZipFile(BytesIO(data)) as z:
+            sst = []
+            if 'xl/sharedStrings.xml' in z.namelist():
+                tree = ET.parse(z.open('xl/sharedStrings.xml'))
+                for si in tree.findall(f'{ns}si'):
+                    texts = [t.text or '' for t in si.findall(f'.//{ns}t')]
+                    sst.append(''.join(texts))
+            tree = ET.parse(z.open('xl/worksheets/sheet1.xml'))
+            sheet = tree.getroot()
+            sheet_data = sheet.find(f'{ns}sheetData')
+            if sheet_data is None:
+                return rows
+            for row_el in sheet_data.findall(f'{ns}row'):
+                cells = {}
+                for c in row_el.findall(f'{ns}c'):
+                    r = c.get('r', '')
+                    t = c.get('t', '')
+                    v_el = c.find(f'{ns}v')
+                    val = v_el.text if v_el is not None else ''
+                    if t == 's' and val:
+                        try:
+                            val = sst[int(float(val))]
+                        except (IndexError, ValueError):
+                            pass
+                    cells[r] = val
+                if not cells:
+                    continue
+                max_col = 0
+                for ref in cells:
+                    col_str = ''.join(filter(str.isalpha, ref))
+                    col_idx = 0
+                    for ch in col_str.upper():
+                        col_idx = col_idx * 26 + (ord(ch) - 64)
+                    max_col = max(max_col, col_idx)
+                row_num = ''.join(filter(str.isdigit, next(iter(cells))))
+                row_data = []
+                for col_i in range(1, max_col + 1):
+                    ref = ''
+                    c = col_i
+                    while c > 0:
+                        c, r = divmod(c - 1, 26)
+                        ref = chr(r + 65) + ref
+                    ref += row_num
+                    row_data.append(cells.get(ref, ''))
+                rows.append(row_data)
+    except Exception:
+        return []
+    return rows
+
+
+def parse_csv_rows(text: str) -> list[list[str]]:
+    sample = text.lstrip("\ufeff")
+    rows = []
+    for row in csv.reader(StringIO(sample)):
+        if any(str(cell).strip() for cell in row):
+            rows.append([str(cell).strip() for cell in row])
+    return rows
+
+
+def normalize_batch_rows_from_table(rows: list[list[str]]) -> list[dict]:
+    if not rows:
+        return []
+    aliases = {
+        "factorName": ["因子名", "因子中文名", "factorName", "factor_name"],
+        "requirement": ["需求内容", "需求", "requirement"],
+        "apiDocs": ["接口文档", "接口", "apiDocs", "api_names"],
+        "paramFields": ["因子加工输入字段", "paramFields"],
+        "procLogic": ["加工逻辑", "逻辑", "procLogic"],
+    }
+    header = [str(cell).strip() for cell in rows[0]]
+    col_map = {}
+    for key, names in aliases.items():
+        for name in names:
+            if name in header:
+                col_map[key] = header.index(name)
+                break
+    normalized = []
+    for raw in rows[1:]:
+        item = {}
+        for key in aliases:
+            index = col_map.get(key)
+            item[key] = str(raw[index]).strip() if index is not None and index < len(raw) else ""
+        if item.get("factorName") or item.get("requirement"):
+            normalized.append(item)
+    return normalized
+
+def list_outputs():
+    OUTPUTS_DIR.mkdir(exist_ok=True)
+    files = []
+    candidates = [
+        path
+        for path in OUTPUTS_DIR.iterdir()
+        if path.is_file()
+        and path.name.startswith(("standard-", "review-", "risk-review-"))
+        and path.name.endswith((".md", ".json", ".txt"))
+    ]
+    for path in sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True):
+        files.append(
+            {
+                "name": path.name,
+                "path": path.relative_to(ROOT).as_posix(),
+                "mtime": int(path.stat().st_mtime),
+                "size": path.stat().st_size,
+            }
+        )
+    return files
+
+
+def parse_examples():
+    if EXAMPLES_PATH.exists():
+        try:
+            data = json.loads(read_text(EXAMPLES_PATH))
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+    examples = parse_examples_from_validation_set()
+    save_examples(examples)
+    return examples
+
+
+def save_examples(examples: list[dict]):
+    EXAMPLES_DIR.mkdir(exist_ok=True)
+    EXAMPLES_PATH.write_text(json.dumps(examples, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def parse_examples_from_validation_set():
+    if not VALIDATION_SET_PATH.exists():
+        return []
+    text = read_text(VALIDATION_SET_PATH)
+    examples = []
+    pattern = re.compile(
+        r"## Case (?P<num>\d{2}) (?P<kind>\S+).*?```text\n(?P<input>.*?)\n```.*?### 期望结论\n\n(?P<expected>.*?)(?=\n\n###|\Z)",
+        re.S,
+    )
+    for match in pattern.finditer(text):
+        raw_input = match.group("input").strip()
+        examples.append(
+            {
+                "id": f"case-{match.group('num')}",
+                "title": f"Case {match.group('num')} {match.group('kind')}",
+                "kind": match.group("kind"),
+                "expected": re.sub(r"\s+", " ", match.group("expected").strip()),
+                **split_example_input(raw_input),
+            }
+        )
+    return examples
+
+
+def split_example_input(raw_input: str):
+    def section(name: str):
+        m = re.search(rf"【{re.escape(name)}】\s*(.*?)(?=\n【[^】]+】|\Z)", raw_input, re.S)
+        return m.group(1).strip() if m else ""
+
+    factor_name = section("因子名")
+    api_line = section("接口文档")
+    requirement = section("需求内容")
+    draft_match = re.search(r"【待评审准出内容】\s*(.*)\Z", raw_input, re.S)
+    draft = draft_match.group(1).strip() if draft_match else ""
+    def draft_section(name: str):
+        m = re.search(rf"【{re.escape(name)}】\s*(.*?)(?=\n【[^】]+】|\Z)", draft, re.S)
+        return m.group(1).strip() if m else ""
+    api_names = [x.strip() for x in re.split(r"[、,，\n]+", api_line) if x.strip()]
+    return {
+        "factorName": factor_name,
+        "apiNames": api_names,
+        "requirement": requirement,
+        "paramFields": draft_section("因子加工输入字段"),
+        "procLogic": draft_section("加工逻辑"),
+        "defaultValues": draft_section("默认值"),
+        "draft": draft,
+    }
+
+
+def example_version() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def validate_example(example: dict) -> list[str]:
+    errors = []
+    if not (example.get("title") or "").strip():
+        errors.append("案例标题不能为空")
+    if not (example.get("factorName") or "").strip():
+        errors.append("因子名不能为空")
+    if not (example.get("requirement") or "").strip():
+        errors.append("需求内容不能为空")
+    if not example.get("apiNames"):
+        errors.append("接口文档不能为空")
+    if not (example.get("draft") or "").strip():
+        errors.append("待评审内容不能为空")
+    return errors
+
+
+def normalize_example(payload: dict, existing_id: str | None = None) -> dict:
+    example_id = existing_id or (payload.get("id") or f"case-{uuid.uuid4().hex[:8]}")
+    api_names = payload.get("apiNames") or []
+    if isinstance(api_names, str):
+        api_names = [x.strip() for x in re.split(r"[、,，\n]+", api_names) if x.strip()]
+    else:
+        api_names = [str(x).strip() for x in api_names if str(x).strip()]
+    param_fields = (payload.get("paramFields") or "").strip()
+    proc_logic = (payload.get("procLogic") or "").strip()
+    default_values = "字段缺失、格式错误或数据异常时返回默认值"
+    draft = (payload.get("draft") or "").strip()
+    if not draft:
+        draft_parts = []
+        if param_fields:
+            draft_parts.append(f"【因子加工输入字段】\n{param_fields}")
+        if proc_logic:
+            draft_parts.append(f"【加工逻辑】\n{proc_logic}")
+        if draft_parts:
+            draft_parts.append(f"【默认值】\n{default_values}")
+        draft = "\n\n".join(draft_parts)
+    return {
+        "id": str(example_id),
+        "title": (payload.get("title") or "").strip() or str(example_id),
+        "kind": (payload.get("kind") or "").strip(),
+        "factorName": (payload.get("factorName") or "").strip(),
+        "apiNames": api_names,
+        "requirement": (payload.get("requirement") or "").strip(),
+        "paramFields": param_fields,
+        "procLogic": proc_logic,
+        "defaultValues": default_values,
+        "draft": draft,
+        "expected": (payload.get("expected") or "").strip(),
+        "version": example_version(),
+        "updatedAt": int(time.time()),
+    }
+
+
+def decorate_task(task: dict) -> dict:
+    snapshot = dict(task)
+    task_id = str(snapshot.get("id") or "")
+    snapshot.update(GLOBAL_TASK_POOL.group_info(task_id))
+    job_info = GLOBAL_TASK_POOL.job_info(task_id)
+    if job_info.get("poolStatus") is not None:
+        snapshot.update(job_info)
+    return snapshot
+
+
+def task_history():
+    gc_tasks()
+    with TASK_LOCK:
+        tasks = [decorate_task(task) for task in TASKS.values()]
+    return sorted(tasks, key=lambda x: x.get("created", 0), reverse=True)[:50]
+
+
+def task_log(task_id: str, message: str):
+    with TASK_LOCK:
+        task = TASKS.get(task_id)
+        if not task:
+            return
+        task.setdefault("logs", []).append({"time": time.time(), "message": message})
+        task["updated"] = time.time()
+
+
+def task_debug_log(task_id: str, stream: str, message: str):
+    with TASK_LOCK:
+        task = TASKS.get(task_id)
+        if not task:
+            return
+        task.setdefault("debugLogs", []).append({
+            "time": time.time(),
+            "stream": stream,
+            "message": str(message or ""),
+        })
+        task["updated"] = time.time()
+
+
+def task_cancel_requested(task_id: str) -> bool:
+    with TASK_LOCK:
+        return bool((TASKS.get(task_id) or {}).get("cancel_requested"))
+
+
+def terminate_task_process(task_id: str):
+    with RUNNING_PROCS_LOCK:
+        proc = RUNNING_PROCS.get(task_id)
+    if not proc or proc.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def request_task_cancel(task_id: str) -> bool:
+    with TASK_LOCK:
+        task = TASKS.get(task_id)
+        if not task:
+            return False
+        task["cancel_requested"] = True
+        if task.get("status") in ("queued", "running"):
+            task["status"] = "cancelling"
+        task["updated"] = time.time()
+        child_ids = [tid for tid in TASKS if tid == task_id or tid.startswith(f"{task_id}-")]
+        for child_id in child_ids:
+            TASKS[child_id]["cancel_requested"] = True
+            if TASKS[child_id].get("status") in ("queued", "running"):
+                TASKS[child_id]["status"] = "cancelling"
+                TASKS[child_id]["updated"] = time.time()
+    queued_single_cancelled = GLOBAL_TASK_POOL.cancel(task_id)
+    cancelled_pool_jobs = GLOBAL_TASK_POOL.cancel_group(task_id)
+    with TASK_LOCK:
+        task = TASKS.get(task_id)
+        if queued_single_cancelled:
+            task["status"] = "cancelled"
+            task["result"] = task.get("result") or {
+                "stdout": "",
+                "stderr": "任务在全局线程池排队期间被取消。",
+                "returncode": 130,
+            }
+    for child_id in child_ids:
+        terminate_task_process(child_id)
+    task_log(
+        task_id,
+        f"已请求停止任务：取消 {len(cancelled_pool_jobs) + int(queued_single_cancelled)} 个排队作业，并中止正在执行的 Claude 调用",
+    )
+    return True
+
+
+def claude_health():
+    command = os.environ.get("RISK_REVIEW_CLAUDE_CMD", "claude")
+    info = {
+        "command": command,
+        "claude_path": None,
+        "version": None,
+        "working_dir": str(ROOT),
+        "mock_mode": os.environ.get("RISK_REVIEW_MOCK") == "1",
+        "note": "",
+    }
+    try:
+        path = shutil.which(command)
+        info["claude_path"] = path
+    except Exception as exc:
+        info["note"] = f"find {command} failed: {exc}"
+        return info
+    try:
+        info["version"] = subprocess.check_output([command, "--version"], text=True, stderr=subprocess.STDOUT).strip()
+    except Exception as exc:
+        info["note"] = f"{command} --version failed: {exc}"
+    return info
+
+
+def file_health(path: Path) -> dict:
+    try:
+        display_path = path.relative_to(ROOT).as_posix()
+    except ValueError:
+        display_path = str(path)
+    return {
+        "path": display_path,
+        "exists": path.exists(),
+        "size": path.stat().st_size if path.exists() else 0,
+    }
+
+
+def outputs_health() -> dict:
+    OUTPUTS_DIR.mkdir(exist_ok=True)
+    probe = OUTPUTS_DIR / f".health-{uuid.uuid4().hex}.tmp"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return {"path": OUTPUTS_DIR.relative_to(ROOT).as_posix(), "exists": True, "writable": True, "note": ""}
+    except Exception as exc:
+        try:
+            probe.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return {"path": OUTPUTS_DIR.relative_to(ROOT).as_posix(), "exists": OUTPUTS_DIR.exists(), "writable": False, "note": str(exc)}
+
+
+def api_docs_health() -> dict:
+    try:
+        docs = list_api_docs()
+    except Exception as exc:
+        return {"count": 0, "by_category": {}, "note": str(exc)}
+    by_category = {}
+    for doc in docs:
+        category = doc.get("category") or "其他"
+        by_category[category] = by_category.get(category, 0) + 1
+    return {"count": len(docs), "by_category": by_category, "note": ""}
+
+
+def system_health() -> dict:
+    required = [
+        PHASE1_SKILL_PATH,
+        PHASE2_SKILL_PATH,
+        CORE_RULES_PROMPT_PATH,
+        RULE_ENGINE_BUILD_PATH,
+        RULE_ENGINE_PHASE1_OUTPUT_PATH,
+        RULE_ENGINE_PHASE2_OUTPUT_PATH,
+        STATIC_DIR / "index.html",
+        STATIC_DIR / "app.js",
+        STATIC_DIR / "style.css",
+        STATIC_DIR / "dist" / "index.html",
+        EXAMPLES_PATH,
+        BUSINESS_RULES_PATH,
+    ]
+    files = {path.relative_to(ROOT).as_posix(): file_health(path) for path in required}
+    claude = claude_health()
+    checks = {
+        "required_files": all(item["exists"] for item in files.values()),
+        "outputs_writable": outputs_health()["writable"],
+        "claude_available": bool(claude.get("claude_path")) or os.environ.get("RISK_REVIEW_MOCK") == "1",
+        "api_docs_loaded": api_docs_health()["count"] > 0,
+    }
+    return {
+        "ok": all(checks.values()),
+        "checks": checks,
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "working_dir": str(ROOT),
+        "mock_mode": os.environ.get("RISK_REVIEW_MOCK") == "1",
+        "claude": claude,
+        "files": files,
+        "outputs": outputs_health(),
+        "api_docs": api_docs_health(),
+        "task_pool": GLOBAL_TASK_POOL.snapshot(),
+    }
+
+
+def claude_cmd(default_args: str):
+    command = os.environ.get("RISK_REVIEW_CLAUDE_CMD", "claude")
+    args = os.environ.get("RISK_REVIEW_CLAUDE_ARGS", default_args)
+    return [command, *shlex.split(args)]
+
+
+def test_claude_print():
+    cmd = claude_cmd("-p --output-format text")
+    started = time.time()
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            input="只回复 OK",
+            text=True,
+            capture_output=True,
+            timeout=int(os.environ.get("RISK_REVIEW_CLAUDE_TEST_TIMEOUT", "30")),
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "returncode": proc.returncode,
+            "seconds": round(time.time() - started, 2),
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "cmd": " ".join(cmd) + " < stdin",
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "returncode": 124,
+            "seconds": round(time.time() - started, 2),
+            "stdout": exc.stdout or "",
+            "stderr": exc.stderr or "claude -p 测试超时",
+            "cmd": " ".join(cmd) + " < stdin",
+        }
+
+
+def build_prompt_phase1(payload: dict, review_feedback: str = "") -> str:
+    """Build prompt for Phase 1 only (standard spec, no draft)."""
+    requirement = (payload.get("requirement") or "").strip()
+    api_names = payload.get("apiNames") or []
+    api_names = [str(x).strip() for x in api_names if str(x).strip()]
+    return build_phase1_prompt(
+        requirement=requirement,
+        api_names=api_names,
+        review_feedback=review_feedback,
+    )
+
+
+def build_prompt_phase2(payload: dict, review_feedback: str = "") -> str:
+    """Build prompt for Phase 2 only (review against existing standard)."""
+    draft = (payload.get("draft") or "").strip()
+    phase2_context = payload.get("_phase2_context") or prepare_phase2_context(payload)
+    return build_phase2_prompt(
+        standard_summary_json=phase2_context["standardSummaryJson"],
+        standard_validation_status=phase2_context["standardValidationStatus"],
+        draft=draft,
+        review_feedback=review_feedback,
+    )
+
+
+def run_claude_prompt(task_id: str, phase_label: str, prompt: str) -> tuple[str, dict]:
+    cmd = [*claude_cmd("-p --output-format text")]
+    task_log(task_id, f"调用 Claude Code（{phase_label}）：{' '.join(cmd)} < stdin")
+    task_log(task_id, f"Prompt 字符数：{len(prompt)}")
+    with TASK_LOCK:
+        debug_enabled = bool((TASKS.get(task_id) or {}).get("debug_claude"))
+    if debug_enabled:
+        task_debug_log(task_id, "prompt", f"===== {phase_label} PROMPT =====\n{prompt}")
+    timeout_seconds = int(os.environ.get("RISK_REVIEW_CLAUDE_TIMEOUT", "600"))
+    popen_kwargs = {}
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(ROOT),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            **popen_kwargs,
+        )
+        with RUNNING_PROCS_LOCK:
+            RUNNING_PROCS[task_id] = proc
+        try:
+            stdout, stderr = proc.communicate(input=prompt, timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            terminate_task_process(task_id)
+            stdout, stderr = proc.communicate(timeout=3)
+            task_log(task_id, "Claude Code 调用超时")
+            if debug_enabled:
+                task_debug_log(task_id, "stdout", stdout or "")
+                task_debug_log(task_id, "stderr", stderr or "Claude Code 调用超时。")
+            return "timeout", {"stdout": stdout or "", "stderr": stderr or "Claude Code 调用超时。", "returncode": 124}
+        if task_cancel_requested(task_id):
+            task_log(task_id, "Claude Code 调用已取消")
+            if debug_enabled:
+                if stdout:
+                    task_debug_log(task_id, "stdout", stdout)
+                if stderr:
+                    task_debug_log(task_id, "stderr", stderr)
+            return "cancelled", {"stdout": stdout or "", "stderr": stderr or "Claude Code 调用已取消。", "returncode": proc.returncode if proc.returncode is not None else 130}
+        task_log(task_id, f"Claude Code 返回，退出码：{proc.returncode}")
+        if debug_enabled:
+            task_debug_log(task_id, "stdout", stdout or "")
+            task_debug_log(task_id, "stderr", stderr or "")
+        return ("done" if proc.returncode == 0 else "error"), {
+            "returncode": proc.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+    except subprocess.TimeoutExpired:
+        task_log(task_id, "Claude Code 调用超时")
+        return "timeout", {"stdout": "", "stderr": "Claude Code 调用超时。", "returncode": 124}
+    except FileNotFoundError:
+        task_log(task_id, "未找到 claude 命令")
+        return "error", {"stdout": "", "stderr": "未找到 claude 命令。", "returncode": 127}
+    except Exception as exc:
+        task_log(task_id, f"Claude Code 调用异常：{exc}")
+        return "error", {"stdout": "", "stderr": str(exc), "returncode": 1}
+    finally:
+        with RUNNING_PROCS_LOCK:
+            RUNNING_PROCS.pop(task_id, None)
+
+
+def parse_reviewer_json(text: str) -> dict | None:
+    source = (text or "").strip()
+    if not source:
+        return None
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", source, re.I)
+    if fenced:
+        source = fenced.group(1).strip()
+    try:
+        data = json.loads(source)
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*\}", source)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def reviewer_passed(review: dict | None) -> bool:
+    if not isinstance(review, dict):
+        return False
+    coverage = review.get("coverageSummary") or []
+    has_failed_coverage = any(
+        isinstance(item, dict) and str(item.get("status") or "").lower() == "fail"
+        for item in coverage
+    )
+    return (
+        review.get("passed") is True
+        and review.get("fixRequired") is False
+        and not (review.get("blockingIssues") or [])
+        and not has_failed_coverage
+    )
+
+
+def reviewer_enabled(use_mock: bool = False, skip_reviewer: bool = False) -> bool:
+    if use_mock or skip_reviewer:
+        return False
+    return os.environ.get("RISK_REVIEW_REVIEWER_ENABLED", "1") != "0"
+
+
+def phase1_original_input(payload: dict) -> str:
+    api_names = "\n".join(f"- {name}" for name in (payload.get("apiNames") or []))
+    return "\n".join([
+        "【接口文档】",
+        api_names,
+        "【需求内容】",
+        (payload.get("requirement") or "").strip(),
+    ])
+
+
+def phase2_original_input(payload: dict, standard_summary_json: str = "") -> str:
+    validation_status = (
+        f"校验模式：跳过；已确认 schema_version={STANDARD_JSON_SCHEMA_VERSION}，本次按运行开关跳过 checksum 和完整语义校验，允许继续评审。"
+        if payload.get("skipStageValidation") is True
+        else "校验模式：严格；已由外部程序校验通过，input_checksum、public_rules_checksum、standard_json_checksum 均已校验一致。"
+    )
+    return "\n".join([
+        "【标准规范校验】",
+        validation_status,
+        "【结构化标准 JSON】",
+        standard_summary_json,
+        "【待评审准出内容】",
+        (payload.get("draft") or "").strip(),
+    ])
+
+
+def prepare_phase2_context(payload: dict) -> dict:
+    skip_stage_validation = payload.get("skipStageValidation") is True
+    standard_text, std_path = read_phase1_standard(
+        payload,
+        validate_integrity=not skip_stage_validation,
+    )
+    summary_path = OUTPUTS_DIR / standard_summary_name_for(std_path.name)
+    if not summary_path.exists():
+        raise ValueError(f"Phase 1 结构化标准 JSON 未找到：{summary_path.name}，请重新执行 Phase 1。")
+    standard_summary = json.loads(read_text(summary_path))
+    if standard_summary.get("schema_version") != STANDARD_JSON_SCHEMA_VERSION:
+        raise ValueError(
+            f"结构化标准 JSON 版本不兼容：仅支持 {STANDARD_JSON_SCHEMA_VERSION}，请重新执行 Phase 1。"
+        )
+    if not skip_stage_validation:
+        validate_standard_json_summary(standard_summary)
+        standard_meta = parse_frontmatter(standard_text)
+        stored_standard_json_checksum = standard_meta.get("standard_json_checksum")
+        current_standard_json_checksum = compute_standard_json_checksum(standard_summary)
+        summary_standard_json_checksum = (standard_summary.get("source_metadata") or {}).get("standard_json_checksum")
+        if not stored_standard_json_checksum:
+            raise ValueError("Phase 1 标准文件缺少 standard_json_checksum，请重新执行 Phase 1。")
+        if stored_standard_json_checksum != current_standard_json_checksum:
+            raise ValueError(
+                "结构化标准 JSON 已变更（checksum 不匹配），请重新执行 Phase 1。"
+                f" stored={stored_standard_json_checksum[:8]}..., current={current_standard_json_checksum[:8]}..."
+            )
+        if summary_standard_json_checksum and summary_standard_json_checksum != current_standard_json_checksum:
+            raise ValueError(
+                "结构化标准 JSON 内部 checksum 不匹配，请重新执行 Phase 1。"
+                f" summary={summary_standard_json_checksum[:8]}..., current={current_standard_json_checksum[:8]}..."
+            )
+    review_standard_summary = {
+        key: value
+        for key, value in standard_summary.items()
+        if key in STANDARD_JSON_TOP_LEVEL_FIELDS or key == "input_parse"
+    }
+    review_standard_summary.pop("factor_name", None)
+    review_standard_summary["rules"] = [
+        rule
+        for rule in (review_standard_summary.get("rules") or [])
+        if isinstance(rule, dict) and rule.get("dimension_ref") in STANDARD_DIMENSIONS
+    ]
+    review_source_metadata = dict(review_standard_summary.get("source_metadata") or {})
+    review_source_metadata.pop("factor_slug", None)
+    review_standard_summary["source_metadata"] = review_source_metadata
+    standard_summary_json = json.dumps(review_standard_summary, ensure_ascii=False, indent=2)
+    return {
+        "standardText": standard_text,
+        "standardPath": std_path,
+        "standardFileId": std_path.name,
+        "standardSummary": standard_summary,
+        "standardSummaryJson": standard_summary_json,
+        "standardValidationStatus": (
+            f"校验模式：跳过；已确认 schema_version={STANDARD_JSON_SCHEMA_VERSION}，本次按运行开关跳过 checksum 和完整语义校验，但所有 v4 hard 规则仍须严格评审，不得输出 checksum 校验停止提示。"
+            if skip_stage_validation
+            else "校验模式：严格；已由外部程序校验通过，input_checksum、public_rules_checksum、standard_json_checksum 均已校验一致。"
+        ),
+        "stageValidationSkipped": skip_stage_validation,
+    }
+
+
+def run_reviewer(task_id: str, phase_label: str, original_input: str, candidate_output: str) -> dict | None:
+    prompt = build_reviewer_prompt(
+        phase_label=phase_label,
+        original_input=original_input,
+        candidate_output=candidate_output,
+    )
+    status, result = run_claude_prompt(task_id, f"{phase_label} Reviewer", prompt)
+    if status != "done":
+        task_log(task_id, f"{phase_label} Reviewer 调用失败：{result.get('stderr') or status}")
+        return None
+    review = parse_reviewer_json(result.get("stdout") or "")
+    if review is None:
+        task_log(task_id, f"{phase_label} Reviewer 输出不可解析")
+        return None
+    task_log(task_id, f"{phase_label} Reviewer 结果：{'通过' if reviewer_passed(review) else '需修复'}")
+    return review
+
+
+def run_generation_with_reviewer(
+    *,
+    task_id: str,
+    phase_label: str,
+    empty_error: str,
+    build_prompt,
+    original_input,
+    use_mock: bool = False,
+    skip_reviewer: bool = False,
+) -> tuple[str, dict, str, dict | None]:
+    raw_output = ""
+    last_review = None
+    if task_cancel_requested(task_id):
+        return "cancelled", {"stdout": "", "stderr": f"{phase_label} 已取消。", "returncode": 130}, raw_output, last_review
+
+    task_log(task_id, f"{phase_label} 生成第 1 轮")
+    status, result = run_claude_prompt(task_id, f"{phase_label} round 1", build_prompt(""))
+    if status != "done":
+        return status, result, raw_output, last_review
+
+    raw_output = (result.get("stdout") or "").strip()
+    if not raw_output:
+        result.update({"stderr": empty_error, "returncode": 1})
+        return "error", result, raw_output, last_review
+
+    if reviewer_enabled(use_mock=use_mock, skip_reviewer=skip_reviewer):
+        task_log(task_id, f"{phase_label} Reviewer 审核第 1 次")
+        last_review = run_reviewer(task_id, phase_label, original_input(), raw_output)
+        if not reviewer_passed(last_review):
+            task_log(task_id, f"{phase_label} Reviewer 未通过；按单次审核策略，不再重试生成，使用当前结果")
+    elif skip_reviewer:
+        task_log(task_id, f"{phase_label} Reviewer 已按本次运行开关跳过")
+    return status, result, raw_output, last_review
+
+
+def run_claude_phase1(payload: dict, task_id: str):
+    """Run Phase 1: generate standard spec only."""
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = "running"
+        TASKS[task_id]["updated"] = time.time()
+    task_log(task_id, "Phase 1 开始")
+    checksum = compute_phase1_checksum(payload)
+    use_mock = os.environ.get("RISK_REVIEW_MOCK") == "1" or payload.get("mock") is True
+    skip_reviewer = payload.get("skipReviewer") is True
+    skip_stage_validation = payload.get("skipStageValidation") is True
+    if not payload.get("forceRefresh"):
+        cached = find_cached_phase1_standard(checksum, allow_mock=use_mock)
+        if cached:
+            task_log(task_id, f"Phase 1 命中缓存：{cached['standardFileId']}")
+            with TASK_LOCK:
+                TASKS[task_id]["status"] = "done"
+                TASKS[task_id]["result"] = {
+                    "returncode": 0,
+                "stdout": cached["stdout"],
+                "standardFileId": cached["standardFileId"],
+                "standardSummaryFileId": cached.get("standardSummaryFileId"),
+                "checksum": checksum,
+                "stderr": "",
+                "cacheHit": True,
+                }
+                TASKS[task_id]["outputs"] = list_outputs()
+                TASKS[task_id]["updated"] = time.time()
+            return
+    if use_mock:
+        task_log(task_id, "使用 Mock 模式（Phase 1）")
+        time.sleep(0.3)
+        factor_name = (payload.get("factorName") or "mockFactor").strip()
+        slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
+        output_name = f"standard-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
+        output_text = f"""---
+phase: 1
+factor_slug: {slug}
+factor_name: {factor_name}
+generated: {time.strftime('%Y-%m-%d')}
+input_checksum: {checksum}
+mock: true
+input_summary:
+  requirement: {str(payload.get("requirement") or "").strip()[:120]}
+  api_docs: [{", ".join([str(x).strip() for x in (payload.get("apiNames") or []) if str(x).strip()])}]
+---
+
+# 标准加工规范 — {factor_name}
+
+## 0. 输入解析
+
+| 项目 | 内容 |
+|---|---|
+| 需求内容 | 已提供 |
+| 接口文档 | 已提供 |
+| 公共业务知识规则 | Mock 模式 |
+| 公共规则来源 | risk_review_web/data/business_rules.json |
+| 公共规则条目 | Mock 模式 |
+| 阶段说明 | Phase 1 仅生成标准加工规范，不接触待评审内容 |
+
+## 因子加工输入字段
+| 字段 | 字段来源 | 用途 | 依据等级 | 证据锚点 |
+|---|---|---|---|---|
+| 授信申请接口.applyTime | 授信申请接口.applyTime | 确定统计窗口终点 | 硬性标准 | API-001 |
+| 外部接口.content[].mockDate | 外部接口.content[].mockDate | 过滤时间窗口 | hard | API-002 |
+| 外部接口.content[].mockAmount | 外部接口.content[].mockAmount | 参与金额求和 | hard | API-002 |
+
+## 字段溯源
+| 业务概念 | 接口字段名 | 字段类型 | 枚举值/格式 | 依据等级 | 证据锚点 | 备注 |
+|---|---|---|---|---|---|---|
+| 进件时点 | applyTime | string | 日期时间 | hard | API-001 | Mock 标准字段 |
+| 明细日期 | 外部接口.content[].mockDate | string | 月份 | hard | API-002 | Mock 标准字段 |
+| 明细金额 | 外部接口.content[].mockAmount | decimal | - | hard | API-002 | Mock 标准字段 |
+
+## 过滤条件
+| 序号 | 过滤字段名 | 过滤条件 | 逻辑关系 | 依据等级 | 证据锚点 |
+|---|---|---|---|---|---|
+| D3-001 | mockDate | mockDate 在统计窗口内 | AND | hard | REQ-001 |
+
+**边界说明**：
+
+| 项目 | 内容 | 依据等级 | 证据锚点 |
+|---|---|---|---|
+| 基准时间点 | 授信申请接口.applyTime | hard | API-001 |
+| 时间窗口粒度 | 月 | hard | INF-001 |
+| 格式转换规则 | 将 applyTime 转换为 yyyy-MM | hard | INF-001 |
+| 窗口起点计算规则 | endMonth - 12 个月 | hard | REQ-001 |
+| 窗口终点计算规则 | endMonth = 授信申请接口.applyTime 转换后的 yyyy-MM | hard | REQ-001、INF-001 |
+| 包含边界说明 | 起止边界均包含 | hard | REQ-001 |
+
+## 列表/数组字段处理
+| 字段名 | 是否适用 | 遍历逻辑 | 聚合口径 | 空数组处理 | 依据等级 | 证据锚点 |
+|---|---|---|---|---|---|---|
+| 外部接口.content[] | 是 | 遍历全部元素 | SUM(mockAmount) | 无符合记录返回配置默认值 | hard | API-002、INF-002 |
+
+## 计算逻辑
+| 步骤 | 规则 | 依据等级 | 证据锚点 |
+|---|---|---|---|
+| D5-001 | 读取授信申请接口.applyTime、外部接口.content[].mockDate 和外部接口.content[].mockAmount | hard | API-001、API-002 |
+| D5-002 | 将 applyTime 转为 yyyy-MM，过滤符合窗口条件的明细后对 mockAmount 求和 | hard | REQ-001、INF-001 |
+
+## 默认值兜底策略
+| 项目 | 内容 | 依据等级 | 证据锚点 |
+|---|---|---|---|
+| 异常兜底 | 因子加工输入字段缺失、格式错误或数据异常导致无法完成正常加工时，返回配置的默认值 | hard | PUB-001 |
+
+## 比率/衍生因子计算
+| 是否适用 | 分子定义 | 分母定义 | 分母为零处理 | 精度 | 依据等级 | 证据锚点 |
+|---|---|---|---|---|---|---|
+| 不适用 | 不适用 | 不适用 | 不适用 | 不适用 | hard | INF-003 |
+
+## 条件分支逻辑
+| 是否适用 | 分支条件 | 加工逻辑 | 默认逻辑 | 依据等级 | 证据锚点 |
+|---|---|---|---|---|---|
+| 不适用 | 不适用 | 按统一计算逻辑执行 | 无额外分支 | hard | INF-004 |
+
+## 选定解释
+| 选择编号 | 触发位置 | 原始歧义 | 选定口径 | 选择理由 | 证据锚点 |
+|---|---|---|---|---|---|
+无
+"""
+        OUTPUTS_DIR.mkdir(exist_ok=True)
+        (OUTPUTS_DIR / output_name).write_text(output_text, encoding="utf-8")
+        try:
+            summary_name = save_standard_json_summary(
+                output_name,
+                output_text,
+                validate=not skip_stage_validation,
+            )
+        except Exception as exc:
+            with TASK_LOCK:
+                TASKS[task_id]["status"] = "error"
+                TASKS[task_id]["result"] = {
+                    "returncode": 1,
+                    "stdout": output_text,
+                    "stderr": str(exc),
+                }
+                TASKS[task_id]["outputs"] = list_outputs()
+                TASKS[task_id]["updated"] = time.time()
+            task_log(task_id, f"Phase 1 Mock 输出校验失败：{exc}")
+            return
+        output_text = read_text(OUTPUTS_DIR / output_name)
+        with TASK_LOCK:
+            TASKS[task_id]["status"] = "done"
+            TASKS[task_id]["result"] = {
+                "returncode": 0,
+                "stdout": output_text,
+                "standardFileId": output_name,
+                "standardSummaryFileId": summary_name,
+                "checksum": checksum,
+                "stderr": "",
+                "cacheHit": False,
+                "reviewerSkipped": skip_reviewer,
+                "stageValidationSkipped": skip_stage_validation,
+            }
+            TASKS[task_id]["outputs"] = list_outputs()
+            TASKS[task_id]["updated"] = time.time()
+        task_log(task_id, f"Phase 1 Mock 完成：{output_name}")
+        return
+
+    status, result, raw_output, last_review = run_generation_with_reviewer(
+        task_id=task_id,
+        phase_label="Phase 1",
+        empty_error="Claude 未输出 Phase 1 标准加工规范正文",
+        build_prompt=lambda review_feedback: build_prompt_phase1(payload, review_feedback=review_feedback),
+        original_input=lambda: phase1_original_input(payload),
+        use_mock=False,
+        skip_reviewer=skip_reviewer,
+    )
+
+    if status == "done":
+        if not raw_output:
+            status = "error"
+            result.update({"stderr": "Claude 未输出 Phase 1 标准加工规范正文", "returncode": 1})
+        else:
+            factor_name = (payload.get("factorName") or "factor").strip()
+            slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
+            output_name = f"standard-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
+            output_text = normalize_phase1_output(
+                raw_output,
+                payload,
+                slug,
+                factor_name,
+                checksum,
+                mock=False,
+            )
+            try:
+                if not skip_stage_validation:
+                    validate_phase1_standard_output(output_text)
+                else:
+                    task_log(task_id, "Phase 1 本地输出校验已按本次运行开关跳过")
+                OUTPUTS_DIR.mkdir(exist_ok=True)
+                (OUTPUTS_DIR / output_name).write_text(output_text, encoding="utf-8")
+                summary_name = save_standard_json_summary(
+                    output_name,
+                    output_text,
+                    validate=not skip_stage_validation,
+                )
+                output_text = read_text(OUTPUTS_DIR / output_name)
+                result.update({
+                    "returncode": 0,
+                    "stdout": output_text,
+                    "standardFileId": output_name,
+                    "standardSummaryFileId": summary_name,
+                    "checksum": checksum,
+                    "stderr": "" if reviewer_passed(last_review) or not reviewer_enabled(False, skip_reviewer) else "Reviewer 单次审核未通过，已按策略使用当前结果。",
+                    "cacheHit": False,
+                    "reviewer": last_review,
+                    "reviewerSkipped": skip_reviewer,
+                    "stageValidationSkipped": skip_stage_validation,
+                })
+                task_log(task_id, f"Phase 1 文件已保存：outputs/{output_name}")
+            except Exception as exc:
+                status = "error"
+                result.update({
+                    "returncode": 1,
+                    "stdout": raw_output,
+                    "stderr": str(exc),
+                    "reviewer": last_review,
+                })
+                task_log(task_id, f"Phase 1 输出校验失败：{exc}")
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = status
+        TASKS[task_id]["result"] = result
+        TASKS[task_id]["outputs"] = list_outputs()
+        TASKS[task_id]["updated"] = time.time()
+
+
+def run_claude_phase2(payload: dict, task_id: str):
+    """Run Phase 2: generate review report using existing standard."""
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = "running"
+        TASKS[task_id]["updated"] = time.time()
+    task_log(task_id, "Phase 2 开始")
+    
+    try:
+        phase2_context = prepare_phase2_context(payload)
+        payload = {**payload, "_phase2_context": phase2_context}
+    except (FileNotFoundError, ValueError) as e:
+        task_log(task_id, str(e))
+        with TASK_LOCK:
+            TASKS[task_id]["status"] = "error"
+            TASKS[task_id]["result"] = {"stdout": "", "stderr": str(e), "returncode": 1}
+            TASKS[task_id]["outputs"] = list_outputs()
+            TASKS[task_id]["updated"] = time.time()
+        return
+    
+    use_mock = os.environ.get("RISK_REVIEW_MOCK") == "1" or payload.get("mock") is True
+    skip_reviewer = payload.get("skipReviewer") is True
+    skip_stage_validation = payload.get("skipStageValidation") is True
+    
+    if use_mock:
+        task_log(task_id, "使用 Mock 模式（Phase 2）")
+        time.sleep(0.3)
+        factor_name = (payload.get("factorName") or "mockFactor").strip()
+        slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
+        output_name = f"review-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
+        output_text = f"""# 评审报告 — {factor_name}
+
+## 0. 输入解析
+| 项目 | 内容 |
+|---|---|
+| 因子名 | {factor_name} |
+| 标准规范来源 | outputs/{phase2_context["standardFileId"]} |
+| 标准规范校验 | {'已按运行开关跳过' if skip_stage_validation else '已由外部程序校验通过'} |
+| 结构化标准 JSON | {'已提供，未执行严格校验' if skip_stage_validation else '已提供且 schema 校验通过'} |
+| 公共业务知识规则 | Mock 模式 |
+| 待评审准出内容 | 已提供 |
+
+## 总体结论
+| 项目 | 内容 |
+|---|---|
+| 总体结论 | ✅ 通过 |
+| 问题统计 | ❌ 不符合 0 项 / 🔵 待确认 0 项 / ⚠️ 建议 0 项 |
+
+## 汇总问题清单
+| 序号 | 维度 | 级别 | 核心问题 | 依据 | 影响 | 修改建议 |
+|---|---|---|---|---|---|---|
+无
+
+## 待确认项
+无
+"""
+        OUTPUTS_DIR.mkdir(exist_ok=True)
+        (OUTPUTS_DIR / output_name).write_text(output_text, encoding="utf-8")
+        with TASK_LOCK:
+            TASKS[task_id]["status"] = "done"
+            TASKS[task_id]["result"] = {
+                "returncode": 0,
+                "stdout": output_text,
+                "stderr": "",
+                "reviewFileId": output_name,
+                "reviewerSkipped": skip_reviewer,
+                "stageValidationSkipped": skip_stage_validation,
+            }
+            TASKS[task_id]["outputs"] = list_outputs()
+            TASKS[task_id]["updated"] = time.time()
+        task_log(task_id, f"Phase 2 Mock 完成：{output_name}")
+        return
+    
+    standard_file_id = phase2_context["standardFileId"]
+    standard_summary = phase2_context["standardSummary"]
+    standard_summary_json = phase2_context["standardSummaryJson"]
+    if skip_stage_validation:
+        task_log(task_id, "Phase 2 标准摘要前置校验已按本次运行开关跳过")
+    status, result, raw_output, last_review = run_generation_with_reviewer(
+        task_id=task_id,
+        phase_label="Phase 2",
+        empty_error="Claude 未输出 Phase 2 评审报告正文",
+        build_prompt=lambda review_feedback: build_prompt_phase2(payload, review_feedback=review_feedback),
+        original_input=lambda: phase2_original_input(payload, standard_summary_json),
+        use_mock=False,
+        skip_reviewer=skip_reviewer,
+    )
+
+    if status == "done":
+        if not raw_output:
+            status = "error"
+            result.update({"stderr": "Claude 未输出 Phase 2 评审报告正文", "returncode": 1})
+        else:
+            factor_name = (payload.get("factorName") or "factor").strip()
+            slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
+            review_checksum = compute_review_checksum(payload, standard_summary)
+            review_file_id = f"review-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
+            saved_report = normalize_review_output(raw_output, payload, slug, standard_file_id, review_checksum)
+            OUTPUTS_DIR.mkdir(exist_ok=True)
+            (OUTPUTS_DIR / review_file_id).write_text(saved_report, encoding="utf-8")
+            result["stdout"] = saved_report
+            result["reviewFileId"] = review_file_id
+            result["reviewChecksum"] = review_checksum
+            result["reviewer"] = last_review
+            result["reviewerSkipped"] = skip_reviewer
+            result["stageValidationSkipped"] = skip_stage_validation
+            if not (reviewer_passed(last_review) or not reviewer_enabled(False, skip_reviewer)):
+                result["stderr"] = "Reviewer 单次审核未通过，已按策略使用当前结果。"
+            task_log(task_id, f"Phase 2 文件已保存：outputs/{review_file_id}")
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = status
+        TASKS[task_id]["result"] = result
+        TASKS[task_id]["outputs"] = list_outputs()
+        TASKS[task_id]["updated"] = time.time()
+
+def build_batch_draft(row: dict) -> str:
+    parts = []
+    param_list = batch_param_fields(row)
+    if param_list:
+        parts.append(f"【因子加工输入字段】\n{param_list}")
+    if (row.get("procLogic") or "").strip():
+        parts.append(f"【加工逻辑】\n{str(row.get('procLogic')).strip()}")
+    if parts:
+        parts.append("【默认值】\n字段缺失、格式错误或数据异常时返回默认值")
+    return "\n\n".join(parts)
+
+
+def batch_param_fields(row: dict) -> str:
+    return str(row.get("paramFields") or "").strip()
+
+
+def detect_verdict_text(text: str) -> str:
+    source = str(text or "")
+    overall = re.search(r"\|\s*总体结论\s*\|\s*([^|]+?)\s*\|", source)
+    target = overall.group(1) if overall else source
+    if re.search(r"❌\s*不通过", target):
+        return "fail"
+    if re.search(r"⚠️\s*建议", target):
+        stats = collect_review_stats(source)
+        if stats.get("fail", 0) == 0 and stats.get("pending", 0) == 0 and stats.get("suggest", 0) > 0:
+            return "pass"
+        return "warn"
+    if re.search(r"✅\s*(通过|符合)", target):
+        return "pass"
+    return "idle"
+
+
+def collect_review_stats(text: str) -> dict:
+    source = str(text or "")
+    stats_match = re.search(r"\|\s*问题统计\s*\|\s*([^|]+?)\s*\|", source)
+    if stats_match:
+        stats_text = stats_match.group(1)
+        fail_match = re.search(r"不符合\s*(\d+)\s*项", stats_text)
+        pending_match = re.search(r"待确认\s*(\d+)\s*项", stats_text)
+        suggest_match = re.search(r"建议\s*(\d+)\s*项", stats_text)
+        if fail_match or pending_match or suggest_match:
+            return {
+                "fail": int(fail_match.group(1)) if fail_match else 0,
+                "pending": int(pending_match.group(1)) if pending_match else 0,
+                "suggest": int(suggest_match.group(1)) if suggest_match else 0,
+            }
+    rows = re.findall(r"\|\s*结论\s*\|\s*([^|]+?)\s*\|", source)
+    return {
+        "fail": len([row for row in rows if re.search(r"❌\s*不符合", row)]),
+        "pending": len([row for row in rows if re.search(r"🔵\s*待确认|⚠️\s*待确认", row)]),
+        "suggest": len([row for row in rows if re.search(r"⚠️\s*建议", row)]),
+    }
+
+
+def expected_matches_verdict(example: dict, verdict: str) -> bool:
+    expected = str(example.get("expected") or "")
+    if not expected.strip():
+        return True
+    allowed = set()
+    if re.search(r"不通过|不符合|失败|fail", expected, re.I):
+        allowed.add("fail")
+    if re.search(r"建议|修改|warn", expected, re.I):
+        allowed.add("warn")
+        allowed.add("pass")
+    positive_expected = re.sub(r"不通过|不符合|失败|fail", "", expected, flags=re.I)
+    positive_expected = re.sub(r"建议修改后通过|建议|修改|warn", "", positive_expected, flags=re.I)
+    if re.search(r"通过|符合|pass", positive_expected, re.I) or re.search(r"✅\s*(通过|符合)", expected):
+        allowed.add("pass")
+    if allowed:
+        return verdict in allowed
+    return True
+
+
+def run_regression_validation(payload: dict, task_id: str):
+    requested_ids = set(str(x) for x in (payload.get("exampleIds") or []) if str(x).strip())
+    examples = parse_examples()
+    if requested_ids:
+        examples = [item for item in examples if item.get("id") in requested_ids]
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = "running"
+        TASKS[task_id]["updated"] = time.time()
+        TASKS[task_id]["result"] = {"items": [], "summary": {}, "stdout": "", "stderr": "", "returncode": 0}
+    task_log(task_id, f"回归验证开始：{len(examples)} 条")
+    items = []
+    for index, example in enumerate(examples):
+        if task_cancel_requested(task_id):
+            task_log(task_id, "回归验证已停止：跳过剩余用例")
+            break
+        item = {
+            "index": index,
+            "id": example.get("id"),
+            "title": example.get("title"),
+            "factorName": example.get("factorName"),
+            "status": "running",
+            "verdict": "idle",
+            "expectedOk": False,
+            "summary": {},
+            "raw": "",
+            "standardText": "",
+            "standardFileId": None,
+            "cacheHit": False,
+        }
+        items.append(item)
+        with TASK_LOCK:
+            TASKS[task_id]["result"] = {"items": items, "summary": summarize_regression_items(items, total=len(examples)), "stdout": "", "stderr": "", "returncode": 0}
+            TASKS[task_id]["updated"] = time.time()
+        try:
+            draft = build_batch_draft(example) or example.get("draft")
+            phase1_payload = {
+                "factorName": example.get("factorName"),
+                "requirement": example.get("requirement"),
+                "apiNames": example.get("apiNames") or [],
+                "mock": payload.get("mock"),
+                "skipReviewer": payload.get("skipReviewer") is True,
+                "skipStageValidation": payload.get("skipStageValidation") is True,
+            }
+            def on_phase1_done(phase1_result: dict):
+                item["standardFileId"] = phase1_result.get("standardFileId")
+                item["standardSummaryFileId"] = phase1_result.get("standardSummaryFileId")
+                item["standardText"] = phase1_result.get("stdout") or ""
+                item["cacheHit"] = bool(phase1_result.get("cacheHit"))
+                with TASK_LOCK:
+                    TASKS[task_id]["result"] = {"items": items, "summary": summarize_regression_items(items, total=len(examples)), "stdout": "", "stderr": "", "returncode": 0}
+                    TASKS[task_id]["outputs"] = list_outputs()
+                    TASKS[task_id]["updated"] = time.time()
+
+            pipeline = run_review_pipeline(
+                task_id,
+                index,
+                phase1_payload,
+                draft,
+                mock=payload.get("mock"),
+                should_stop=lambda: task_cancel_requested(task_id),
+                on_phase1_done=on_phase1_done,
+            )
+            if pipeline.get("stopped"):
+                item.update({"status": "skip", "raw": "已请求停止，Phase 1 完成后未继续执行 Phase 2", "time": int(time.time() * 1000)})
+                task_log(task_id, f"停止：{example.get('title') or example.get('id')} Phase 1 后停止")
+                break
+            report = pipeline.get("raw") or ""
+            review_file_id = pipeline.get("reviewFileId")
+            verdict = detect_verdict_text(report)
+            expected_ok = expected_matches_verdict(example, verdict)
+            item.update({
+                "status": "pass" if expected_ok else "fail",
+                "verdict": verdict,
+                "expectedOk": expected_ok,
+                "expected": example.get("expected") or "",
+                "summary": collect_review_stats(report),
+                "raw": report,
+                "reviewFileId": review_file_id,
+                "reportPreview": report[:600],
+                "time": int(time.time() * 1000),
+            })
+            task_log(task_id, f"验证完成：{example.get('title') or example.get('id')}（{'通过' if expected_ok else '未通过'}）")
+        except Exception as exc:
+            if task_cancel_requested(task_id):
+                item.update({"status": "skip", "raw": "已停止：当前 Claude 调用已中止", "reportPreview": "已停止：当前 Claude 调用已中止", "time": int(time.time() * 1000)})
+                task_log(task_id, f"验证停止：{example.get('title') or example.get('id')}")
+            else:
+                item.update({"status": "error", "raw": str(exc), "reportPreview": str(exc), "time": int(time.time() * 1000)})
+                task_log(task_id, f"验证失败：{example.get('title') or example.get('id')}：{exc}")
+        with TASK_LOCK:
+            TASKS[task_id]["result"] = {"items": items, "summary": summarize_regression_items(items, total=len(examples)), "stdout": "", "stderr": "", "returncode": 0}
+            TASKS[task_id]["outputs"] = list_outputs()
+            TASKS[task_id]["updated"] = time.time()
+    final_status = "cancelled" if task_cancel_requested(task_id) else "done"
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = final_status
+        TASKS[task_id]["result"] = {"items": items, "summary": summarize_regression_items(items, total=len(examples)), "stdout": "", "stderr": "", "returncode": 0}
+        TASKS[task_id]["outputs"] = list_outputs()
+        TASKS[task_id]["updated"] = time.time()
+    task_log(task_id, "回归验证已停止" if final_status == "cancelled" else "回归验证完成")
+
+
+def summarize_regression_items(items: list[dict], total: int | None = None) -> dict:
+    running_items = [item for item in items if item.get("status") == "running"]
+    current = running_items[-1] if running_items else None
+    return {
+        "total": len(items) if total is None else total,
+        "pass": len([item for item in items if item.get("status") == "pass"]),
+        "fail": len([item for item in items if item.get("status") == "fail"]),
+        "error": len([item for item in items if item.get("status") == "error"]),
+        "skip": len([item for item in items if item.get("status") == "skip"]),
+        "cacheHit": len([item for item in items if item.get("cacheHit")]),
+        "running": len(running_items),
+        "currentIndex": (int(current.get("index") or 0) + 1) if current else None,
+        "currentTitle": (current.get("title") or current.get("factorName") or current.get("id")) if current else "",
+    }
+
+
+def create_task_record(
+    task_id: str,
+    debug_claude: bool = False,
+    *,
+    task_type: str = "child",
+    parent_task_id: str | None = None,
+    client_id: str = "",
+    group_concurrency: int | None = None,
+):
+    with TASK_LOCK:
+        TASKS[task_id] = {
+            "id": task_id,
+            "taskType": task_type,
+            "parentTaskId": parent_task_id,
+            "clientId": client_id,
+            "groupConcurrency": group_concurrency,
+            "status": "queued",
+            "result": None,
+            "outputs": [],
+            "logs": [],
+            "debugLogs": [],
+            "debug_claude": bool(debug_claude),
+            "created": time.time(),
+            "updated": time.time(),
+        }
+    if len(TASKS) % 16 == 0:
+        gc_tasks()
+
+
+def run_review_pipeline(
+    parent_task_id: str,
+    index: int,
+    phase1_payload: dict,
+    draft: str,
+    *,
+    child_suffix: str = "",
+    mock: bool | None = None,
+    should_stop=None,
+    on_phase1_done=None,
+) -> dict:
+    factor_name = (phase1_payload.get("factorName") or f"row-{index + 1}").strip()
+    api_names = phase1_payload.get("apiNames") or []
+    if not factor_name or not phase1_payload.get("requirement") or not api_names or not draft:
+        raise ValueError("缺少因子名、需求内容、接口文档或待评审内容")
+
+    suffix = f"-{child_suffix}" if child_suffix else ""
+    phase1_task_id = f"{parent_task_id}-{index}-p1{suffix}"
+    create_task_record(phase1_task_id, debug_claude=bool(phase1_payload.get("debugClaude")))
+    run_claude_phase1(phase1_payload, phase1_task_id)
+    phase1_task = TASKS.get(phase1_task_id, {})
+    if phase1_task.get("status") != "done":
+        raise RuntimeError((phase1_task.get("result") or {}).get("stderr") or "Phase 1 失败")
+    phase1_result = phase1_task.get("result") or {}
+    if on_phase1_done:
+        on_phase1_done(phase1_result)
+
+    if should_stop and should_stop():
+        return {
+            "stopped": True,
+            "phase1": phase1_result,
+            "raw": "已请求停止，Phase 1 完成后未继续执行 Phase 2",
+        }
+
+    phase2_payload = {
+        **phase1_payload,
+        "draft": draft,
+        "standardFileId": phase1_result.get("standardFileId"),
+        "mock": mock,
+    }
+    phase2_task_id = f"{parent_task_id}-{index}-p2{suffix}"
+    create_task_record(phase2_task_id, debug_claude=bool(phase2_payload.get("debugClaude")))
+    run_claude_phase2(phase2_payload, phase2_task_id)
+    phase2_task = TASKS.get(phase2_task_id, {})
+    if phase2_task.get("status") != "done":
+        raise RuntimeError((phase2_task.get("result") or {}).get("stderr") or "Phase 2 失败")
+    phase2_result = phase2_task.get("result") or {}
+    return {
+        "stopped": False,
+        "phase1": phase1_result,
+        "phase2": phase2_result,
+        "raw": phase2_result.get("stdout") or "",
+        "reviewFileId": phase2_result.get("reviewFileId"),
+    }
+
+
+def run_review_pair(row: dict, payload: dict, task_id: str, index: int) -> dict:
+    factor_name = (row.get("factorName") or f"row-{index + 1}").strip()
+    api_names = row.get("apiNames") or [x.strip() for x in re.split(r"[、,，]+", row.get("apiDocs") or "") if x.strip()]
+    draft = row.get("draft") or build_batch_draft(row)
+    param_fields = batch_param_fields(row)
+    item = {
+        "index": index,
+        "factorName": factor_name,
+        "requirement": row.get("requirement") or "",
+        "apiNames": api_names,
+        "paramFields": param_fields,
+        "procLogic": row.get("procLogic") or "",
+        "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
+        "draft": draft,
+        "status": "running",
+        "raw": "",
+        "standardText": row.get("standardText") or "",
+        "standardFileId": row.get("standardFileId"),
+        "standardSummaryFileId": row.get("standardSummaryFileId"),
+        "cacheHit": False,
+        "attempts": 0,
+    }
+    if task_cancel_requested(task_id):
+        item.update({"status": "skip", "raw": "任务已取消", "skipReason": "任务已取消"})
+        return item
+    if row.get("status") == "done" and row.get("raw") and payload.get("resume"):
+        item.update({"status": "skip", "raw": row.get("raw"), "skipReason": "已完成，断点续跑跳过"})
+        return item
+    if not row.get("requirement") or not api_names or not draft:
+        item.update({"status": "skip", "raw": "缺少需求内容、接口文档或待评审内容"})
+        return item
+    retry = max(0, int(payload.get("retry") or 0))
+    last_error = ""
+    for attempt in range(retry + 1):
+        if task_cancel_requested(task_id):
+            item.update({"status": "skip", "raw": "任务已取消", "skipReason": "任务已取消"})
+            return item
+        item["attempts"] = attempt + 1
+        try:
+            phase1_payload = {
+                "factorName": factor_name,
+                "requirement": row.get("requirement"),
+                "apiNames": api_names,
+                "mock": payload.get("mock"),
+                "skipReviewer": payload.get("skipReviewer") is True,
+                "skipStageValidation": payload.get("skipStageValidation") is True,
+            }
+            pipeline = run_review_pipeline(
+                task_id,
+                index,
+                phase1_payload,
+                draft,
+                child_suffix=f"a{attempt + 1}",
+                mock=payload.get("mock"),
+            )
+            phase1_result = pipeline["phase1"]
+            item["standardFileId"] = phase1_result.get("standardFileId")
+            item["standardSummaryFileId"] = phase1_result.get("standardSummaryFileId")
+            item["standardText"] = phase1_result.get("stdout") or ""
+            item["cacheHit"] = bool(phase1_result.get("cacheHit"))
+            item.update({"status": "done", "raw": pipeline["raw"], "reviewFileId": pipeline.get("reviewFileId")})
+            return item
+        except Exception as exc:
+            last_error = str(exc)
+            if task_cancel_requested(task_id):
+                item.update({"status": "skip", "raw": "任务已取消", "skipReason": "任务已取消"})
+                return item
+            task_log(task_id, f"{factor_name} 第 {attempt + 1} 次失败：{last_error}")
+    item.update({"status": "error", "raw": last_error})
+    return item
+
+
+def run_batch_factor_job(row: dict, payload: dict, task_id: str, index: int, items: list[dict]) -> dict:
+    with TASK_LOCK:
+        if task_id in TASKS and index < len(items):
+            items[index]["status"] = "running"
+            TASKS[task_id]["updated"] = time.time()
+    return run_review_pair(row, payload, task_id, index)
+
+
+def finish_batch_factor(task_id: str, index: int, items: list[dict], future):
+    try:
+        item = future.result()
+    except CancelledError:
+        item = {**items[index], "status": "skip", "raw": "任务已取消", "skipReason": "任务已取消"}
+    except Exception as exc:
+        item = {**items[index], "status": "error", "raw": str(exc)}
+    items[index] = item
+    if item.get("status") == "done":
+        message = f"完成：{item.get('factorName')}"
+    elif item.get("status") == "skip":
+        message = f"跳过：{item.get('factorName')}：{item.get('skipReason') or item.get('raw')}"
+    else:
+        message = f"失败：{item.get('factorName')}：{item.get('raw')}"
+    terminal = {"done", "error", "skip"}
+    all_finished = all(value.get("status") in terminal for value in items)
+    final_status = None
+    with TASK_LOCK:
+        task = TASKS.get(task_id)
+        if not task:
+            return
+        task["result"] = {"items": items, "stdout": "", "stderr": "", "returncode": 0}
+        task["outputs"] = list_outputs()
+        task["updated"] = time.time()
+        if all_finished:
+            final_status = "cancelled" if task.get("cancel_requested") else "done"
+            task["status"] = final_status
+    task_log(task_id, message)
+    if final_status:
+        task_log(task_id, "批量评审已停止" if final_status == "cancelled" else "批量评审完成")
+
+
+def run_scheduled_phase1(payload: dict, task_id: str) -> dict:
+    create_task_record(task_id, task_type="scheduled-phase1", parent_task_id=task_id.rsplit("-p1-", 1)[0])
+    run_claude_phase1(payload, task_id)
+    with TASK_LOCK:
+        task = TASKS.get(task_id, {})
+        return {"status": task.get("status"), "result": dict(task.get("result") or {})}
+
+
+def run_scheduled_phase2(payload: dict, task_id: str) -> dict:
+    create_task_record(task_id, task_type="scheduled-phase2", parent_task_id=task_id.rsplit("-p2-", 1)[0])
+    run_claude_phase2(payload, task_id)
+    with TASK_LOCK:
+        task = TASKS.get(task_id, {})
+        return {"status": task.get("status"), "result": dict(task.get("result") or {})}
+
+
+def get_scheduled_task_service():
+    global SCHEDULED_TASK_SERVICE
+    if SCHEDULED_TASK_SERVICE is None:
+        SCHEDULED_TASK_SERVICE = build_scheduled_task_service(
+            run_review_pair=run_review_pair,
+            run_phase1=run_scheduled_phase1,
+            run_phase2=run_scheduled_phase2,
+            log=lambda message: print(f"[scheduled-tasks] {message}", flush=True),
+        )
+    return SCHEDULED_TASK_SERVICE
+
+
+def start_batch_review(payload: dict, task_id: str):
+    rows = payload.get("rows") or []
+    concurrency = max(1, min(GLOBAL_TASK_POOL.max_workers, int(payload.get("concurrency") or 1)))
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = "running"
+        TASKS[task_id]["updated"] = time.time()
+        TASKS[task_id]["result"] = {"items": [], "stdout": "", "stderr": "", "returncode": 0}
+    task_log(task_id, f"批量评审进入全局线程池：{len(rows)} 条，本任务并发上限 {concurrency}")
+    items = [
+        {
+            "index": index,
+            "factorName": (row.get("factorName") or f"row-{index + 1}").strip(),
+            "requirement": row.get("requirement") or "",
+            "apiNames": row.get("apiNames") or [x.strip() for x in re.split(r"[、,，]+", row.get("apiDocs") or "") if x.strip()],
+            "paramFields": batch_param_fields(row),
+            "procLogic": row.get("procLogic") or "",
+            "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
+            "draft": row.get("draft") or build_batch_draft(row),
+            "status": "queued",
+            "raw": "",
+            "standardText": "",
+            "standardFileId": None,
+            "standardSummaryFileId": None,
+        }
+        for index, row in enumerate(rows)
+    ]
+    with TASK_LOCK:
+        TASKS[task_id]["result"] = {"items": items, "stdout": "", "stderr": "", "returncode": 0}
+        TASKS[task_id]["updated"] = time.time()
+    for index, row in enumerate(rows):
+        future = GLOBAL_TASK_POOL.submit(
+            task_id,
+            f"{task_id}-factor-{index}",
+            run_batch_factor_job,
+            row,
+            payload,
+            task_id,
+            index,
+            items,
+            group_limit=concurrency,
+        )
+        future.add_done_callback(
+            lambda completed, item_index=index: finish_batch_factor(task_id, item_index, items, completed)
+        )
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        return
+
+    def read_json_body(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        return json.loads(body.decode("utf-8")) if body else {}
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        if path == "/":
+            react_index = STATIC_DIR / "dist" / "index.html"
+            self.serve_static("dist/index.html" if react_index.exists() else "index.html")
+        elif path in ("/legacy", "/legacy/"):
+            self.serve_static("index.html")
+        elif path == "/favicon.ico":
+            text_response(self, 204, b"", "image/x-icon")
+        elif path == "/api/apis":
+            json_response(self, 200, {"apis": list_api_docs(include_content=False)})
+        elif path == "/api/api-doc":
+            query = parse_qs(parsed.query)
+            doc = get_api_doc((query.get("name") or query.get("path") or [""])[0])
+            if not doc:
+                json_response(self, 404, {"error": "api doc not found"})
+                return
+            json_response(self, 200, {"api": doc})
+        elif path == "/api/outputs":
+            json_response(self, 200, {"outputs": list_outputs()})
+        elif path == "/api/examples":
+            json_response(self, 200, {"examples": parse_examples()})
+        elif path == "/api/business-rules":
+            json_response(self, 200, {"rules": parse_business_rules()})
+        elif path == "/api/tasks":
+            json_response(self, 200, {"tasks": task_history(), "pool": GLOBAL_TASK_POOL.snapshot()})
+        elif path == "/api/pool/status":
+            json_response(self, 200, {"pool": GLOBAL_TASK_POOL.snapshot()})
+        elif path in ("/api/health", "/api/self-check"):
+            json_response(self, 200, system_health())
+        elif path == "/api/claude-test":
+            json_response(self, 200, test_claude_print())
+        elif path == "/api/scheduled-tasks":
+            success_response(self, get_scheduled_task_service().list_tasks())
+        elif path.startswith("/api/scheduled-tasks/") and path.endswith("/runs"):
+            task_id = unquote(path.split("/")[-2])
+            success_response(self, get_scheduled_task_service().list_runs(task_id))
+        elif path.startswith("/api/scheduled-tasks/"):
+            task_id = unquote(path.split("/")[-1])
+            try:
+                success_response(self, get_scheduled_task_service().get_task(task_id))
+            except ScheduledTaskError as exc:
+                error_response(self, 404, str(exc))
+        elif path.startswith("/api/scheduled-runs/"):
+            run_id = unquote(path.split("/")[-1])
+            try:
+                success_response(self, get_scheduled_task_service().get_run(run_id))
+            except ScheduledTaskError as exc:
+                error_response(self, 404, str(exc))
+        elif path.startswith("/api/tasks/"):
+            task_id = path.split("/")[-1]
+            with TASK_LOCK:
+                task = TASKS.get(task_id)
+            if not task:
+                json_response(self, 404, {"error": "not found"})
+                return
+            json_response(self, 200, {"task": decorate_task(task), "pool": GLOBAL_TASK_POOL.snapshot()})
+        elif path.startswith("/outputs/"):
+            self.serve_output(path[len("/outputs/") :])
+        else:
+            self.serve_static(path.lstrip("/"))
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/scheduled-tasks/import-preview":
+            try:
+                payload = self.read_json_body()
+                result = get_scheduled_task_service().preview_import(
+                    payload.get("name", ""),
+                    payload.get("data", ""),
+                    mode=payload.get("mode"),
+                    task_standard_file=payload.get("standardFile"),
+                )
+                success_response(self, result)
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+            except ScheduledTaskError as exc:
+                error_response(self, 400, str(exc))
+            return
+        if parsed.path == "/api/scheduled-tasks":
+            try:
+                success_response(self, get_scheduled_task_service().create_task(self.read_json_body()), status=201)
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+            except (ScheduledTaskError, TypeError, ValueError) as exc:
+                error_response(self, 400, str(exc))
+            return
+        if parsed.path.startswith("/api/scheduled-tasks/") and parsed.path.endswith("/enable"):
+            task_id = unquote(parsed.path.split("/")[-2])
+            try:
+                success_response(self, get_scheduled_task_service().set_enabled(task_id, True))
+            except ScheduledTaskError as exc:
+                error_response(self, 404 if "不存在" in str(exc) else 400, str(exc))
+            return
+        if parsed.path.startswith("/api/scheduled-tasks/") and parsed.path.endswith("/disable"):
+            task_id = unquote(parsed.path.split("/")[-2])
+            try:
+                success_response(self, get_scheduled_task_service().set_enabled(task_id, False))
+            except ScheduledTaskError as exc:
+                error_response(self, 404 if "不存在" in str(exc) else 400, str(exc))
+            return
+        if parsed.path.startswith("/api/scheduled-tasks/") and parsed.path.endswith("/run-now"):
+            task_id = unquote(parsed.path.split("/")[-2])
+            try:
+                success_response(self, get_scheduled_task_service().submit_task_run(task_id, trigger="manual"), status=202)
+            except ScheduledTaskError as exc:
+                error_response(self, 404 if "不存在" in str(exc) else 409, str(exc))
+            return
+        if parsed.path.startswith("/api/scheduled-runs/") and parsed.path.endswith("/cancel"):
+            run_id = unquote(parsed.path.split("/")[-2])
+            try:
+                success_response(self, get_scheduled_task_service().cancel_run(run_id))
+            except ScheduledTaskError as exc:
+                error_response(self, 404, str(exc))
+            return
+        if parsed.path == "/api/parse-excel":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except json.JSONDecodeError:
+                json_response(self, 400, {"error": "invalid json"})
+                return
+            name = payload.get("name", "")
+            data_b64 = payload.get("data", "")
+            if not data_b64:
+                json_response(self, 400, {"error": "no data"})
+                return
+            try:
+                raw = base64.b64decode(data_b64)
+            except Exception:
+                json_response(self, 400, {"error": "base64 decode failed"})
+                return
+            is_xlsx = name.lower().endswith(".xlsx") or name.lower().endswith(".xls")
+            if is_xlsx:
+                rows = parse_xlsx(raw)
+            else:
+                try:
+                    rows = parse_csv_rows(raw.decode("utf-8-sig"))
+                except UnicodeDecodeError:
+                    rows = parse_csv_rows(raw.decode("gb18030"))
+            json_response(self, 200, {"rows": rows, "items": normalize_batch_rows_from_table(rows), "name": name})
+            return
+        if parsed.path == "/api/examples":
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                json_response(self, 400, {"error": "invalid json"})
+                return
+            with EXAMPLES_LOCK:
+                examples = parse_examples()
+                example = normalize_example(payload)
+                errors = validate_example(example)
+                if errors:
+                    json_response(self, 400, {"error": "；".join(errors), "errors": errors})
+                    return
+                if any(item.get("id") == example.get("id") for item in examples):
+                    json_response(self, 409, {"error": "案例 ID 已存在，请换一个 ID。"})
+                    return
+                examples.append(example)
+                save_examples(examples)
+            json_response(self, 201, {"example": example, "examples": examples})
+            return
+        if parsed.path == "/api/business-rules":
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                json_response(self, 400, {"error": "invalid json"})
+                return
+            with BUSINESS_RULES_LOCK:
+                rules = parse_business_rules()
+                rule = normalize_business_rule(payload)
+                errors = validate_business_rule(rule)
+                if errors:
+                    json_response(self, 400, {"error": "；".join(errors), "errors": errors})
+                    return
+                rules.append(rule)
+                save_business_rules(rules)
+            json_response(self, 201, {"rule": rule, "rules": rules})
+            return
+        if parsed.path == "/api/review/batch":
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                json_response(self, 400, {"error": "invalid json"})
+                return
+            rows = payload.get("rows") or []
+            if not isinstance(rows, list) or not rows:
+                json_response(self, 400, {"error": "批量评审缺少有效数据行。"})
+                return
+            task_id = str(uuid.uuid4())
+            concurrency = max(1, min(GLOBAL_TASK_POOL.max_workers, int(payload.get("concurrency") or 1)))
+            create_task_record(
+                task_id,
+                task_type="batch",
+                client_id=str(payload.get("clientId") or ""),
+                group_concurrency=concurrency,
+            )
+            with TASK_LOCK:
+                TASKS[task_id]["result"] = {"items": []}
+            start_batch_review(payload, task_id)
+            with TASK_LOCK:
+                task = decorate_task(TASKS[task_id])
+            json_response(self, 202, {"taskId": task_id, "task": task})
+            return
+        if parsed.path == "/api/validation/regression":
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                json_response(self, 400, {"error": "invalid json"})
+                return
+            examples = parse_examples()
+            selected_ids = payload.get("exampleIds") or []
+            if selected_ids:
+                selected = {str(x) for x in selected_ids}
+                examples = [item for item in examples if item.get("id") in selected]
+            if not examples:
+                json_response(self, 400, {"error": "没有可验证的用例。"})
+                return
+            task_id = str(uuid.uuid4())
+            create_task_record(
+                task_id,
+                task_type="regression",
+                client_id=str(payload.get("clientId") or ""),
+                group_concurrency=1,
+            )
+            with TASK_LOCK:
+                TASKS[task_id]["result"] = {"items": [], "summary": {}}
+            GLOBAL_TASK_POOL.submit(
+                task_id,
+                task_id,
+                run_regression_validation,
+                payload,
+                task_id,
+                group_limit=1,
+            )
+            with TASK_LOCK:
+                task = decorate_task(TASKS[task_id])
+            json_response(self, 202, {"taskId": task_id, "task": task})
+            return
+        if parsed.path.startswith("/api/tasks/") and parsed.path.endswith("/cancel"):
+            task_id = parsed.path.split("/")[-2]
+            if not request_task_cancel(task_id):
+                json_response(self, 404, {"error": "task not found"})
+                return
+            with TASK_LOCK:
+                task = TASKS.get(task_id)
+            json_response(self, 200, {"task": decorate_task(task), "pool": GLOBAL_TASK_POOL.snapshot()})
+            return
+        if parsed.path == "/api/review/phase1":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except json.JSONDecodeError:
+                json_response(self, 400, {"error": "invalid json"})
+                return
+            if not payload.get("requirement") or not payload.get("apiNames"):
+                json_response(self, 400, {"error": "Phase 1 请填写需求内容并至少选择一个接口文档。"})
+                return
+            task_id = str(uuid.uuid4())
+            create_task_record(
+                task_id,
+                debug_claude=bool(payload.get("debugClaude")),
+                task_type="phase1",
+                client_id=str(payload.get("clientId") or ""),
+                group_concurrency=1,
+            )
+            GLOBAL_TASK_POOL.submit(task_id, task_id, run_claude_phase1, payload, task_id, group_limit=1)
+            with TASK_LOCK:
+                task = decorate_task(TASKS[task_id])
+            json_response(self, 202, {"taskId": task_id, "task": task})
+            return
+        
+        if parsed.path == "/api/review/phase2":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except json.JSONDecodeError:
+                json_response(self, 400, {"error": "invalid json"})
+                return
+            if not payload.get("draft") or not payload.get("standardFileId"):
+                json_response(self, 400, {"error": "Phase 2 请填写待评审准出内容和标准文件 ID。"})
+                return
+            if payload.get("skipStageValidation") is not True and (
+                not payload.get("requirement") or not payload.get("apiNames")
+            ):
+                json_response(self, 400, {"error": "Phase 2 缺少 checksum 校验所需的需求内容或接口文档列表，请重新执行 Phase 1。"})
+                return
+            task_id = str(uuid.uuid4())
+            create_task_record(
+                task_id,
+                debug_claude=bool(payload.get("debugClaude")),
+                task_type="phase2",
+                client_id=str(payload.get("clientId") or ""),
+                group_concurrency=1,
+            )
+            GLOBAL_TASK_POOL.submit(task_id, task_id, run_claude_phase2, payload, task_id, group_limit=1)
+            with TASK_LOCK:
+                task = decorate_task(TASKS[task_id])
+            json_response(self, 202, {"taskId": task_id, "task": task})
+            return
+        
+        if parsed.path != "/api/review":
+            json_response(self, 404, {"error": "not found"})
+            return
+        json_response(self, 410, {"error": "/api/review 已废弃，请使用 /api/review/phase1 和 /api/review/phase2 两阶段接口。"})
+        return
+
+    def do_PUT(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/scheduled-tasks/"):
+            task_id = unquote(parsed.path.split("/")[-1])
+            try:
+                success_response(self, get_scheduled_task_service().update_task(task_id, self.read_json_body()))
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+            except (ScheduledTaskError, TypeError, ValueError) as exc:
+                error_response(self, 404 if "不存在" in str(exc) else 400, str(exc))
+            return
+        if parsed.path.startswith("/api/business-rules/"):
+            rule_id = unquote(parsed.path.split("/")[-1])
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                json_response(self, 400, {"error": "invalid json"})
+                return
+            with BUSINESS_RULES_LOCK:
+                rules = parse_business_rules()
+                for index, item in enumerate(rules):
+                    if item.get("id") == rule_id:
+                        if payload.get("version") and item.get("version") and payload.get("version") != item.get("version"):
+                            json_response(self, 409, {"error": "规则已被其他操作更新，请刷新后再保存。", "rule": item})
+                            return
+                        updated = normalize_business_rule(payload, existing_id=rule_id)
+                        errors = validate_business_rule(updated)
+                        if errors:
+                            json_response(self, 400, {"error": "；".join(errors), "errors": errors})
+                            return
+                        rules[index] = updated
+                        save_business_rules(rules)
+                        json_response(self, 200, {"rule": updated, "rules": rules})
+                        return
+            json_response(self, 404, {"error": "business rule not found"})
+            return
+        if not parsed.path.startswith("/api/examples/"):
+            json_response(self, 404, {"error": "not found"})
+            return
+        example_id = unquote(parsed.path.split("/")[-1])
+        try:
+            payload = self.read_json_body()
+        except json.JSONDecodeError:
+            json_response(self, 400, {"error": "invalid json"})
+            return
+        with EXAMPLES_LOCK:
+            examples = parse_examples()
+            for index, item in enumerate(examples):
+                if item.get("id") == example_id:
+                    if payload.get("version") and item.get("version") and payload.get("version") != item.get("version"):
+                        json_response(self, 409, {"error": "案例已被其他操作更新，请刷新后再保存。", "example": item})
+                        return
+                    updated = normalize_example(payload, existing_id=example_id)
+                    errors = validate_example(updated)
+                    if errors:
+                        json_response(self, 400, {"error": "；".join(errors), "errors": errors})
+                        return
+                    examples[index] = updated
+                    save_examples(examples)
+                    json_response(self, 200, {"example": examples[index], "examples": examples})
+                    return
+        json_response(self, 404, {"error": "example not found"})
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/scheduled-tasks/"):
+            task_id = unquote(parsed.path.split("/")[-1])
+            try:
+                get_scheduled_task_service().delete_task(task_id)
+                success_response(self, None)
+            except ScheduledTaskError as exc:
+                error_response(self, 404, str(exc))
+            return
+        if parsed.path.startswith("/api/business-rules/"):
+            rule_id = unquote(parsed.path.split("/")[-1])
+            with BUSINESS_RULES_LOCK:
+                rules = parse_business_rules()
+                filtered = [item for item in rules if item.get("id") != rule_id]
+                if len(filtered) == len(rules):
+                    json_response(self, 404, {"error": "business rule not found"})
+                    return
+                save_business_rules(filtered)
+            json_response(self, 200, {"rules": filtered})
+            return
+        if not parsed.path.startswith("/api/examples/"):
+            json_response(self, 404, {"error": "not found"})
+            return
+        example_id = unquote(parsed.path.split("/")[-1])
+        with EXAMPLES_LOCK:
+            examples = parse_examples()
+            filtered = [item for item in examples if item.get("id") != example_id]
+            if len(filtered) == len(examples):
+                json_response(self, 404, {"error": "example not found"})
+                return
+            save_examples(filtered)
+        json_response(self, 200, {"examples": filtered})
+
+    def serve_static(self, name: str):
+        name = name or "index.html"
+        safe = Path(name)
+        if safe.is_absolute() or ".." in safe.parts:
+            json_response(self, 403, {"error": "forbidden"})
+            return
+        path = STATIC_DIR / safe
+        if not path.exists() or not path.is_file():
+            json_response(self, 404, {"error": "not found"})
+            return
+        ctype = "text/html; charset=utf-8"
+        if path.suffix == ".css":
+            ctype = "text/css; charset=utf-8"
+        elif path.suffix == ".js":
+            ctype = "application/javascript; charset=utf-8"
+        elif path.suffix == ".svg":
+            ctype = "image/svg+xml"
+        text_response(self, 200, path.read_bytes(), ctype)
+
+    def serve_output(self, name: str):
+        safe = Path(name)
+        if safe.is_absolute() or ".." in safe.parts:
+            json_response(self, 403, {"error": "forbidden"})
+            return
+        path = OUTPUTS_DIR / safe
+        if not path.exists() or not path.is_file():
+            json_response(self, 404, {"error": "not found"})
+            return
+        text_response(self, 200, path.read_bytes(), "text/markdown; charset=utf-8")
+
+
+def main():
+    scheduled_service = get_scheduled_task_service()
+    scheduled_service.start_scheduler()
+    port = int(os.environ.get("PORT", "8765"))
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    print(f"Risk review web v2 running at http://127.0.0.1:{port}")
+    try:
+        server.serve_forever()
+    finally:
+        scheduled_service.stop_scheduler()
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

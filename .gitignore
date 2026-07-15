@@ -1,0 +1,36 @@
+# IDE
+.idea/
+.vscode/
+.jbeval
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Runtime
+outputs/
+raw/
+validation/
+logs/
+*.log
+
+# Local data
+*.xlsx
+*.xls
+*.csv
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+*.token
+
+# OS
+.DS_Store
+*.zip
+
+# Frontend dependencies
+node_modules/

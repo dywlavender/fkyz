@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import threading
+import time
+import uuid
+
+from .paths import BUSINESS_RULES_PATH, EXAMPLES_DIR
+from .utils import read_text
+
+
+BUSINESS_RULES_LOCK = threading.Lock()
+
+BUSINESS_RULE_TYPES = {
+    "business_mandatory": {
+        "label": "业务口径强制规则",
+        "priority": 1,
+        "phase1": "必须用于标准加工规范推导；涉及业务字段、码值、枚举、过滤、计算时必须具体落入标准。",
+        "phase2": "必须严格评审；待评审内容必须写明字段名、字段来源、具体码值/枚举值/阈值/时间窗口/计算口径，不允许仅语义覆盖。",
+    },
+    "exception_fallback": {
+        "label": "异常兜底语义规则",
+        "priority": 2,
+        "phase1": "用于异常与默认值兜底口径；不绑定某个接口固定成功码字段名或成功值。",
+        "phase2": "可按语义覆盖评审；接口失败、超时、业务错误、返回码非成功等抽象兜底描述可覆盖异常兜底要求。若公共规则已提供此类兜底，Phase 2 不得仅因待评审内容未重复写 errorCode/code/status/success 或具体成功值而判为不符合。",
+    },
+    "default_assumption": {
+        "label": "默认假设规则",
+        "priority": 3,
+        "phase1": "作为分析前提使用，可写入标准的前置假设或边界说明。",
+        "phase2": "不得机械转成扣分项；仅当待评审内容显式违反该假设或标准规范时才输出问题。",
+    },
+    "confirmation": {
+        "label": "待确认/低优先级补充",
+        "priority": 4,
+        "phase1": "作为补充线索；与需求或接口文档冲突时标为待确认，不得静默覆盖。",
+        "phase2": "与标准规范存在张力时输出待确认，不直接判不符合。",
+    },
+}
+
+
+def rule_version() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def parse_business_rules():
+    if not BUSINESS_RULES_PATH.exists():
+        return []
+    try:
+        data = json.loads(read_text(BUSINESS_RULES_PATH))
+        if not isinstance(data, list):
+            return []
+        changed = False
+        rules = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            rule = normalize_business_rule(item, existing_id=item.get("id"))
+            rule["version"] = item.get("version") or rule["version"]
+            rule["updatedAt"] = item.get("updatedAt") or rule["updatedAt"]
+            changed = changed or rule != item
+            rules.append(rule)
+        if changed:
+            save_business_rules(rules)
+        return rules
+    except Exception:
+        return []
+
+
+def save_business_rules(rules: list[dict]):
+    EXAMPLES_DIR.mkdir(exist_ok=True)
+    BUSINESS_RULES_PATH.write_text(json.dumps(rules, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def normalize_business_rule(payload: dict, existing_id: str | None = None) -> dict:
+    rule_id = existing_id or (payload.get("id") or f"rule-{uuid.uuid4().hex[:8]}")
+    rule_type = (payload.get("type") or payload.get("ruleType") or "business_mandatory").strip()
+    if rule_type not in BUSINESS_RULE_TYPES:
+        rule_type = "business_mandatory"
+    return {
+        "id": str(rule_id),
+        "type": rule_type,
+        "typeLabel": BUSINESS_RULE_TYPES[rule_type]["label"],
+        "priority": BUSINESS_RULE_TYPES[rule_type]["priority"],
+        "text": (payload.get("text") or payload.get("rule") or "").strip(),
+        "version": rule_version(),
+        "updatedAt": int(time.time()),
+    }
+
+
+def validate_business_rule(rule: dict) -> list[str]:
+    errors = []
+    if rule.get("type") not in BUSINESS_RULE_TYPES:
+        errors.append("规则类型无效")
+    if not (rule.get("text") or "").strip():
+        errors.append("规则说明不能为空")
+    return errors
+
+
+def business_rules_fingerprint() -> list[dict]:
+    return [
+        {
+            "id": rule.get("id", ""),
+            "type": rule.get("type") or "business_mandatory",
+            "text_sha256": hashlib.sha256((rule.get("text") or "").encode("utf-8")).hexdigest(),
+        }
+        for rule in parse_business_rules()
+        if (rule.get("text") or "").strip()
+    ]

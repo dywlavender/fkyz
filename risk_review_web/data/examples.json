@@ -1,0 +1,108 @@
+[
+  {
+    "id": "case-01",
+    "title": "近12个月医药采购金额 01 正向",
+    "kind": "正向",
+    "factorName": "近12个月医药采购金额",
+    "apiNames": [
+      "授信申请接口",
+      "ES_医药企业药品采购信息查询接口"
+    ],
+    "requirement": "1、按药品采购金额中发票加工逻辑\n2、选取开票日期kpyf大于等于【进件时点-12个月】，小于等于【进件时点】的采购金额加工，计算总和",
+    "paramFields": "授信申请接口.applyTime\nES_医药企业药品采购信息查询接口.content[].kpyf\nES_医药企业药品采购信息查询接口.content[].inputAmount",
+    "procLogic": "1. 取授信申请接口中的 applyTime 作为进件时点，将 applyTime 转换为yyyy-MM格式后作为 endMonth。按endMonth - 12 个月得到窗口起点。\n2. 遍历 ES 接口返回的 content 明细，列表不为空时，按 kpyf 过滤在窗口内的记录。要求 `窗口起点 <= kpyf <= endMonth ` 的记录\n3. 对保留记录的 inputAmount 求和。求和结果单位为元，保留原始 精度\n4. 无符合记录时或者列表为空返回0",
+    "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
+    "draft": "【因子加工输入字段】\n授信申请接口.applyTime\nES_医药企业药品采购信息查询接口.content[].kpyf\nES_医药企业药品采购信息查询接口.content[].inputAmount\n\n【加工逻辑】\n1. 取授信申请接口中的 applyTime 作为进件时点，将 applyTime 转换为yyyy-MM格式后作为 endMonth。按endMonth - 12 个月得到窗口起点。\n2. 遍历 ES 接口返回的 content 明细，列表不为空时，按 kpyf 过滤在窗口内的记录。要求 `窗口起点 <= kpyf <= endMonth ` 的记录\n3. 对保留记录的 inputAmount 求和。求和结果单位为元，保留原始 精度\n4. 无符合记录时或者列表为空返回0\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
+    "expected": "`✅ 通过`（不得因未单列 content[] 判定字段不完整）",
+    "version": "9a45583f150f",
+    "updatedAt": 1784041772
+  },
+  {
+    "id": "case-02",
+    "title": "近12个月医药采购金额 02 反向",
+    "kind": "反向",
+    "factorName": "近12个月医药采购金额",
+    "apiNames": [
+      "授信申请接口",
+      "ES_医药企业药品采购信息查询接口"
+    ],
+    "requirement": "1、按药品采购金额中发票加工逻辑\n2、选取开票日期kprq大于等于【进件时点-12个月】，小于等于【进件时点】的采购金额加工，计算总和",
+    "paramFields": "授信申请接口.applyTime\nES_医药企业药品采购信息查询接口.content[].kpyf\nES_医药企业药品采购信息查询接口.content[].inputAmount",
+    "procLogic": "1. 取 applyTime 前 8 位作为申请日期。\n2. 选取 kpyf在近 12 个月内的记录。\n3. 对 inputAmount 求和。",
+    "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
+    "draft": "【因子加工输入字段】\n授信申请接口.applyTime\nES_医药企业药品采购信息查询接口.content[].kpyf\nES_医药企业药品采购信息查询接口.content[].inputAmount\n\n【加工逻辑】\n1. 取 applyTime 前 8 位作为申请日期。\n2. 选取 kpyf在近 12 个月内的记录。\n3. 对 inputAmount 求和。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
+    "expected": "`❌ 不通过，需修改`",
+    "version": "4da76cfa12fa",
+    "updatedAt": 1784041793
+  },
+  {
+    "id": "case-03",
+    "title": "投资人最近一次变更距今月份数 03 正向",
+    "kind": "正向",
+    "factorName": "投资人最近一次变更距今月份数",
+    "apiNames": [
+      "授信申请接口",
+      "EDAP_企业详情查询API接口"
+    ],
+    "requirement": "筛选变更类型属于：投资人（包括出资额、出资方式、出资日期、投资人名称等）、股东变更、投资人（股权）变更、投资人（包括出资额、出资方式、出资日期、投资人名称等）计算最近一次投资人变更距离申请的月份数，月份差的绝对值向上取整。",
+    "paramFields": "授信申请接口.applyTime | 业务申请时点\nEDAP_企业详情查询API接口.ent_info.alter[].ALTITEM | 筛选变更类型\nEDAP_企业详情查询API接口.ent_info.alter[].ALTDATE | 计算月份差",
+    "procLogic": "1. 取授信申请接口.applyTime 作为申请时点。\n2. 遍历 EDAP_企业详情查询API接口.ent_info.alter[]，筛选 ALTITEM 命中投资人、股东变更、投资人（股权）变更的记录。\n3. 取最近一次变更日期 ALTDATE。\n4. 计算 ALTDATE 距申请时点的月份数，结果向上取整。",
+    "defaultValues": "NULL",
+    "draft": "【因子加工输入字段】\n授信申请接口.applyTime | 业务申请时点\nEDAP_企业详情查询API接口.ent_info.alter[].ALTITEM | 筛选变更类型\nEDAP_企业详情查询API接口.ent_info.alter[].ALTDATE | 计算月份差\n\n【加工逻辑】\n1. 取授信申请接口.applyTime 作为申请时点。\n2. 遍历 EDAP_企业详情查询API接口.ent_info.alter[]，筛选 ALTITEM 命中投资人、股东变更、投资人（股权）变更的记录。\n3. 取最近一次变更日期 ALTDATE。\n4. 计算 ALTDATE 距申请时点的月份数，结果向上取整。\n\n【默认值】\nNULL",
+    "expected": "`⚠️ 建议修改后通过` 或 `✅ 通过`",
+    "version": "2cf0e8be63d1",
+    "updatedAt": 1781877976
+  },
+  {
+    "id": "case-04",
+    "title": "投资人最近一次变更距今月份数 04 反向",
+    "kind": "反向",
+    "factorName": "投资人最近一次变更距今月份数",
+    "apiNames": [
+      "授信申请接口",
+      "EDAP_企业详情查询API接口"
+    ],
+    "requirement": "因子：投资人最近一次变更距今月份数\n加工逻辑：\n筛选变更类型属于：投资人（包括出资额、出资方式、出资日期、投资人名称等）、股东变更、投资人（股权）变更、投资人（包括出资额、出资方式、出资日期、投资人名称等）计算最近一次投资人变更距离申请的月份数，月份差的绝对值向上取整。",
+    "paramFields": "taxpayerId | 统一社会信用代码\napplyDate | 申请日期",
+    "procLogic": "1. 使用 alter[]，每条含 ALTDATE（格式 YYYYMMDATE）和 ALTITEM。\n2. 筛选 ALTITEM 包含“投资人”“股东变更”“投资人（股权）变更”的记录。\n3. 取第一条记录计算与 applyDate 的月份差。\n4. 若无记录则输出 -1。",
+    "defaultValues": "-1",
+    "draft": "【因子加工输入字段】\ntaxpayerId | 统一社会信用代码\napplyDate | 申请日期\n\n【加工逻辑】\n1. 使用 alter[]，每条含 ALTDATE（格式 YYYYMMDATE）和 ALTITEM。\n2. 筛选 ALTITEM 包含“投资人”“股东变更”“投资人（股权）变更”的记录。\n3. 取第一条记录计算与 applyDate 的月份差。\n4. 若无记录则输出 -1。\n\n【默认值】\n-1",
+    "expected": "`❌ 不通过，需修改`",
+    "version": "48f8d1f45d68",
+    "updatedAt": 1781877983
+  },
+  {
+    "id": "case-05",
+    "title": "提款金额检查 05 正向",
+    "kind": "正向",
+    "factorName": "提款金额检查",
+    "apiNames": [
+      "提款申请接口"
+    ],
+    "requirement": "若提款类型为流动资金贷款，校验提款金额大于0；满足条件输出 true，否则输出 false。",
+    "paramFields": "提款申请接口.withdrawAmt \n提款申请接口.withdrawType",
+    "procLogic": "1. 读取 withdrawAmt、withdrawType。\n2. withdrawType = 01 且 withdrawAmt > 0 时输出 true。\n3. 其他情况输出 false。",
+    "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
+    "draft": "【因子加工输入字段】\n提款申请接口.withdrawAmt \n提款申请接口.withdrawType\n\n【加工逻辑】\n1. 读取 withdrawAmt、withdrawType。\n2. withdrawType = 01 且 withdrawAmt > 0 时输出 true。\n3. 其他情况输出 false。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
+    "expected": "`✅ 通过` 或 `⚠️ 建议修改后通过`",
+    "version": "2f5a6ab782e7",
+    "updatedAt": 1784041813
+  },
+  {
+    "id": "case-06",
+    "title": "提款金额检查 06 反向",
+    "kind": "反向",
+    "factorName": "提款金额检查",
+    "apiNames": [
+      "提款申请接口"
+    ],
+    "requirement": "加工逻辑：判断提款金额是否小于等于合同可用额度；若提款类型为流动资金贷款，仅统计提款金额。",
+    "paramFields": "withdrawAmt \ncontractAvailableAmt\nwithdrawType",
+    "procLogic": "1. 取 contractAvailableAmt 作为可用额度。\n2. 当 withdrawType = 流动资金贷款 时，允许 withdrawAmt 直接通过。\n3. 若 withdrawAmt 为空，输出 false。",
+    "defaultValues": "false",
+    "draft": "【因子加工输入字段】\nwithdrawAmt \ncontractAvailableAmt\nwithdrawType\n\n【加工逻辑】\n1. 取 contractAvailableAmt 作为可用额度。\n2. 当 withdrawType = 流动资金贷款 时，允许 withdrawAmt 直接通过。\n3. 若 withdrawAmt 为空，输出 false。\n\n【默认值】\nfalse",
+    "expected": "`❌ 不通过，需修改`",
+    "version": "7cb323a8e34a",
+    "updatedAt": 1783702367
+  }
+]

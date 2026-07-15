@@ -1,0 +1,20 @@
+[
+  {
+    "id": "rule-334e935b",
+    "type": "business_mandatory",
+    "typeLabel": "业务口径强制规则",
+    "priority": 1,
+    "text": "客户的纳税人识别号和统一社会信用代码是同一个内容。也简称为统代。",
+    "version": "f69f3beed26b",
+    "updatedAt": 1781875669
+  },
+  {
+    "id": "rule-10d1d65d",
+    "type": "exception_fallback",
+    "typeLabel": "异常兜底语义规则",
+    "priority": 2,
+    "text": "因子加工输入字段缺失、格式错误、数据异常等导致无法完成正常加工时，返回默认值。",
+    "version": "a8822624c326",
+    "updatedAt": 1782825012
+  }
+]

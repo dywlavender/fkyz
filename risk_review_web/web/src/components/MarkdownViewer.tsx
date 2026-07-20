@@ -1,4 +1,16 @@
 import { Button, Space, Tabs, message } from 'antd'
+import { useEffect, useMemo, useRef } from 'react'
+
+declare global {
+  interface Window {
+    marked?: {
+      parse: (markdown: string, options?: Record<string, unknown>) => string
+    }
+    hljs?: {
+      highlightElement: (element: HTMLElement) => void
+    }
+  }
+}
 
 interface MarkdownViewerProps {
   content: string
@@ -89,7 +101,7 @@ function renderTable(lines: string[]): string {
   ].join('')
 }
 
-function renderMarkdown(markdown: string): string {
+function renderMarkdownFallback(markdown: string): string {
   const lines = markdown.replace(/\r\n/g, '\n').split('\n')
   const html: string[] = []
   let index = 0
@@ -167,10 +179,39 @@ function renderMarkdown(markdown: string): string {
   return html.join('\n')
 }
 
+function stripYamlFrontmatter(markdown: string) {
+  return String(markdown || '')
+    .replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, '')
+    .trim()
+}
+
+function renderMarkdown(markdown: string): string {
+  const cleanMarkdown = stripYamlFrontmatter(markdown)
+  try {
+    if (window.marked?.parse) {
+      return window.marked.parse(cleanMarkdown, {
+        gfm: true,
+        breaks: true,
+      })
+    }
+  } catch {
+    // 加载失败时继续使用内置解析器，保证文档仍可查看。
+  }
+  return renderMarkdownFallback(cleanMarkdown)
+}
+
 export function MarkdownViewer({ content, fileName }: MarkdownViewerProps) {
   const [messageApi, contextHolder] = message.useMessage()
-  const rendered = renderMarkdown(content || '暂无内容')
+  const renderedRef = useRef<HTMLDivElement>(null)
+  const rendered = useMemo(() => renderMarkdown(content || '暂无内容'), [content])
   const downloadHref = `data:text/markdown;charset=utf-8,${encodeURIComponent(content || '')}`
+
+  useEffect(() => {
+    if (!window.hljs || !renderedRef.current) return
+    renderedRef.current.querySelectorAll<HTMLElement>('pre code').forEach((element) => {
+      window.hljs?.highlightElement(element)
+    })
+  }, [rendered])
 
   async function copyRaw() {
     await navigator.clipboard.writeText(content || '')
@@ -192,6 +233,7 @@ export function MarkdownViewer({ content, fileName }: MarkdownViewerProps) {
               label: '渲染视图',
               children: (
                 <div
+                  ref={renderedRef}
                   className="markdown-body"
                   dangerouslySetInnerHTML={{ __html: rendered }}
                 />

@@ -83,7 +83,10 @@ risk_review_standard_json_v4
 
 ## 8. 文件与工具边界
 
-Phase 1 可以按照当前 Prompt 和 Skill 搜索、读取所需接口文档及公共业务规则。Phase 2 和 Reviewer 只能读取各自阶段明确允许的文件。
+Phase 1 在后端按任务创建的隔离工作目录中运行，只能搜索、读取 Phase 1 Skill、当次指定接口文档和公共业务规则。验证案例、历史产物、其他阶段 Skill 和其他 Prompt 不会进入隔离目录，也不得尝试访问。
+
+Phase 1 只允许使用隔离目录内的只读 `Read`、`Glob`、`Grep`；Bash、写文件工具、Slash Commands、项目自定义配置和外部 MCP 均被禁用。允许文件保持按需读取，不得要求后端把文件全文一次性拼入 Prompt。
+
+Phase 2 和 Reviewer 只能读取各自阶段明确允许的文件。
 
 读取文件不代表获得写权限。无论 Prompt 内容如何，最终都不得通过工具或 shell 修改项目文件；只能把完整结果输出到 stdout。
-

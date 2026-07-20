@@ -33,7 +33,7 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
   const [drawerTitle, setDrawerTitle] = useState('执行详情')
   const [selectedRun, setSelectedRun] = useState<ScheduledRun | null>(null)
   const [runningNow, setRunningNow] = useState(false)
-  const [cancelling, setCancelling] = useState(false)
+  const [cancellingRunId, setCancellingRunId] = useState<string>()
   const hasActiveRun = runs.some((run) => run.status === 'pending' || run.status === 'running')
 
   async function loadRuns() {
@@ -63,6 +63,12 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
     }, 2000)
     return () => window.clearInterval(timer)
   }, [task.taskId, hasActiveRun, selectedRun?.runId, selectedRun?.status])
+
+  useEffect(() => {
+    if (!cancellingRunId) return
+    const target = runs.find((run) => run.runId === cancellingRunId)
+    if (target && !['pending', 'running'].includes(target.status)) setCancellingRunId(undefined)
+  }, [cancellingRunId, runs])
 
   async function handleRunNow() {
     setRunningNow(true)
@@ -96,16 +102,19 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
 
   async function handleCancelRun() {
     if (!selectedRun) return
-    setCancelling(true)
+    await terminateRun(selectedRun)
+  }
+
+  async function terminateRun(targetRun: ScheduledRun) {
+    setCancellingRunId(targetRun.runId)
     try {
-      const run = await cancelScheduledRun(selectedRun.runId)
-      setSelectedRun(run)
-      onNotice({ type: 'success', message: '已取消尚未开始的因子，运行中的因子将在当前阶段结束后收口。' })
+      const run = await cancelScheduledRun(targetRun.runId)
+      if (selectedRun?.runId === targetRun.runId) setSelectedRun(run)
+      onNotice({ type: 'warning', message: '已请求终止：排队项已取消，正在运行的 Claude 调用正在停止。' })
       await loadRuns()
     } catch (caught) {
-      onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '取消执行失败' })
-    } finally {
-      setCancelling(false)
+      setCancellingRunId(undefined)
+      onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '终止执行失败' })
     }
   }
 
@@ -128,8 +137,17 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
     },
     {
       title: '操作',
-      width: 120,
-      render: (_value, record) => <Button type="link" onClick={() => openRun(record.runId)}>查看</Button>,
+      width: 170,
+      render: (_value, record) => (
+        <Space size={4}>
+          <Button type="link" onClick={() => openRun(record.runId)}>查看</Button>
+          {['pending', 'running'].includes(record.status) ? (
+            <Button danger type="link" loading={cancellingRunId === record.runId} onClick={() => void terminateRun(record)}>
+              终止
+            </Button>
+          ) : null}
+        </Space>
+      ),
     },
   ]
 
@@ -213,7 +231,7 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
               showIcon
               type="info"
               message="任务正在全局线程池中执行"
-              action={<Button danger size="small" loading={cancelling} onClick={handleCancelRun}>取消未执行项</Button>}
+              action={<Button danger size="small" loading={cancellingRunId === selectedRun.runId} onClick={handleCancelRun}>终止执行</Button>}
             />
           ) : null}
           {selectedRun ? (

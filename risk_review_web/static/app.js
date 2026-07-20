@@ -948,7 +948,7 @@ async function pollRegressionTask(taskId) {
       await new Promise((resolve) => setTimeout(resolve, 1500));
       continue;
     }
-    if (task.status !== "done" && task.status !== "cancelled") throw new Error((result && result.stderr) || "回归验证失败：" + task.status);
+    if (task.status !== "done" && task.status !== "cancelled") throw new Error(taskFailureMessage(result, "回归验证失败：" + task.status));
     if (state.validationResultsDirty) {
       saveValidationResults();
       state.validationResultsDirty = false;
@@ -1579,6 +1579,17 @@ function onPhase2Done(resultText, meta) {
   state.busy = false;
 }
 
+function taskFailureMessage(result, fallback) {
+  const target = result || {};
+  const stderr = String(target.stderr || "").trim();
+  if (stderr) return stderr;
+  const explicitError = String(target.stdout || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /^(?:API Error|Error|错误)\s*[:：]/i.test(line));
+  return explicitError || fallback;
+}
+
 async function pollTask(taskId, startedAt, meta) {
   while (true) {
     const res = await fetch("/api/tasks/" + taskId);
@@ -1617,7 +1628,7 @@ async function pollTask(taskId, startedAt, meta) {
       return;
     }
     if (task.status === "timeout") throw new Error("Claude Code 调用超时");
-    throw new Error(result.stderr || "评审失败：" + task.status);
+    throw new Error(taskFailureMessage(result, "评审失败：" + task.status));
   }
 }
 

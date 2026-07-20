@@ -49,7 +49,7 @@ import type {
   ValidationCase,
   ValidationItem,
 } from '../types/review'
-import { buildDraftFromSections, formatDateTimeValue, parseDraftSections, parseReviewResult, parseStandardFromJson } from '../utils/reviewTransform'
+import { buildDraftFromSections, formatDateTimeValue, parseDraftSections, parseReviewResult, parseStandardFromJson, taskFailureMessage } from '../utils/reviewTransform'
 import { StatusBadge } from '../components/StatusBadge'
 
 const RUN_INVALIDATED = 'RUN_INVALIDATED'
@@ -153,31 +153,32 @@ function ValidationIssuesButton({ phase1, phase2 }: { phase1?: Phase1Response | 
   )
 }
 
-function StandardDocumentButton(props: {
-  standardFileId?: string
+function ArtifactDocumentButton(props: {
+  fileId?: string
+  title: '准出文档' | '评审文档'
   onNotice: (notice: AppNotice) => void
 }) {
-  const { standardFileId, onNotice } = props
+  const { fileId, title, onNotice } = props
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [content, setContent] = useState('')
   const [error, setError] = useState<string>()
-  const isJson = isJsonContent(content) || String(standardFileId || '').toLowerCase().endsWith('.json')
-  const isMarkdown = !isJson && isMarkdownContent(content, standardFileId || '准出文档.md')
+  const isJson = isJsonContent(content) || String(fileId || '').toLowerCase().endsWith('.json')
+  const isMarkdown = !isJson && isMarkdownContent(content, fileId || `${title}.md`)
 
-  async function openStandardDocument() {
+  async function openDocument() {
     setOpen(true)
     setError(undefined)
-    if (!standardFileId) {
+    if (!fileId) {
       setContent('')
       return
     }
     setLoading(true)
     try {
-      const nextContent = await fetchOutputText(standardFileId)
+      const nextContent = await fetchOutputText(fileId)
       setContent(nextContent)
     } catch (caught) {
-      const messageText = caught instanceof Error ? caught.message : '读取准出文档失败'
+      const messageText = caught instanceof Error ? caught.message : `读取${title}失败`
       setError(messageText)
       onNotice({ type: 'error', message: messageText })
     } finally {
@@ -187,11 +188,11 @@ function StandardDocumentButton(props: {
 
   return (
     <>
-      <Button block type="primary" onClick={openStandardDocument}>
-        查看准出文档
+      <Button block onClick={openDocument} disabled={!fileId}>
+        查看{title}
       </Button>
       <Modal
-        title="准出文档"
+        title={title}
         open={open}
         width="min(860px, 90vw)"
         footer={null}
@@ -199,11 +200,11 @@ function StandardDocumentButton(props: {
       >
         <Spin spinning={loading}>
           {error ? (
-            <Alert type="error" showIcon message="准出文档读取失败" description={error} />
-          ) : !standardFileId ? (
-            <EmptyState title="暂无准出文档，Phase 1 完成后可查看。" />
+            <Alert type="error" showIcon message={`${title}读取失败`} description={error} />
+          ) : !fileId ? (
+            <EmptyState title={`暂无${title}。`} />
           ) : isMarkdown ? (
-            <MarkdownViewer content={content} fileName={standardFileId} />
+            <MarkdownViewer content={content} fileName={fileId} />
           ) : isJson ? (
             <pre className="single-debug-log-pre">
               <code>
@@ -234,11 +235,13 @@ function ResultArtifactBar(props: {
 }) {
   const { phase1, phase2, onNotice } = props
   const standardFileId = phase1?.standardFileId
+  const reviewFileId = phase2?.reviewFileId
   return (
     <Card className="compact-card result-artifact-card" title="评审产物" style={surfaceStyle}>
       <div className="result-artifact-actions">
         <ValidationIssuesButton phase1={phase1} phase2={phase2} />
-        <StandardDocumentButton standardFileId={standardFileId} onNotice={onNotice} />
+        <ArtifactDocumentButton fileId={standardFileId} title="准出文档" onNotice={onNotice} />
+        <ArtifactDocumentButton fileId={reviewFileId} title="评审文档" onNotice={onNotice} />
       </div>
     </Card>
   )
@@ -762,7 +765,7 @@ export function SingleReview(props: SingleReviewProps) {
     const taskResult = (task.result || {}) as Phase1Response
 
     if (String(task.status).toLowerCase() !== 'done' || taskResult.success === false || taskResult.blocking) {
-      throw new Error(taskResult.stderr || 'Phase 1 执行失败')
+      throw new Error(taskFailureMessage(taskResult, 'Phase 1 执行失败'))
     }
 
     const validationCount = validationTotal(taskResult)
@@ -828,7 +831,7 @@ export function SingleReview(props: SingleReviewProps) {
     const taskResult = (task.result || {}) as Phase2Response
 
     if (String(task.status).toLowerCase() !== 'done' || taskResult.success === false || taskResult.blocking) {
-      throw new Error(taskResult.stderr || 'Phase 2 执行失败')
+      throw new Error(taskFailureMessage(taskResult, 'Phase 2 执行失败'))
     }
 
     const validationCount = validationTotal(taskResult)
@@ -841,16 +844,33 @@ export function SingleReview(props: SingleReviewProps) {
     setPhase2(taskResult)
 
     try {
-      if (taskResult.reviewJsonFileId) {
-        const reviewJson = await fetchOutputJson<ReviewJsonPayload>(taskResult.reviewJsonFileId)
-        ensureRunCurrent(runToken)
-        setResult(parseReviewResult(reviewJson, taskResult.stdout || ''))
-        appendExecutionLog('phase2', 'success', 'Phase 2 review JSON 读取完成', taskResult.reviewJsonFileId)
-      } else {
-        ensureRunCurrent(runToken)
-        setResult(parseReviewResult(null, taskResult.stdout || ''))
-        appendExecutionLog('phase2', 'warning', 'Phase 2 未返回 review JSON 文件', '页面将尝试从 stdout 解析结构化结果。')
+      let reviewMarkdown = taskResult.stdout || ''
+      if (taskResult.reviewFileId) {
+        try {
+          reviewMarkdown = await fetchOutputText(taskResult.reviewFileId)
+          ensureRunCurrent(runToken)
+          appendExecutionLog('phase2', 'success', 'Phase 2 评审 Markdown 读取完成', taskResult.reviewFileId)
+        } catch (caught) {
+          const messageText = caught instanceof Error ? caught.message : '读取评审 Markdown 失败'
+          appendExecutionLog('phase2', 'warning', '读取评审 Markdown 失败', `${messageText}；页面将使用 Phase 2 stdout。`)
+        }
       }
+
+      let reviewJson: ReviewJsonPayload | null = null
+      if (taskResult.reviewJsonFileId) {
+        try {
+          reviewJson = await fetchOutputJson<ReviewJsonPayload>(taskResult.reviewJsonFileId)
+          ensureRunCurrent(runToken)
+          appendExecutionLog('phase2', 'success', 'Phase 2 review JSON 读取完成', taskResult.reviewJsonFileId)
+        } catch (caught) {
+          const messageText = caught instanceof Error ? caught.message : '读取 review JSON 失败'
+          appendExecutionLog('phase2', 'warning', '读取 review JSON 失败', `${messageText}；不影响评审 Markdown 展示。`)
+        }
+      } else {
+        appendExecutionLog('phase2', 'info', 'Phase 2 未返回 review JSON 文件', '页面直接展示评审 Markdown。')
+      }
+      ensureRunCurrent(runToken)
+      setResult(parseReviewResult(reviewJson, reviewMarkdown))
     } catch (caught) {
       const messageText = caught instanceof Error ? caught.message : '读取产物失败'
       appendExecutionLog('phase2', 'error', '读取产物失败', messageText)
@@ -1309,7 +1329,7 @@ export function SingleReview(props: SingleReviewProps) {
             onOpenArtifact={handleOpenArtifact}
           />
         ) : (
-          <EmptyState title="Phase 2 完成后在这里展示结构化评审结果。" />
+          <EmptyState title="Phase 2 完成后在这里展示评审结果文档。" />
         )}
       </Card>
 

@@ -12,6 +12,7 @@ from .business_rules import business_rules_fingerprint
 from .paths import (
     CORE_RULES_PROMPT_PATH,
     OUTPUTS_DIR,
+    PHASE1_CORE_RULES_PROMPT_PATH,
     PHASE1_PROMPT_PATH,
     PHASE1_SKILL_PATH,
 )
@@ -908,6 +909,7 @@ def compute_phase1_checksum(payload: dict) -> str:
             "phase1Prompt": hashlib.sha256(read_text(PHASE1_PROMPT_PATH).encode("utf-8")).hexdigest(),
             "phase1Skill": hashlib.sha256(read_text(PHASE1_SKILL_PATH).encode("utf-8")).hexdigest(),
             "coreRules": hashlib.sha256(read_text(CORE_RULES_PROMPT_PATH).encode("utf-8")).hexdigest(),
+            "phase1CoreRules": hashlib.sha256(read_text(PHASE1_CORE_RULES_PROMPT_PATH).encode("utf-8")).hexdigest(),
         },
     }, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

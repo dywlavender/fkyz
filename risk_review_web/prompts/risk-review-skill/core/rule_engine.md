@@ -1,16 +1,16 @@
 # Rule Engine v4
 
-Phase 1 生成的是 Phase 2 唯一使用的可执行标准，不是歧义清单。
+标准正文中的规则必须是已选定、可执行、可验证的确定口径，不是歧义清单。
 
 ## Rule Level
 
 所有进入标准正文的业务规则统一使用：
 
-| Level | 含义 | Phase 1 | Phase 2 |
-|---|---|---|---|
-| hard | 已选定、可执行、必须遵守的标准口径 | 写入标准 | 可作为不符合依据 |
+| Level | 含义 |
+|---|---|
+| hard | 已选定、可执行、必须遵守并可验证的标准口径 |
 
-不得生成 `unclear`、`suggestion` 或“待确认后再定”的主链规则。原始材料存在多种实现时，Phase 1 必须选择最可能的一种，并以 `selected_interpretation` 记录选择理由。
+不得把 `unclear`、`suggestion` 或“待确认后再定”写成主链规则。
 
 ## Basis Type
 
@@ -20,7 +20,7 @@ Phase 1 生成的是 Phase 2 唯一使用的可执行标准，不是歧义清单
 | api_doc | 接口文档直接明确 |
 | public_rule | 公共业务规则直接明确 |
 | deterministic_inference | 可由输入唯一推导 |
-| selected_interpretation | 存在多种实现，Phase 1 已选择最可能口径 |
+| selected_interpretation | 存在多种实现时已选择的最可能口径 |
 
 ## Rule JSON Contract
 

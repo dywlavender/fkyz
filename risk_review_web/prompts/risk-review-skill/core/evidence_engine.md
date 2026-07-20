@@ -8,7 +8,7 @@ Evidence ID 按来源类型固定：
 | API | 接口文档 |
 | PUB | 公共业务知识规则 |
 | INF | 确定性推导 |
-| SEL | Phase 1 选定解释 |
+| SEL | 选定解释 |
 
 排序规则：REQ、API、PUB、INF、SEL，同类型按原文或选择顺序编号。
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import csv
 import hashlib
 import json
@@ -12,10 +13,12 @@ import shlex
 import signal
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from io import BytesIO
 from io import StringIO
 from concurrent.futures import CancelledError
@@ -52,10 +55,13 @@ from risk_review_web.paths import (
     BUSINESS_RULES_PATH,
     EXAMPLES_DIR,
     EXAMPLES_PATH,
+    VALIDATION_RUNS_PATH,
     OUTPUTS_DIR,
     PHASE1_SKILL_PATH,
     PHASE2_SKILL_PATH,
     CORE_RULES_PROMPT_PATH,
+    PHASE1_CORE_RULES_PROMPT_PATH,
+    PHASE2_CORE_RULES_PROMPT_PATH,
     RULE_ENGINE_BUILD_PATH,
     RULE_ENGINE_PHASE1_OUTPUT_PATH,
     RULE_ENGINE_PHASE2_OUTPUT_PATH,
@@ -77,6 +83,7 @@ TASK_LOCK = threading.Lock()
 RUNNING_PROCS = {}
 RUNNING_PROCS_LOCK = threading.Lock()
 EXAMPLES_LOCK = threading.Lock()
+VALIDATION_RUNS_LOCK = threading.Lock()
 SCHEDULED_TASK_SERVICE = None
 
 # 任务记录回收：终态任务保留 N 分钟后删除；TASKS 总量不超过上限。
@@ -287,7 +294,7 @@ def parse_examples():
 
 def save_examples(examples: list[dict]):
     EXAMPLES_DIR.mkdir(exist_ok=True)
-    EXAMPLES_PATH.write_text(json.dumps(examples, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(EXAMPLES_PATH, json.dumps(examples, ensure_ascii=False, indent=2))
 
 
 def parse_examples_from_validation_set():
@@ -389,8 +396,346 @@ def normalize_example(payload: dict, existing_id: str | None = None) -> dict:
         "defaultValues": default_values,
         "draft": draft,
         "expected": (payload.get("expected") or "").strip(),
+        "expectedIssuePatterns": _string_list(payload.get("expectedIssuePatterns")),
+        "forbiddenIssuePatterns": _string_list(payload.get("forbiddenIssuePatterns")),
+        "maxIssueCount": _optional_nonnegative_int(payload.get("maxIssueCount")),
         "version": example_version(),
         "updatedAt": int(time.time()),
+    }
+
+
+def _string_list(value) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in re.split(r"[\n,，、]+", value) if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _optional_nonnegative_int(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def validation_expected_code(value: str | None) -> str:
+    source = str(value or "").strip()
+    if re.search(r"不通过|不符合|失败|fail", source, re.I):
+        return "fail"
+    if re.search(r"待确认|confirm", source, re.I):
+        return "confirm"
+    if re.search(r"建议|warn|suggest", source, re.I):
+        return "suggestion"
+    if re.search(r"通过|符合|pass", source, re.I):
+        return "pass"
+    return source or "confirm"
+
+
+def _iso_time(epoch_value=None) -> str:
+    try:
+        epoch = float(epoch_value) if epoch_value is not None else time.time()
+    except (TypeError, ValueError):
+        epoch = time.time()
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+
+def parse_validation_runs() -> list[dict]:
+    if not VALIDATION_RUNS_PATH.exists():
+        return []
+    try:
+        data = json.loads(read_text(VALIDATION_RUNS_PATH))
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_validation_runs(runs: list[dict]):
+    EXAMPLES_DIR.mkdir(exist_ok=True)
+    trimmed = sorted(
+        runs,
+        key=lambda item: item.get("finishedAt") or item.get("startedAt") or "",
+        reverse=True,
+    )[:1000]
+    atomic_write_text(VALIDATION_RUNS_PATH, json.dumps(trimmed, ensure_ascii=False, indent=2))
+
+
+def recover_stale_validation_runs():
+    with VALIDATION_RUNS_LOCK:
+        runs = parse_validation_runs()
+        changed = False
+        for run in runs:
+            if run.get("status") not in ("pending", "running"):
+                continue
+            run.update({
+                "status": "failed",
+                "finishedAt": _iso_time(),
+                "error": "后端服务已重启，原执行任务无法继续，请重新运行该案例",
+            })
+            changed = True
+        if changed:
+            save_validation_runs(runs)
+
+
+def cancel_validation_runs_for_task(task_id: str):
+    with VALIDATION_RUNS_LOCK:
+        runs = parse_validation_runs()
+        changed = False
+        for run in runs:
+            if run.get("taskId") != task_id or run.get("status") not in ("pending", "running"):
+                continue
+            run.update({
+                "status": "cancelled",
+                "finishedAt": _iso_time(),
+                "error": "验证任务已终止",
+            })
+            changed = True
+        if changed:
+            save_validation_runs(runs)
+
+
+def upsert_validation_run(run: dict) -> dict:
+    with VALIDATION_RUNS_LOCK:
+        runs = parse_validation_runs()
+        run_id = str(run.get("runId") or "")
+        for index, current in enumerate(runs):
+            if current.get("runId") == run_id:
+                runs[index] = {**current, **run}
+                saved = runs[index]
+                break
+        else:
+            runs.append(run)
+            saved = run
+        save_validation_runs(runs)
+    return saved
+
+
+def get_validation_run(run_id: str) -> dict | None:
+    with VALIDATION_RUNS_LOCK:
+        return next((item for item in parse_validation_runs() if item.get("runId") == run_id), None)
+
+
+def latest_validation_runs_by_case() -> dict[str, dict]:
+    latest = {}
+    with VALIDATION_RUNS_LOCK:
+        runs = parse_validation_runs()
+    for run in runs:
+        case_id = str(run.get("caseId") or "")
+        if not case_id:
+            continue
+        current = latest.get(case_id)
+        current_time = (current or {}).get("finishedAt") or (current or {}).get("startedAt") or ""
+        candidate_time = run.get("finishedAt") or run.get("startedAt") or ""
+        if current is None or candidate_time > current_time:
+            latest[case_id] = run
+    return latest
+
+
+def validation_case_from_example(example: dict, latest_run: dict | None = None) -> dict:
+    tags = _string_list(example.get("tags"))
+    kind = str(example.get("kind") or "").strip()
+    if kind and kind not in tags:
+        tags.insert(0, kind)
+    created_at = example.get("createdAt") or example.get("updatedAt")
+    result = {
+        "caseId": str(example.get("id") or ""),
+        "caseName": str(example.get("title") or example.get("id") or ""),
+        "factorName": str(example.get("factorName") or ""),
+        "requirement": str(example.get("requirement") or ""),
+        "reviewContent": str(example.get("reviewContent") or example.get("draft") or example.get("procLogic") or ""),
+        "expectedConclusion": validation_expected_code(example.get("expected")),
+        "expectedIssuePatterns": _string_list(example.get("expectedIssuePatterns")),
+        "forbiddenIssuePatterns": _string_list(example.get("forbiddenIssuePatterns")),
+        "maxIssueCount": _optional_nonnegative_int(example.get("maxIssueCount")),
+        "apiDocIds": _string_list(example.get("apiNames")),
+        "businessRuleIds": _string_list(example.get("businessRuleIds")),
+        "tags": tags,
+        "remark": str(example.get("remark") or ""),
+        "createdAt": _iso_time(created_at) if created_at else None,
+        "updatedAt": _iso_time(example.get("updatedAt")) if example.get("updatedAt") else None,
+    }
+    if latest_run:
+        result.update({
+            "lastRunAt": latest_run.get("finishedAt") or latest_run.get("startedAt"),
+            "lastActualConclusion": latest_run.get("actualConclusion"),
+            "lastMatched": latest_run.get("matched"),
+            "lastRunId": latest_run.get("runId"),
+            "lastRunStatus": latest_run.get("status"),
+        })
+    return result
+
+
+def validation_cases() -> list[dict]:
+    latest_runs = latest_validation_runs_by_case()
+    with EXAMPLES_LOCK:
+        examples = parse_examples()
+    return [validation_case_from_example(item, latest_runs.get(str(item.get("id") or ""))) for item in examples]
+
+
+def normalize_validation_case_payload(payload: dict, existing: dict | None = None) -> dict:
+    current = existing or {}
+    review_content = (
+        payload.get("reviewContent")
+        if "reviewContent" in payload
+        else current.get("reviewContent") or current.get("draft") or ""
+    )
+    api_doc_ids = payload.get("apiDocIds") if "apiDocIds" in payload else current.get("apiNames")
+    expected = (
+        payload.get("expectedConclusion")
+        if "expectedConclusion" in payload
+        else current.get("expected")
+    )
+    tags = _string_list(payload.get("tags") if "tags" in payload else current.get("tags"))
+    kind = str(current.get("kind") or "").strip()
+    if not kind and tags:
+        kind = tags[0]
+    normalized = normalize_example(
+        {
+            "id": current.get("id"),
+            "title": payload.get("caseName") if "caseName" in payload else current.get("title"),
+            "kind": kind,
+            "factorName": payload.get("factorName") if "factorName" in payload else current.get("factorName"),
+            "apiNames": api_doc_ids,
+            "requirement": payload.get("requirement") if "requirement" in payload else current.get("requirement"),
+            "paramFields": current.get("paramFields") or "",
+            "procLogic": current.get("procLogic") or "",
+            "draft": review_content,
+            "expected": validation_expected_code(expected),
+            "expectedIssuePatterns": (
+                payload.get("expectedIssuePatterns")
+                if "expectedIssuePatterns" in payload
+                else current.get("expectedIssuePatterns")
+            ),
+            "forbiddenIssuePatterns": (
+                payload.get("forbiddenIssuePatterns")
+                if "forbiddenIssuePatterns" in payload
+                else current.get("forbiddenIssuePatterns")
+            ),
+            "maxIssueCount": (
+                payload.get("maxIssueCount")
+                if "maxIssueCount" in payload
+                else current.get("maxIssueCount")
+            ),
+        },
+        existing_id=str(current.get("id")) if current.get("id") else None,
+    )
+    normalized.update({
+        "businessRuleIds": _string_list(
+            payload.get("businessRuleIds")
+            if "businessRuleIds" in payload
+            else current.get("businessRuleIds")
+        ),
+        "tags": tags,
+        "remark": str(payload.get("remark") if "remark" in payload else current.get("remark") or "").strip(),
+        "expectedIssuePatterns": _string_list(
+            payload.get("expectedIssuePatterns")
+            if "expectedIssuePatterns" in payload
+            else current.get("expectedIssuePatterns")
+        ),
+        "forbiddenIssuePatterns": _string_list(
+            payload.get("forbiddenIssuePatterns")
+            if "forbiddenIssuePatterns" in payload
+            else current.get("forbiddenIssuePatterns")
+        ),
+        "maxIssueCount": _optional_nonnegative_int(
+            payload.get("maxIssueCount")
+            if "maxIssueCount" in payload
+            else current.get("maxIssueCount")
+        ),
+        "createdAt": current.get("createdAt") or int(time.time()),
+    })
+    return normalized
+
+
+def validate_validation_case(example: dict) -> list[str]:
+    return validate_example(example)
+
+
+def import_validation_rows(file_name: str, rows: list[list]) -> dict:
+    if not rows:
+        return {"fileName": file_name, "totalRows": 0, "success": 0, "failed": 0, "items": [], "errors": [], "columns": []}
+    columns = [str(cell or "").strip() for cell in rows[0]]
+    aliases = {
+        "caseName": ["案例名称", "案例名", "caseName", "title"],
+        "factorName": ["因子名称", "因子名", "factorName"],
+        "requirement": ["需求内容", "需求", "requirement"],
+        "reviewContent": ["待评审内容", "准出内容", "reviewContent", "draft"],
+        "expectedConclusion": ["期望结论", "expectedConclusion", "expected"],
+        "apiDocIds": ["接口文档", "关联接口文档", "apiDocIds", "apiNames"],
+        "businessRuleIds": ["业务规则ID", "业务规则 ID", "businessRuleIds"],
+        "tags": ["标签", "tags"],
+        "remark": ["备注", "remark"],
+        "expectedIssuePatterns": ["期望问题关键词", "expectedIssuePatterns"],
+        "forbiddenIssuePatterns": ["禁止问题关键词", "forbiddenIssuePatterns"],
+        "maxIssueCount": ["最大问题数", "maxIssueCount"],
+        "paramFields": ["因子加工输入字段", "paramFields"],
+        "procLogic": ["加工逻辑", "procLogic"],
+        "defaultValues": ["默认值", "defaultValues"],
+    }
+    index_map = {}
+    for key, names in aliases.items():
+        index = next((columns.index(name) for name in names if name in columns), None)
+        if index is not None:
+            index_map[key] = index
+
+    items = []
+    errors = []
+    with EXAMPLES_LOCK:
+        examples = parse_examples()
+        for row_number, row in enumerate(rows[1:], start=2):
+            values = {
+                key: str(row[index] or "").strip() if index < len(row) else ""
+                for key, index in index_map.items()
+            }
+            if not any(values.values()):
+                continue
+            review_content = values.get("reviewContent") or ""
+            if not review_content and (values.get("paramFields") or values.get("procLogic")):
+                parts = []
+                if values.get("paramFields"):
+                    parts.append(f"【因子加工输入字段】\n{values['paramFields']}")
+                if values.get("procLogic"):
+                    parts.append(f"【加工逻辑】\n{values['procLogic']}")
+                parts.append("【默认值】\n字段缺失、格式错误或数据异常时返回默认值")
+                review_content = "\n\n".join(parts)
+            example = normalize_validation_case_payload({
+                "caseName": values.get("caseName") or values.get("factorName"),
+                "factorName": values.get("factorName"),
+                "requirement": values.get("requirement"),
+                "reviewContent": review_content,
+                "expectedConclusion": values.get("expectedConclusion"),
+                "apiDocIds": _string_list(values.get("apiDocIds")),
+                "businessRuleIds": _string_list(values.get("businessRuleIds")),
+                "tags": _string_list(values.get("tags")),
+                "remark": values.get("remark"),
+                "expectedIssuePatterns": _string_list(values.get("expectedIssuePatterns")),
+                "forbiddenIssuePatterns": _string_list(values.get("forbiddenIssuePatterns")),
+                "maxIssueCount": _optional_nonnegative_int(values.get("maxIssueCount")),
+            })
+            validation_errors = validate_validation_case(example)
+            if validation_errors:
+                errors.append({
+                    "rowNumber": row_number,
+                    "caseName": values.get("caseName"),
+                    "factorName": values.get("factorName"),
+                    "error": "；".join(validation_errors),
+                })
+                continue
+            examples.append(example)
+            items.append(validation_case_from_example(example))
+        if items:
+            save_examples(examples)
+    return {
+        "fileName": file_name,
+        "totalRows": max(0, len(rows) - 1),
+        "success": len(items),
+        "failed": len(errors),
+        "items": items,
+        "errors": errors,
+        "columns": columns,
     }
 
 
@@ -435,7 +780,30 @@ def task_debug_log(task_id: str, stream: str, message: str):
 
 def task_cancel_requested(task_id: str) -> bool:
     with TASK_LOCK:
-        return bool((TASKS.get(task_id) or {}).get("cancel_requested"))
+        current_id = task_id
+        visited = set()
+        while current_id and current_id not in visited:
+            visited.add(current_id)
+            task = TASKS.get(current_id) or {}
+            if task.get("cancel_requested"):
+                return True
+            current_id = str(task.get("parentTaskId") or "")
+        return False
+
+
+def mark_task_cancelled(task_id: str, message: str):
+    with TASK_LOCK:
+        task = TASKS.get(task_id)
+        if not task:
+            return
+        task["cancel_requested"] = True
+        task["status"] = "cancelled"
+        task["result"] = task.get("result") or {
+            "stdout": "",
+            "stderr": message,
+            "returncode": 130,
+        }
+        task["updated"] = time.time()
 
 
 def terminate_task_process(task_id: str):
@@ -465,13 +833,23 @@ def terminate_task_process(task_id: str):
 def request_task_cancel(task_id: str) -> bool:
     with TASK_LOCK:
         task = TASKS.get(task_id)
-        if not task:
+        child_ids = {tid for tid in TASKS if tid == task_id or tid.startswith(f"{task_id}-")}
+        changed = True
+        while changed:
+            changed = False
+            for tid, candidate in TASKS.items():
+                if tid in child_ids:
+                    continue
+                if candidate.get("parentTaskId") in child_ids:
+                    child_ids.add(tid)
+                    changed = True
+        if not task and not child_ids:
             return False
-        task["cancel_requested"] = True
-        if task.get("status") in ("queued", "running"):
-            task["status"] = "cancelling"
-        task["updated"] = time.time()
-        child_ids = [tid for tid in TASKS if tid == task_id or tid.startswith(f"{task_id}-")]
+        if task:
+            task["cancel_requested"] = True
+            if task.get("status") in ("queued", "running"):
+                task["status"] = "cancelling"
+            task["updated"] = time.time()
         for child_id in child_ids:
             TASKS[child_id]["cancel_requested"] = True
             if TASKS[child_id].get("status") in ("queued", "running"):
@@ -481,7 +859,7 @@ def request_task_cancel(task_id: str) -> bool:
     cancelled_pool_jobs = GLOBAL_TASK_POOL.cancel_group(task_id)
     with TASK_LOCK:
         task = TASKS.get(task_id)
-        if queued_single_cancelled:
+        if task and queued_single_cancelled:
             task["status"] = "cancelled"
             task["result"] = task.get("result") or {
                 "stdout": "",
@@ -490,10 +868,12 @@ def request_task_cancel(task_id: str) -> bool:
             }
     for child_id in child_ids:
         terminate_task_process(child_id)
-    task_log(
-        task_id,
-        f"已请求停止任务：取消 {len(cancelled_pool_jobs) + int(queued_single_cancelled)} 个排队作业，并中止正在执行的 Claude 调用",
-    )
+    cancel_validation_runs_for_task(task_id)
+    if task:
+        task_log(
+            task_id,
+            f"已请求停止任务：取消 {len(cancelled_pool_jobs) + int(queued_single_cancelled)} 个排队作业，并中止正在执行的 Claude 调用",
+        )
     return True
 
 
@@ -564,6 +944,8 @@ def system_health() -> dict:
         PHASE1_SKILL_PATH,
         PHASE2_SKILL_PATH,
         CORE_RULES_PROMPT_PATH,
+        PHASE1_CORE_RULES_PROMPT_PATH,
+        PHASE2_CORE_RULES_PROMPT_PATH,
         RULE_ENGINE_BUILD_PATH,
         RULE_ENGINE_PHASE1_OUTPUT_PATH,
         RULE_ENGINE_PHASE2_OUTPUT_PATH,
@@ -658,8 +1040,94 @@ def build_prompt_phase2(payload: dict, review_feedback: str = "") -> str:
     )
 
 
-def run_claude_prompt(task_id: str, phase_label: str, prompt: str) -> tuple[str, dict]:
+def claude_failure_stderr(stdout: str, stderr: str, returncode: int | None) -> str:
+    """Recover explicit CLI/gateway errors that Claude sometimes writes to stdout."""
+    normalized_stderr = (stderr or "").strip()
+    if normalized_stderr:
+        return normalized_stderr
+    if returncode in (None, 0):
+        return ""
+    for line in (stdout or "").splitlines():
+        candidate = line.strip()
+        if re.match(r"^(?:API Error|Error|错误)\s*[:：]", candidate, flags=re.IGNORECASE):
+            return candidate
+    return f"Claude Code 执行失败（退出码 {returncode}）"
+
+
+def create_phase1_isolated_workspace(task_id: str, payload: dict) -> Path:
+    workspace = Path(tempfile.mkdtemp(prefix=f"risk-review-phase1-{task_id[:8]}-"))
+    try:
+        allowed_sources = [PHASE1_SKILL_PATH, BUSINESS_RULES_PATH]
+        for identifier in payload.get("apiNames") or []:
+            doc = get_api_doc(str(identifier))
+            if doc is None:
+                continue
+            source_path = (ROOT / str(doc.get("path") or "")).resolve()
+            try:
+                source_path.relative_to(ROOT.resolve())
+            except ValueError as exc:
+                raise ValueError(f"接口文档路径越界：{identifier}") from exc
+            allowed_sources.append(source_path)
+
+        staged_files = []
+        for source_path in allowed_sources:
+            source_path = source_path.resolve()
+            if not source_path.is_file():
+                continue
+            relative_path = source_path.relative_to(ROOT.resolve())
+            target_path = workspace / relative_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+            staged_files.append(relative_path.as_posix())
+
+        task_log(
+            task_id,
+            "Phase 1 隔离工作目录已创建，仅包含：" + "、".join(staged_files),
+        )
+        return workspace
+    except Exception:
+        shutil.rmtree(workspace, ignore_errors=True)
+        raise
+
+
+def isolated_read_tool_rules(workspace: Path) -> str:
+    pattern = f"{workspace.resolve().as_posix()}/**"
+    return ",".join([
+        f"Read({pattern})",
+        f"Glob({pattern})",
+        f"Grep({pattern})",
+    ])
+
+
+def run_claude_prompt(
+    task_id: str,
+    phase_label: str,
+    prompt: str,
+    *,
+    isolated_workspace: Path | None = None,
+) -> tuple[str, dict]:
     cmd = [*claude_cmd("-p --output-format text")]
+    command_cwd = ROOT
+    if isolated_workspace is not None:
+        command_cwd = isolated_workspace.resolve()
+        cmd.extend([
+            "--safe-mode",
+            "--disable-slash-commands",
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "--tools",
+            "Read,Glob,Grep",
+            "--allowedTools",
+            isolated_read_tool_rules(command_cwd),
+            "--permission-mode",
+            "dontAsk",
+            "--no-session-persistence",
+        ])
+        task_log(
+            task_id,
+            f"{phase_label} 文件隔离已启用：仅允许在隔离目录内使用 Read/Glob/Grep",
+        )
     task_log(task_id, f"调用 Claude Code（{phase_label}）：{' '.join(cmd)} < stdin")
     task_log(task_id, f"Prompt 字符数：{len(prompt)}")
     with TASK_LOCK:
@@ -673,9 +1141,15 @@ def run_claude_prompt(task_id: str, phase_label: str, prompt: str) -> tuple[str,
     elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     try:
+        if task_cancel_requested(task_id):
+            return "cancelled", {
+                "stdout": "",
+                "stderr": f"{phase_label} 已取消。",
+                "returncode": 130,
+            }
         proc = subprocess.Popen(
             cmd,
-            cwd=str(ROOT),
+            cwd=str(command_cwd),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -684,6 +1158,8 @@ def run_claude_prompt(task_id: str, phase_label: str, prompt: str) -> tuple[str,
         )
         with RUNNING_PROCS_LOCK:
             RUNNING_PROCS[task_id] = proc
+        if task_cancel_requested(task_id):
+            terminate_task_process(task_id)
         try:
             stdout, stderr = proc.communicate(input=prompt, timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
@@ -706,10 +1182,11 @@ def run_claude_prompt(task_id: str, phase_label: str, prompt: str) -> tuple[str,
         if debug_enabled:
             task_debug_log(task_id, "stdout", stdout or "")
             task_debug_log(task_id, "stderr", stderr or "")
+        normalized_stderr = claude_failure_stderr(stdout or "", stderr or "", proc.returncode)
         return ("done" if proc.returncode == 0 else "error"), {
             "returncode": proc.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
+            "stdout": stdout or "",
+            "stderr": normalized_stderr,
         }
     except subprocess.TimeoutExpired:
         task_log(task_id, "Claude Code 调用超时")
@@ -855,13 +1332,25 @@ def prepare_phase2_context(payload: dict) -> dict:
     }
 
 
-def run_reviewer(task_id: str, phase_label: str, original_input: str, candidate_output: str) -> dict | None:
+def run_reviewer(
+    task_id: str,
+    phase_label: str,
+    original_input: str,
+    candidate_output: str,
+    *,
+    isolated_workspace: Path | None = None,
+) -> dict | None:
     prompt = build_reviewer_prompt(
         phase_label=phase_label,
         original_input=original_input,
         candidate_output=candidate_output,
     )
-    status, result = run_claude_prompt(task_id, f"{phase_label} Reviewer", prompt)
+    status, result = run_claude_prompt(
+        task_id,
+        f"{phase_label} Reviewer",
+        prompt,
+        isolated_workspace=isolated_workspace,
+    )
     if status != "done":
         task_log(task_id, f"{phase_label} Reviewer 调用失败：{result.get('stderr') or status}")
         return None
@@ -882,6 +1371,7 @@ def run_generation_with_reviewer(
     original_input,
     use_mock: bool = False,
     skip_reviewer: bool = False,
+    isolated_workspace: Path | None = None,
 ) -> tuple[str, dict, str, dict | None]:
     raw_output = ""
     last_review = None
@@ -889,7 +1379,12 @@ def run_generation_with_reviewer(
         return "cancelled", {"stdout": "", "stderr": f"{phase_label} 已取消。", "returncode": 130}, raw_output, last_review
 
     task_log(task_id, f"{phase_label} 生成第 1 轮")
-    status, result = run_claude_prompt(task_id, f"{phase_label} round 1", build_prompt(""))
+    status, result = run_claude_prompt(
+        task_id,
+        f"{phase_label} round 1",
+        build_prompt(""),
+        isolated_workspace=isolated_workspace,
+    )
     if status != "done":
         return status, result, raw_output, last_review
 
@@ -900,16 +1395,31 @@ def run_generation_with_reviewer(
 
     if reviewer_enabled(use_mock=use_mock, skip_reviewer=skip_reviewer):
         task_log(task_id, f"{phase_label} Reviewer 审核第 1 次")
-        last_review = run_reviewer(task_id, phase_label, original_input(), raw_output)
+        last_review = run_reviewer(
+            task_id,
+            phase_label,
+            original_input(),
+            raw_output,
+            isolated_workspace=isolated_workspace,
+        )
         if not reviewer_passed(last_review):
             task_log(task_id, f"{phase_label} Reviewer 未通过；按单次审核策略，不再重试生成，使用当前结果")
     elif skip_reviewer:
         task_log(task_id, f"{phase_label} Reviewer 已按本次运行开关跳过")
+    if task_cancel_requested(task_id):
+        return "cancelled", {
+            "stdout": raw_output,
+            "stderr": f"{phase_label} 已取消。",
+            "returncode": 130,
+        }, raw_output, last_review
     return status, result, raw_output, last_review
 
 
 def run_claude_phase1(payload: dict, task_id: str):
     """Run Phase 1: generate standard spec only."""
+    if task_cancel_requested(task_id):
+        mark_task_cancelled(task_id, "Phase 1 启动前已取消。")
+        return
     with TASK_LOCK:
         TASKS[task_id]["status"] = "running"
         TASKS[task_id]["updated"] = time.time()
@@ -921,6 +1431,9 @@ def run_claude_phase1(payload: dict, task_id: str):
     if not payload.get("forceRefresh"):
         cached = find_cached_phase1_standard(checksum, allow_mock=use_mock)
         if cached:
+            if task_cancel_requested(task_id):
+                mark_task_cancelled(task_id, "Phase 1 已取消。")
+                return
             task_log(task_id, f"Phase 1 命中缓存：{cached['standardFileId']}")
             with TASK_LOCK:
                 TASKS[task_id]["status"] = "done"
@@ -939,6 +1452,9 @@ def run_claude_phase1(payload: dict, task_id: str):
     if use_mock:
         task_log(task_id, "使用 Mock 模式（Phase 1）")
         time.sleep(0.3)
+        if task_cancel_requested(task_id):
+            mark_task_cancelled(task_id, "Phase 1 Mock 已取消。")
+            return
         factor_name = (payload.get("factorName") or "mockFactor").strip()
         slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
         output_name = f"standard-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
@@ -1067,15 +1583,21 @@ input_summary:
         task_log(task_id, f"Phase 1 Mock 完成：{output_name}")
         return
 
-    status, result, raw_output, last_review = run_generation_with_reviewer(
-        task_id=task_id,
-        phase_label="Phase 1",
-        empty_error="Claude 未输出 Phase 1 标准加工规范正文",
-        build_prompt=lambda review_feedback: build_prompt_phase1(payload, review_feedback=review_feedback),
-        original_input=lambda: phase1_original_input(payload),
-        use_mock=False,
-        skip_reviewer=skip_reviewer,
-    )
+    isolated_workspace = create_phase1_isolated_workspace(task_id, payload)
+    try:
+        status, result, raw_output, last_review = run_generation_with_reviewer(
+            task_id=task_id,
+            phase_label="Phase 1",
+            empty_error="Claude 未输出 Phase 1 标准加工规范正文",
+            build_prompt=lambda review_feedback: build_prompt_phase1(payload, review_feedback=review_feedback),
+            original_input=lambda: phase1_original_input(payload),
+            use_mock=False,
+            skip_reviewer=skip_reviewer,
+            isolated_workspace=isolated_workspace,
+        )
+    finally:
+        shutil.rmtree(isolated_workspace, ignore_errors=True)
+        task_log(task_id, "Phase 1 隔离工作目录已清理")
 
     if status == "done":
         if not raw_output:
@@ -1137,6 +1659,9 @@ input_summary:
 
 def run_claude_phase2(payload: dict, task_id: str):
     """Run Phase 2: generate review report using existing standard."""
+    if task_cancel_requested(task_id):
+        mark_task_cancelled(task_id, "Phase 2 启动前已取消。")
+        return
     with TASK_LOCK:
         TASKS[task_id]["status"] = "running"
         TASKS[task_id]["updated"] = time.time()
@@ -1161,6 +1686,9 @@ def run_claude_phase2(payload: dict, task_id: str):
     if use_mock:
         task_log(task_id, "使用 Mock 模式（Phase 2）")
         time.sleep(0.3)
+        if task_cancel_requested(task_id):
+            mark_task_cancelled(task_id, "Phase 2 Mock 已取消。")
+            return
         factor_name = (payload.get("factorName") or "mockFactor").strip()
         slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
         output_name = f"review-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
@@ -1303,6 +1831,29 @@ def collect_review_stats(text: str) -> dict:
     }
 
 
+def evaluate_issue_expectations(example: dict, report: str) -> dict:
+    expected_patterns = _string_list(example.get("expectedIssuePatterns"))
+    forbidden_patterns = _string_list(example.get("forbiddenIssuePatterns"))
+    max_issue_count = _optional_nonnegative_int(example.get("maxIssueCount"))
+    source = str(report or "").casefold()
+    missing_patterns = [pattern for pattern in expected_patterns if pattern.casefold() not in source]
+    forbidden_hits = [pattern for pattern in forbidden_patterns if pattern.casefold() in source]
+    stats = collect_review_stats(report)
+    issue_count = sum(int(stats.get(key) or 0) for key in ("fail", "pending", "suggest"))
+    count_matched = max_issue_count is None or issue_count <= max_issue_count
+    configured = bool(expected_patterns or forbidden_patterns or max_issue_count is not None)
+    return {
+        "configured": configured,
+        "matched": not missing_patterns and not forbidden_hits and count_matched,
+        "expectedIssuePatterns": expected_patterns,
+        "forbiddenIssuePatterns": forbidden_patterns,
+        "missingIssuePatterns": missing_patterns,
+        "forbiddenIssueHits": forbidden_hits,
+        "maxIssueCount": max_issue_count,
+        "actualIssueCount": issue_count,
+    }
+
+
 def expected_matches_verdict(example: dict, verdict: str) -> bool:
     expected = str(example.get("expected") or "")
     if not expected.strip():
@@ -1310,11 +1861,13 @@ def expected_matches_verdict(example: dict, verdict: str) -> bool:
     allowed = set()
     if re.search(r"不通过|不符合|失败|fail", expected, re.I):
         allowed.add("fail")
-    if re.search(r"建议|修改|warn", expected, re.I):
+    if re.search(r"建议|修改|warn|suggest", expected, re.I):
         allowed.add("warn")
         allowed.add("pass")
+    if re.search(r"待确认|confirm", expected, re.I):
+        allowed.add("idle")
     positive_expected = re.sub(r"不通过|不符合|失败|fail", "", expected, flags=re.I)
-    positive_expected = re.sub(r"建议修改后通过|建议|修改|warn", "", positive_expected, flags=re.I)
+    positive_expected = re.sub(r"建议修改后通过|建议|修改|warn|suggest(?:ion)?", "", positive_expected, flags=re.I)
     if re.search(r"通过|符合|pass", positive_expected, re.I) or re.search(r"✅\s*(通过|符合)", expected):
         allowed.add("pass")
     if allowed:
@@ -1322,11 +1875,56 @@ def expected_matches_verdict(example: dict, verdict: str) -> bool:
     return True
 
 
+def validation_run_for_example(
+    task_id: str,
+    example: dict,
+    *,
+    run_id: str | None = None,
+    status: str = "pending",
+) -> dict:
+    return {
+        "groupId": task_id,
+        "taskId": task_id,
+        "runId": run_id or f"validation-{task_output_token(task_id)}-{uuid.uuid4().hex[:8]}",
+        "caseId": str(example.get("id") or ""),
+        "caseName": str(example.get("title") or example.get("id") or ""),
+        "status": status,
+        "expectedConclusion": validation_expected_code(example.get("expected")),
+        "expectedIssuePatterns": _string_list(example.get("expectedIssuePatterns")),
+        "forbiddenIssuePatterns": _string_list(example.get("forbiddenIssuePatterns")),
+        "maxIssueCount": _optional_nonnegative_int(example.get("maxIssueCount")),
+        "actualConclusion": None,
+        "conclusionMatched": None,
+        "issuesMatched": None,
+        "matched": None,
+        "standardFile": None,
+        "standardJsonFile": None,
+        "reviewFile": None,
+        "reviewJsonFile": None,
+        "startedAt": _iso_time(),
+        "finishedAt": None,
+        "error": None,
+    }
+
+
+def prepare_validation_runs(task_id: str, examples: list[dict]) -> dict[str, str]:
+    run_ids = {}
+    for example in examples:
+        run = validation_run_for_example(task_id, example)
+        upsert_validation_run(run)
+        run_ids[str(example.get("id") or "")] = run["runId"]
+    return run_ids
+
+
 def run_regression_validation(payload: dict, task_id: str):
     requested_ids = set(str(x) for x in (payload.get("exampleIds") or []) if str(x).strip())
     examples = parse_examples()
     if requested_ids:
         examples = [item for item in examples if item.get("id") in requested_ids]
+    if task_cancel_requested(task_id):
+        mark_task_cancelled(task_id, "回归验证启动前已取消。")
+        cancel_validation_runs_for_task(task_id)
+        return
     with TASK_LOCK:
         TASKS[task_id]["status"] = "running"
         TASKS[task_id]["updated"] = time.time()
@@ -1351,6 +1949,11 @@ def run_regression_validation(payload: dict, task_id: str):
             "standardFileId": None,
             "cacheHit": False,
         }
+        run_id = str((payload.get("_validationRunIds") or {}).get(str(example.get("id") or "")) or "")
+        run = validation_run_for_example(task_id, example, run_id=run_id or None, status="running")
+        run_id = run["runId"]
+        item["runId"] = run_id
+        upsert_validation_run(run)
         items.append(item)
         with TASK_LOCK:
             TASKS[task_id]["result"] = {"items": items, "summary": summarize_regression_items(items, total=len(examples)), "stdout": "", "stderr": "", "returncode": 0}
@@ -1370,6 +1973,12 @@ def run_regression_validation(payload: dict, task_id: str):
                 item["standardSummaryFileId"] = phase1_result.get("standardSummaryFileId")
                 item["standardText"] = phase1_result.get("stdout") or ""
                 item["cacheHit"] = bool(phase1_result.get("cacheHit"))
+                upsert_validation_run({
+                    "runId": run_id,
+                    "status": "running",
+                    "standardFile": phase1_result.get("standardFileId"),
+                    "standardJsonFile": phase1_result.get("standardSummaryFileId"),
+                })
                 with TASK_LOCK:
                     TASKS[task_id]["result"] = {"items": items, "summary": summarize_regression_items(items, total=len(examples)), "stdout": "", "stderr": "", "returncode": 0}
                     TASKS[task_id]["outputs"] = list_outputs()
@@ -1386,16 +1995,28 @@ def run_regression_validation(payload: dict, task_id: str):
             )
             if pipeline.get("stopped"):
                 item.update({"status": "skip", "raw": "已请求停止，Phase 1 完成后未继续执行 Phase 2", "time": int(time.time() * 1000)})
+                upsert_validation_run({
+                    "runId": run_id,
+                    "status": "cancelled",
+                    "finishedAt": _iso_time(),
+                    "error": "验证任务已终止",
+                })
                 task_log(task_id, f"停止：{example.get('title') or example.get('id')} Phase 1 后停止")
                 break
             report = pipeline.get("raw") or ""
             review_file_id = pipeline.get("reviewFileId")
             verdict = detect_verdict_text(report)
-            expected_ok = expected_matches_verdict(example, verdict)
+            conclusion_matched = expected_matches_verdict(example, verdict)
+            issue_evaluation = evaluate_issue_expectations(example, report)
+            issues_matched = issue_evaluation["matched"]
+            expected_ok = conclusion_matched and issues_matched
             item.update({
                 "status": "pass" if expected_ok else "fail",
                 "verdict": verdict,
                 "expectedOk": expected_ok,
+                "conclusionMatched": conclusion_matched,
+                "issuesMatched": issues_matched,
+                "issueEvaluation": issue_evaluation,
                 "expected": example.get("expected") or "",
                 "summary": collect_review_stats(report),
                 "raw": report,
@@ -1403,19 +2024,55 @@ def run_regression_validation(payload: dict, task_id: str):
                 "reportPreview": report[:600],
                 "time": int(time.time() * 1000),
             })
+            upsert_validation_run({
+                "runId": run_id,
+                "status": "success",
+                "actualConclusion": "suggestion" if verdict == "warn" else "confirm" if verdict == "idle" else verdict,
+                "conclusionMatched": conclusion_matched,
+                "issuesMatched": issues_matched,
+                "issueEvaluation": issue_evaluation,
+                "matched": expected_ok,
+                "standardFile": item.get("standardFileId"),
+                "standardJsonFile": item.get("standardSummaryFileId"),
+                "reviewFile": review_file_id,
+                "finishedAt": _iso_time(),
+                "error": None,
+            })
             task_log(task_id, f"验证完成：{example.get('title') or example.get('id')}（{'通过' if expected_ok else '未通过'}）")
         except Exception as exc:
             if task_cancel_requested(task_id):
                 item.update({"status": "skip", "raw": "已停止：当前 Claude 调用已中止", "reportPreview": "已停止：当前 Claude 调用已中止", "time": int(time.time() * 1000)})
+                upsert_validation_run({
+                    "runId": run_id,
+                    "status": "cancelled",
+                    "finishedAt": _iso_time(),
+                    "error": "验证任务已终止",
+                })
                 task_log(task_id, f"验证停止：{example.get('title') or example.get('id')}")
             else:
                 item.update({"status": "error", "raw": str(exc), "reportPreview": str(exc), "time": int(time.time() * 1000)})
+                upsert_validation_run({
+                    "runId": run_id,
+                    "status": "failed",
+                    "finishedAt": _iso_time(),
+                    "error": str(exc),
+                })
                 task_log(task_id, f"验证失败：{example.get('title') or example.get('id')}：{exc}")
         with TASK_LOCK:
             TASKS[task_id]["result"] = {"items": items, "summary": summarize_regression_items(items, total=len(examples)), "stdout": "", "stderr": "", "returncode": 0}
             TASKS[task_id]["outputs"] = list_outputs()
             TASKS[task_id]["updated"] = time.time()
     final_status = "cancelled" if task_cancel_requested(task_id) else "done"
+    processed_case_ids = {str(item.get("id") or "") for item in items}
+    for case_id, pending_run_id in (payload.get("_validationRunIds") or {}).items():
+        if case_id in processed_case_ids:
+            continue
+        upsert_validation_run({
+            "runId": pending_run_id,
+            "status": "cancelled" if final_status == "cancelled" else "failed",
+            "finishedAt": _iso_time(),
+            "error": "验证任务已终止" if final_status == "cancelled" else "验证案例未执行",
+        })
     with TASK_LOCK:
         TASKS[task_id]["status"] = final_status
         TASKS[task_id]["result"] = {"items": items, "summary": summarize_regression_items(items, total=len(examples)), "stdout": "", "stderr": "", "returncode": 0}
@@ -1450,14 +2107,23 @@ def create_task_record(
     group_concurrency: int | None = None,
 ):
     with TASK_LOCK:
+        parent_cancelled = bool(
+            parent_task_id
+            and (TASKS.get(parent_task_id) or {}).get("cancel_requested")
+        )
         TASKS[task_id] = {
             "id": task_id,
             "taskType": task_type,
             "parentTaskId": parent_task_id,
             "clientId": client_id,
             "groupConcurrency": group_concurrency,
-            "status": "queued",
-            "result": None,
+            "status": "cancelled" if parent_cancelled else "queued",
+            "cancel_requested": parent_cancelled,
+            "result": ({
+                "stdout": "",
+                "stderr": "父任务已取消，子任务不再启动。",
+                "returncode": 130,
+            } if parent_cancelled else None),
             "outputs": [],
             "logs": [],
             "debugLogs": [],
@@ -1467,6 +2133,37 @@ def create_task_record(
         }
     if len(TASKS) % 16 == 0:
         gc_tasks()
+
+
+def submit_regression_task(payload: dict, examples: list[dict]) -> tuple[str, dict, dict[str, str]]:
+    task_id = str(uuid.uuid4())
+    create_task_record(
+        task_id,
+        task_type="regression",
+        client_id=str(payload.get("clientId") or ""),
+        group_concurrency=1,
+    )
+    run_ids = prepare_validation_runs(task_id, examples)
+    task_payload = dict(payload)
+    task_payload["exampleIds"] = [str(item.get("id") or "") for item in examples]
+    task_payload["_validationRunIds"] = run_ids
+    with TASK_LOCK:
+        TASKS[task_id]["caseIds"] = list(run_ids.keys())
+        TASKS[task_id]["result"] = {
+            "items": [],
+            "summary": {"total": len(examples), "pass": 0, "fail": 0, "error": 0, "skip": 0, "running": 0},
+        }
+    GLOBAL_TASK_POOL.submit(
+        task_id,
+        task_id,
+        run_regression_validation,
+        task_payload,
+        task_id,
+        group_limit=1,
+    )
+    with TASK_LOCK:
+        task = decorate_task(TASKS[task_id])
+    return task_id, task, run_ids
 
 
 def run_review_pipeline(
@@ -1487,7 +2184,13 @@ def run_review_pipeline(
 
     suffix = f"-{child_suffix}" if child_suffix else ""
     phase1_task_id = f"{parent_task_id}-{index}-p1{suffix}"
-    create_task_record(phase1_task_id, debug_claude=bool(phase1_payload.get("debugClaude")))
+    if should_stop and should_stop():
+        return {"stopped": True, "phase1": {}, "raw": "任务已取消，未启动 Phase 1"}
+    create_task_record(
+        phase1_task_id,
+        debug_claude=bool(phase1_payload.get("debugClaude")),
+        parent_task_id=parent_task_id,
+    )
     run_claude_phase1(phase1_payload, phase1_task_id)
     phase1_task = TASKS.get(phase1_task_id, {})
     if phase1_task.get("status") != "done":
@@ -1510,7 +2213,17 @@ def run_review_pipeline(
         "mock": mock,
     }
     phase2_task_id = f"{parent_task_id}-{index}-p2{suffix}"
-    create_task_record(phase2_task_id, debug_claude=bool(phase2_payload.get("debugClaude")))
+    if should_stop and should_stop():
+        return {
+            "stopped": True,
+            "phase1": phase1_result,
+            "raw": "已请求停止，未启动 Phase 2",
+        }
+    create_task_record(
+        phase2_task_id,
+        debug_claude=bool(phase2_payload.get("debugClaude")),
+        parent_task_id=parent_task_id,
+    )
     run_claude_phase2(phase2_payload, phase2_task_id)
     phase2_task = TASKS.get(phase2_task_id, {})
     if phase2_task.get("status") != "done":
@@ -1660,6 +2373,7 @@ def get_scheduled_task_service():
             run_review_pair=run_review_pair,
             run_phase1=run_scheduled_phase1,
             run_phase2=run_scheduled_phase2,
+            cancel_execution=request_task_cancel,
             log=lambda message: print(f"[scheduled-tasks] {message}", flush=True),
         )
     return SCHEDULED_TASK_SERVICE
@@ -1741,6 +2455,32 @@ class Handler(BaseHTTPRequestHandler):
             json_response(self, 200, {"api": doc})
         elif path == "/api/outputs":
             json_response(self, 200, {"outputs": list_outputs()})
+        elif path == "/api/validation-cases":
+            success_response(self, validation_cases())
+        elif path.startswith("/api/validation-cases/"):
+            case_id = unquote(path.split("/")[-1])
+            latest_runs = latest_validation_runs_by_case()
+            with EXAMPLES_LOCK:
+                example = next((item for item in parse_examples() if item.get("id") == case_id), None)
+            if not example:
+                error_response(self, 404, "验证案例不存在")
+                return
+            success_response(self, validation_case_from_example(example, latest_runs.get(case_id)))
+        elif path == "/api/validation-runs":
+            case_id = (parse_qs(parsed.query).get("caseId") or [""])[0]
+            with VALIDATION_RUNS_LOCK:
+                runs = parse_validation_runs()
+            if case_id:
+                runs = [item for item in runs if item.get("caseId") == case_id]
+            runs.sort(key=lambda item: item.get("finishedAt") or item.get("startedAt") or "", reverse=True)
+            success_response(self, runs)
+        elif path.startswith("/api/validation-runs/"):
+            run_id = unquote(path.split("/")[-1])
+            run = get_validation_run(run_id)
+            if not run:
+                error_response(self, 404, "验证运行记录不存在")
+                return
+            success_response(self, run)
         elif path == "/api/examples":
             json_response(self, 200, {"examples": parse_examples()})
         elif path == "/api/business-rules":
@@ -1864,6 +2604,110 @@ class Handler(BaseHTTPRequestHandler):
                     rows = parse_csv_rows(raw.decode("gb18030"))
             json_response(self, 200, {"rows": rows, "items": normalize_batch_rows_from_table(rows), "name": name})
             return
+        if parsed.path == "/api/validation-cases":
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+                return
+            with EXAMPLES_LOCK:
+                examples = parse_examples()
+                example = normalize_validation_case_payload(payload)
+                errors = validate_validation_case(example)
+                if errors:
+                    error_response(self, 400, "；".join(errors), errors)
+                    return
+                examples.append(example)
+                save_examples(examples)
+            success_response(self, validation_case_from_example(example), status=201)
+            return
+        if parsed.path == "/api/validation-cases/import":
+            try:
+                payload = self.read_json_body()
+                file_name = str(payload.get("name") or "validation-cases.csv")
+                encoded = str(payload.get("data") or "")
+                if not encoded:
+                    raise ValueError("导入文件内容为空")
+                raw = base64.b64decode(encoded)
+                if file_name.lower().endswith((".xlsx", ".xls")):
+                    rows = parse_xlsx(raw)
+                else:
+                    try:
+                        rows = parse_csv_rows(raw.decode("utf-8-sig"))
+                    except UnicodeDecodeError:
+                        rows = parse_csv_rows(raw.decode("gb18030"))
+                success_response(self, import_validation_rows(file_name, rows))
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+            except (ValueError, TypeError, binascii.Error) as exc:
+                error_response(self, 400, str(exc))
+            return
+        if parsed.path == "/api/validation-cases/batch-delete":
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+                return
+            case_ids = [str(item) for item in payload.get("caseIds") or [] if str(item).strip()]
+            selected = set(case_ids)
+            with EXAMPLES_LOCK:
+                examples = parse_examples()
+                existing_ids = {str(item.get("id") or "") for item in examples}
+                save_examples([item for item in examples if str(item.get("id") or "") not in selected])
+            items = [
+                {"id": case_id, "success": case_id in existing_ids, **({} if case_id in existing_ids else {"error": "验证案例不存在"})}
+                for case_id in case_ids
+            ]
+            success_response(self, {
+                "total": len(items),
+                "success": len([item for item in items if item["success"]]),
+                "failed": len([item for item in items if not item["success"]]),
+                "items": items,
+            })
+            return
+        if parsed.path == "/api/validation-cases/batch-run":
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+                return
+            selected = {str(item) for item in payload.get("caseIds") or [] if str(item).strip()}
+            with EXAMPLES_LOCK:
+                examples = [item for item in parse_examples() if str(item.get("id") or "") in selected]
+            if not examples:
+                error_response(self, 400, "没有可验证的案例")
+                return
+            task_id, _task, run_ids = submit_regression_task(payload, examples)
+            items = []
+            for example in examples:
+                case_id = str(example.get("id") or "")
+                items.append({
+                    "id": case_id,
+                    "success": True,
+                    "run": get_validation_run(run_ids[case_id]),
+                })
+            success_response(self, {
+                "groupId": task_id,
+                "total": len(items),
+                "success": len(items),
+                "failed": 0,
+                "confirm": 0,
+                "mismatched": 0,
+                "items": items,
+            }, status=202)
+            return
+        if parsed.path.startswith("/api/validation-cases/") and parsed.path.endswith("/run"):
+            case_id = unquote(parsed.path.split("/")[-2])
+            with EXAMPLES_LOCK:
+                example = next((item for item in parse_examples() if item.get("id") == case_id), None)
+            if not example:
+                error_response(self, 404, "验证案例不存在")
+                return
+            payload = {"exampleIds": [case_id]}
+            task_id, _task, run_ids = submit_regression_task(payload, [example])
+            run = get_validation_run(run_ids[case_id]) or validation_run_for_example(task_id, example)
+            success_response(self, run, status=202)
+            return
         if parsed.path == "/api/examples":
             try:
                 payload = self.read_json_body()
@@ -1940,25 +2784,7 @@ class Handler(BaseHTTPRequestHandler):
             if not examples:
                 json_response(self, 400, {"error": "没有可验证的用例。"})
                 return
-            task_id = str(uuid.uuid4())
-            create_task_record(
-                task_id,
-                task_type="regression",
-                client_id=str(payload.get("clientId") or ""),
-                group_concurrency=1,
-            )
-            with TASK_LOCK:
-                TASKS[task_id]["result"] = {"items": [], "summary": {}}
-            GLOBAL_TASK_POOL.submit(
-                task_id,
-                task_id,
-                run_regression_validation,
-                payload,
-                task_id,
-                group_limit=1,
-            )
-            with TASK_LOCK:
-                task = decorate_task(TASKS[task_id])
+            task_id, task, _run_ids = submit_regression_task(payload, examples)
             json_response(self, 202, {"taskId": task_id, "task": task})
             return
         if parsed.path.startswith("/api/tasks/") and parsed.path.endswith("/cancel"):
@@ -2033,6 +2859,29 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/validation-cases/"):
+            case_id = unquote(parsed.path.split("/")[-1])
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+                return
+            with EXAMPLES_LOCK:
+                examples = parse_examples()
+                for index, item in enumerate(examples):
+                    if item.get("id") != case_id:
+                        continue
+                    updated = normalize_validation_case_payload(payload, item)
+                    errors = validate_validation_case(updated)
+                    if errors:
+                        error_response(self, 400, "；".join(errors), errors)
+                        return
+                    examples[index] = updated
+                    save_examples(examples)
+                    success_response(self, validation_case_from_example(updated, latest_validation_runs_by_case().get(case_id)))
+                    return
+            error_response(self, 404, "验证案例不存在")
+            return
         if parsed.path.startswith("/api/scheduled-tasks/"):
             task_id = unquote(parsed.path.split("/")[-1])
             try:
@@ -2096,6 +2945,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/validation-cases/"):
+            case_id = unquote(parsed.path.split("/")[-1])
+            with EXAMPLES_LOCK:
+                examples = parse_examples()
+                filtered = [item for item in examples if item.get("id") != case_id]
+                if len(filtered) == len(examples):
+                    error_response(self, 404, "验证案例不存在")
+                    return
+                save_examples(filtered)
+            success_response(self, None)
+            return
         if parsed.path.startswith("/api/scheduled-tasks/"):
             task_id = unquote(parsed.path.split("/")[-1])
             try:
@@ -2160,6 +3020,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    recover_stale_validation_runs()
     scheduled_service = get_scheduled_task_service()
     scheduled_service.start_scheduler()
     port = int(os.environ.get("PORT", "8765"))

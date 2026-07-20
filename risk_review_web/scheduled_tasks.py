@@ -28,6 +28,7 @@ RunItemExecutor = Callable[[JsonDict, JsonDict, str, int], JsonDict]
 Phase1Executor = Callable[[JsonDict, str], JsonDict]
 Phase2Executor = Callable[[JsonDict, str], JsonDict]
 LogFn = Callable[[str], None]
+CancelExecutionFn = Callable[[str], bool]
 
 IMPORT_FIELDS = [
     "factorName",
@@ -589,13 +590,16 @@ class ScheduledTaskService:
         store: ScheduledTaskStore,
         dependencies: SchedulerDependencies,
         log: LogFn | None = None,
+        cancel_execution: CancelExecutionFn | None = None,
     ) -> None:
         self.store = store
         self.dependencies = dependencies
         self.log = log or (lambda _message: None)
+        self.cancel_execution = cancel_execution
         self.execution_lock = threading.RLock()
         self.running_task_ids: set[str] = set()
         self.run_futures: dict[str, list[Future]] = {}
+        self.cancelled_run_ids: set[str] = set()
         self.scheduler_thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self._recover_interrupted_runs()
@@ -759,7 +763,12 @@ class ScheduledTaskService:
         run = self.get_run(run_id)
         if run.get("status") not in {"pending", "running"}:
             return run
+        with self.execution_lock:
+            self.cancelled_run_ids.add(run_id)
+        self._update_run(run_id, {"status": "running", "error": "正在终止执行"})
         GLOBAL_TASK_POOL.cancel_group(run_id)
+        if self.cancel_execution:
+            self.cancel_execution(run_id)
         return self.get_run(run_id)
 
     def run_task_now(self, task_id: str, *, trigger: str = "manual") -> JsonDict:
@@ -892,7 +901,9 @@ class ScheduledTaskService:
                 finalized = True
                 run_items = [value for value in ordered_results if value is not None]
             status, success, failed, unknown = summarize_run_status(run_items)
-            if run_items and all(value.get("status") == "cancelled" for value in run_items):
+            with self.execution_lock:
+                run_was_cancelled = run_id in self.cancelled_run_ids
+            if run_was_cancelled:
                 status = "cancelled"
             finished_at = _iso_now()
             task_patch: JsonDict = {
@@ -924,6 +935,7 @@ class ScheduledTaskService:
             with self.execution_lock:
                 self.running_task_ids.discard(task_id)
                 self.run_futures.pop(run_id, None)
+                self.cancelled_run_ids.discard(run_id)
 
         started_at = _iso_now()
         run["startedAt"] = started_at
@@ -990,8 +1002,37 @@ class ScheduledTaskService:
         task_standard_file: str,
     ) -> JsonDict:
         try:
-            return self._execute_single_item(task, item, run_id, index, task_standard_file=task_standard_file)
+            with self.execution_lock:
+                cancelled = run_id in self.cancelled_run_ids
+            if cancelled:
+                raise CancelledError()
+            result = self._execute_single_item(task, item, run_id, index, task_standard_file=task_standard_file)
+            with self.execution_lock:
+                cancelled = run_id in self.cancelled_run_ids
+            if cancelled:
+                raise CancelledError()
+            return result
+        except CancelledError:
+            return {
+                "index": index + 1,
+                "factorName": item.get("factorName") or f"row-{index + 1}",
+                "status": "cancelled",
+                "standardFile": item.get("standardFile") or task_standard_file,
+                "reviewFile": "",
+                "error": "任务已终止",
+            }
         except Exception as exc:
+            with self.execution_lock:
+                cancelled = run_id in self.cancelled_run_ids
+            if cancelled:
+                return {
+                    "index": index + 1,
+                    "factorName": item.get("factorName") or f"row-{index + 1}",
+                    "status": "cancelled",
+                    "standardFile": item.get("standardFile") or task_standard_file,
+                    "reviewFile": "",
+                    "error": "任务已终止",
+                }
             self.log(f"scheduled task item failed: runId={run_id} index={index + 1} factor={item.get('factorName') or ''} error={exc}")
             return {
                 "index": index + 1,
@@ -1168,6 +1209,7 @@ def build_service(
     run_phase1: Phase1Executor,
     run_phase2: Phase2Executor,
     log: LogFn | None = None,
+    cancel_execution: CancelExecutionFn | None = None,
 ) -> ScheduledTaskService:
     return ScheduledTaskService(
         store=ScheduledTaskStore(),
@@ -1177,4 +1219,5 @@ def build_service(
             run_phase2=run_phase2,
         ),
         log=log,
+        cancel_execution=cancel_execution,
     )

@@ -33,6 +33,7 @@ export interface TaskRecord<T = unknown> {
   id?: string
   status?: string
   result?: T
+  caseIds?: string[]
   outputs?: OutputArtifact[]
   logs?: TaskLog[]
   debugLogs?: TaskLog[]
@@ -327,6 +328,9 @@ export interface ExampleItem {
   defaultValues?: string
   draft?: string
   expected?: string
+  expectedIssuePatterns?: string[]
+  forbiddenIssuePatterns?: string[]
+  maxIssueCount?: number | null
   version?: string
   updatedAt?: number
 }
@@ -340,6 +344,9 @@ export interface ValidationCase {
   requirement: string
   reviewContent?: string
   expectedConclusion?: ExpectedConclusion
+  expectedIssuePatterns?: string[]
+  forbiddenIssuePatterns?: string[]
+  maxIssueCount?: number | null
   apiDocIds?: string[]
   businessRuleIds?: string[]
   tags?: string[]
@@ -359,6 +366,9 @@ export interface CreateValidationCaseRequest {
   requirement: string
   reviewContent: string
   expectedConclusion?: ExpectedConclusion
+  expectedIssuePatterns?: string[]
+  forbiddenIssuePatterns?: string[]
+  maxIssueCount?: number | null
   apiDocIds?: string[]
   businessRuleIds?: string[]
   tags?: string[]
@@ -392,7 +402,20 @@ export interface ValidationRun {
   caseName?: string
   status: 'pending' | 'running' | 'success' | 'failed' | 'partial_success' | string
   expectedConclusion?: string
+  expectedIssuePatterns?: string[]
+  forbiddenIssuePatterns?: string[]
+  maxIssueCount?: number | null
   actualConclusion?: string
+  conclusionMatched?: boolean
+  issuesMatched?: boolean
+  issueEvaluation?: {
+    configured?: boolean
+    matched?: boolean
+    missingIssuePatterns?: string[]
+    forbiddenIssueHits?: string[]
+    actualIssueCount?: number
+    maxIssueCount?: number | null
+  }
   matched?: boolean
   standardFile?: string
   standardJsonFile?: string
@@ -427,6 +450,51 @@ export interface BatchValidationRun {
     error?: string
     run?: ValidationRun
   }>
+}
+
+export interface RegressionTaskItem {
+  index?: number
+  id?: string
+  title?: string
+  factorName?: string
+  status?: string
+  verdict?: string
+  expectedOk?: boolean
+  conclusionMatched?: boolean
+  issuesMatched?: boolean
+  issueEvaluation?: ValidationRun['issueEvaluation']
+  expected?: string
+  raw?: string
+  standardText?: string
+  standardFileId?: string | null
+  standardSummaryFileId?: string | null
+  reviewFileId?: string | null
+  cacheHit?: boolean
+  reportPreview?: string
+  time?: number
+  summary?: {
+    fail?: number
+    pending?: number
+    suggest?: number
+  }
+}
+
+export interface RegressionTaskResult {
+  items?: RegressionTaskItem[]
+  summary?: {
+    total?: number
+    pass?: number
+    fail?: number
+    error?: number
+    skip?: number
+    cacheHit?: number
+    running?: number
+    currentIndex?: number | null
+    currentTitle?: string
+  }
+  stdout?: string
+  stderr?: string
+  returncode?: number
 }
 
 export interface BatchRow {

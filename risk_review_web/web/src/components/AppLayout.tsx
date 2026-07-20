@@ -137,6 +137,22 @@ export function AppLayout(props: AppLayoutProps) {
               <span>服务状态</span>
               <Badge status={claudeReady ? 'success' : 'warning'} text={claudeReady ? '就绪' : '待检查'} />
             </div>
+            <div className="sider-status-divider" />
+            <div
+              className="sider-status-row"
+              title="所有登录位置共享当前 Python 进程内的全局执行池"
+            >
+              <span>全局池</span>
+              <strong className="sider-status-value">
+                {pool ? `${pool.activeWorkers}/${pool.maxWorkers}` : '--/--'}
+              </strong>
+            </div>
+            <div className="sider-status-row">
+              <span>排队</span>
+              <Tag color={pool?.queuedJobs ? 'processing' : 'default'}>
+                {pool?.queuedJobs ?? '--'}
+              </Tag>
+            </div>
           </Space>
         </div>
       </Layout.Sider>
@@ -156,11 +172,6 @@ export function AppLayout(props: AppLayoutProps) {
             </div>
           </div>
           {headerActions ? <div className="app-header-actions">{headerActions}</div> : null}
-          <div className="global-pool-summary" title="所有登录位置共享当前 Python 进程内的全局执行池">
-            <span>全局池</span>
-            <strong>{pool ? `${pool.activeWorkers}/${pool.maxWorkers}` : '--/--'}</strong>
-            <Tag color={pool?.queuedJobs ? 'processing' : 'default'}>排队 {pool?.queuedJobs ?? '--'}</Tag>
-          </div>
         </Layout.Header>
         <Layout.Content className="app-content">
           <HeaderActionsContext.Provider value={setSlotHeaderActions}>

@@ -21,20 +21,6 @@ body {
   line-height: 1.45;
 }
 
-.global-pool-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  color: #5a6678;
-  white-space: nowrap;
-}
-
-.global-pool-summary strong {
-  color: #172338;
-  font-variant-numeric: tabular-nums;
-}
-
 .legacy-workbench-card,
 .legacy-workbench-card .ant-card-body {
   min-height: calc(100dvh - 205px);
@@ -318,6 +304,23 @@ textarea.ant-input {
   font-size: 12px;
 }
 
+.sider-status-divider {
+  height: 1px;
+  background: rgba(220, 236, 248, 0.12);
+}
+
+.sider-status-value {
+  color: #f7fbff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sider-status .ant-tag {
+  min-width: 32px;
+  margin: 0;
+  text-align: center;
+}
+
 .app-main {
   margin-left: var(--sider-width);
   min-width: 0;
@@ -352,7 +355,7 @@ textarea.ant-input {
 
 .app-header-actions {
   flex: 0 0 auto;
-  margin-left: auto;
+  margin-left: 12px;
 }
 
 .app-header-action-space {
@@ -960,7 +963,7 @@ textarea.ant-input {
 
 .result-artifact-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   width: 100%;
 }
@@ -1405,7 +1408,23 @@ textarea.ant-input {
   }
 
   .sider-status {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 8px 10px;
+  }
+
+  .sider-status > .ant-space {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px !important;
+  }
+
+  .sider-status-divider {
     display: none;
+  }
+
+  .sider-status-row {
+    justify-content: flex-start;
   }
 
   .app-nav.ant-menu-dark {
@@ -1484,7 +1503,7 @@ textarea.ant-input {
 
   .app-header-action-space {
     width: 100%;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .page-header,
@@ -1581,6 +1600,10 @@ textarea.ant-input {
 
   .app-nav.ant-menu-dark {
     width: 100%;
+  }
+
+  .sider-status > .ant-space {
+    grid-template-columns: 1fr 1fr;
   }
 
   .app-header {

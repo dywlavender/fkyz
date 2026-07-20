@@ -15,6 +15,21 @@ const CONCLUSION_LABELS: Record<string, string> = {
   suggestion: 'suggestion',
 }
 
+interface TaskFailureSource {
+  stderr?: string
+  stdout?: string
+}
+
+export function taskFailureMessage(result: TaskFailureSource | null | undefined, fallback: string): string {
+  const stderr = String(result?.stderr || '').trim()
+  if (stderr) return stderr
+  const explicitError = String(result?.stdout || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /^(?:API Error|Error|错误)\s*[:：]/i.test(line))
+  return explicitError || fallback
+}
+
 export function mapVerdictToConclusion(value?: string): string {
   if (!value) return 'confirm'
   const normalized = String(value).trim().toLowerCase()

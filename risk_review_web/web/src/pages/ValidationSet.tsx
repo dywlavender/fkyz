@@ -1,4 +1,4 @@
-import { CopyOutlined, DeleteOutlined, EditOutlined, EyeOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
+import { CopyOutlined, DeleteOutlined, EditOutlined, EyeOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, StopOutlined, UploadOutlined } from '@ant-design/icons'
 import {
   Alert,
   Button,
@@ -9,7 +9,9 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   Modal,
+  Progress,
   Row,
   Select,
   Space,
@@ -25,24 +27,29 @@ import { useEffect, useMemo, useState } from 'react'
 
 import {
   batchDeleteValidationCases,
-  batchRunValidationCases,
+  cancelTask,
   createValidationCase,
   deleteValidationCase,
   fetchValidationCases,
   fetchValidationRuns,
+  fetchArtifactContent,
+  fetchTask,
+  fetchTasks,
+  getClientId,
   importValidationCases,
-  runValidationCase,
   updateValidationCase,
   AppError,
-  pollTask,
   runRegression,
 } from '../api/reviewApi'
 import { HeaderActions } from '../components/AppLayout'
+import { MarkdownViewer } from '../components/MarkdownViewer'
 import type {
   AppNotice,
-  BatchValidationRun,
   CreateValidationCaseRequest,
   ExampleItem,
+  RegressionTaskItem,
+  RegressionTaskResult,
+  TaskRecord,
   ValidationCase,
   ValidationCaseImportResult,
   ValidationRun,
@@ -58,6 +65,8 @@ type CaseFormValues = CreateValidationCaseRequest & {
   apiDocIdsText?: string
   businessRuleIdsText?: string
   tagsText?: string
+  expectedIssuePatternsText?: string
+  forbiddenIssuePatternsText?: string
 }
 
 function formatDate(value?: string) {
@@ -95,6 +104,42 @@ function CompactDateStat({ title, value }: { title: string; value?: string }) {
 }
 
 const ALL_VALUE = '__all__'
+const REGRESSION_TASK_STORAGE_KEY = 'risk-review-validation-regression-task-id'
+const TERMINAL_TASK_STATUSES = new Set(['done', 'error', 'cancelled'])
+type RegressionDocumentType = 'review' | 'standard'
+
+function isTerminalTask(task?: TaskRecord) {
+  return TERMINAL_TASK_STATUSES.has(String(task?.status || '').toLowerCase())
+}
+
+function taskStatusLabel(value?: string) {
+  const labels: Record<string, string> = {
+    queued: '排队中',
+    running: '执行中',
+    cancelling: '取消中',
+    cancelled: '已取消',
+    done: '已完成',
+    error: '执行失败',
+  }
+  return labels[String(value || '').toLowerCase()] || value || '未知'
+}
+
+function taskStatusColor(value?: string) {
+  const status = String(value || '').toLowerCase()
+  if (status === 'done') return 'success'
+  if (status === 'error' || status === 'cancelled') return 'error'
+  if (status === 'queued' || status === 'running' || status === 'cancelling') return 'processing'
+  return 'default'
+}
+
+function regressionItemStatusColor(value?: string) {
+  const status = String(value || '').toLowerCase()
+  if (status === 'pass') return 'success'
+  if (status === 'fail' || status === 'error') return 'error'
+  if (status === 'running') return 'processing'
+  if (status === 'skip') return 'default'
+  return 'default'
+}
 
 function normalizeConclusion(value?: string) {
   const source = String(value || 'confirm').trim()
@@ -138,6 +183,7 @@ function isTerminalRun(run?: ValidationRun) {
 
 function runMatched(run?: ValidationRun) {
   if (!run || !isTerminalRun(run)) return undefined
+  if (typeof run.matched === 'boolean') return run.matched
   if (run.status === 'success' && run.actualConclusion) {
     return conclusionIncludes(run.expectedConclusion, run.actualConclusion)
   }
@@ -182,28 +228,57 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
   const [editorOpen, setEditorOpen] = useState(false)
   const [resultOpen, setResultOpen] = useState(false)
   const [activeRun, setActiveRun] = useState<ValidationRun | null>(null)
-  const [batchResult, setBatchResult] = useState<BatchValidationRun | null>(null)
+  const [activeRunDocument, setActiveRunDocument] = useState<RegressionDocumentType>('review')
+  const [regressionTaskId, setRegressionTaskId] = useState<string>()
+  const [regressionTask, setRegressionTask] = useState<TaskRecord<RegressionTaskResult> | null>(null)
+  const [regressionRecovering, setRegressionRecovering] = useState(false)
+  const [regressionCancelling, setRegressionCancelling] = useState(false)
+  const [activeRegressionItem, setActiveRegressionItem] = useState<RegressionTaskItem | null>(null)
+  const [activeRegressionDocument, setActiveRegressionDocument] = useState<RegressionDocumentType>('review')
+  const [regressionContentCache, setRegressionContentCache] = useState<Record<string, string>>({})
+  const [loadingRegressionFile, setLoadingRegressionFile] = useState<string>()
   const [query, setQuery] = useState('')
   const [conclusionFilter, setConclusionFilter] = useState(ALL_VALUE)
   const [matchFilter, setMatchFilter] = useState(ALL_VALUE)
-  const [examplesBackend, setExamplesBackend] = useState(false)
 
-  function casesFromExamples(): ValidationCase[] {
-    return examples.map((item) => ({
-      caseId: item.id,
-      caseName: item.title || item.id,
-      factorName: item.factorName || '',
-      requirement: item.requirement || '',
-      reviewContent: item.reviewContent || item.draft || item.procLogic || '',
-      expectedConclusion: item.expected,
-      apiDocIds: item.apiNames || [],
-      tags: item.kind ? [item.kind] : [],
-      updatedAt: item.updatedAt ? new Date(item.updatedAt * 1000).toISOString() : undefined,
-    }))
-  }
+  const activeRegressionFileId = activeRegressionDocument === 'review'
+    ? activeRegressionItem?.reviewFileId
+    : activeRegressionItem?.standardFileId
+  const activeRegressionInlineContent = activeRegressionDocument === 'review'
+    ? activeRegressionItem?.raw || activeRegressionItem?.reportPreview
+    : activeRegressionItem?.standardText
+  const activeRegressionContent = activeRegressionInlineContent
+    || (activeRegressionFileId ? regressionContentCache[activeRegressionFileId] : '')
+  const activeRunFileId = activeRunDocument === 'review' ? activeRun?.reviewFile : activeRun?.standardFile
+  const activeRunContent = activeRunFileId ? regressionContentCache[activeRunFileId] : ''
 
-  function openOriginalValidationWorkbench() {
-    window.open('/legacy/', '_blank', 'noopener,noreferrer')
+  useEffect(() => {
+    if (!activeRegressionItem || activeRegressionInlineContent || !activeRegressionFileId || regressionContentCache[activeRegressionFileId]) return
+    setLoadingRegressionFile(activeRegressionFileId)
+    fetchArtifactContent(activeRegressionFileId)
+      .then((content) => setRegressionContentCache((current) => ({ ...current, [activeRegressionFileId]: content })))
+      .catch((caught) => {
+        const message = caught instanceof Error ? caught.message : '读取产物失败'
+        onNotice({ type: 'error', message })
+      })
+      .finally(() => setLoadingRegressionFile((current) => (current === activeRegressionFileId ? undefined : current)))
+  }, [activeRegressionFileId, activeRegressionInlineContent, activeRegressionItem, onNotice, regressionContentCache])
+
+  useEffect(() => {
+    if (!resultOpen || !activeRunFileId || regressionContentCache[activeRunFileId]) return
+    setLoadingRegressionFile(activeRunFileId)
+    fetchArtifactContent(activeRunFileId)
+      .then((content) => setRegressionContentCache((current) => ({ ...current, [activeRunFileId]: content })))
+      .catch((caught) => {
+        const message = caught instanceof Error ? caught.message : '读取产物失败'
+        onNotice({ type: 'error', message })
+      })
+      .finally(() => setLoadingRegressionFile((current) => (current === activeRunFileId ? undefined : current)))
+  }, [activeRunFileId, onNotice, regressionContentCache, resultOpen])
+
+  function openRegressionResult(item: RegressionTaskItem) {
+    setActiveRegressionDocument('review')
+    setActiveRegressionItem(item)
   }
 
   async function loadAll() {
@@ -217,12 +292,6 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
       setCases(nextCases)
       setRuns(nextRuns)
     } catch (caught) {
-      if (caught instanceof AppError && [404, 410].includes(caught.status || 0)) {
-        setExamplesBackend(true)
-        setCases(casesFromExamples())
-        setRuns([])
-        return
-      }
       const message = caught instanceof Error ? caught.message : '加载验证集失败'
       setLoadError(message)
       onNotice({ type: 'error', message })
@@ -234,6 +303,91 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
   useEffect(() => {
     void loadAll()
   }, [])
+
+  useEffect(() => {
+    let disposed = false
+
+    async function restoreRegressionTask() {
+      setRegressionRecovering(true)
+      try {
+        let task: TaskRecord<RegressionTaskResult> | undefined
+        const storedTaskId = window.localStorage.getItem(REGRESSION_TASK_STORAGE_KEY) || ''
+        if (storedTaskId) {
+          try {
+            task = await fetchTask(storedTaskId) as TaskRecord<RegressionTaskResult>
+          } catch (caught) {
+            if (!(caught instanceof AppError) || caught.status !== 404) throw caught
+            window.localStorage.removeItem(REGRESSION_TASK_STORAGE_KEY)
+          }
+        }
+
+        if (!task) {
+          const clientId = getClientId()
+          task = (await fetchTasks())
+            .filter((item) => item.taskType === 'regression' && item.clientId === clientId)
+            .sort((left, right) => (right.created || 0) - (left.created || 0))[0] as TaskRecord<RegressionTaskResult> | undefined
+        }
+
+        if (disposed || !task?.id) return
+        window.localStorage.setItem(REGRESSION_TASK_STORAGE_KEY, task.id)
+        setRegressionTaskId(task.id)
+        setRegressionTask(task)
+        setRunningIds(isTerminalTask(task) ? [] : task.caseIds || [])
+        if (isTerminalTask(task)) setRegressionCancelling(false)
+      } catch (caught) {
+        if (disposed) return
+        const message = caught instanceof Error ? caught.message : '恢复验证任务失败'
+        setLoadError(message)
+      } finally {
+        if (!disposed) setRegressionRecovering(false)
+      }
+    }
+
+    void restoreRegressionTask()
+    return () => {
+      disposed = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!regressionTaskId) return
+    const activeTaskId = regressionTaskId
+    let disposed = false
+    let timer: number | undefined
+
+    async function refreshRegressionTask() {
+      try {
+        const task = await fetchTask(activeTaskId) as TaskRecord<RegressionTaskResult>
+        if (disposed) return
+        setRegressionTask(task)
+        setRunningIds(isTerminalTask(task) ? [] : task.caseIds || [])
+        if (!isTerminalTask(task)) {
+          timer = window.setTimeout(refreshRegressionTask, 1200)
+        } else {
+          setRegressionCancelling(false)
+          const nextRuns = await fetchValidationRuns()
+          if (!disposed) setRuns(nextRuns)
+        }
+      } catch (caught) {
+        if (disposed) return
+        if (caught instanceof AppError && caught.status === 404) {
+          window.localStorage.removeItem(REGRESSION_TASK_STORAGE_KEY)
+          setRegressionTaskId(undefined)
+          setRegressionTask(null)
+          setRunningIds([])
+          setRegressionCancelling(false)
+          return
+        }
+        setLoadError(caught instanceof Error ? caught.message : '验证任务轮询失败')
+      }
+    }
+
+    void refreshRegressionTask()
+    return () => {
+      disposed = true
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [regressionTaskId])
 
   const latestRunByCase = useMemo(() => {
     const map = new Map<string, ValidationRun>()
@@ -248,16 +402,26 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
     return map
   }, [runs])
 
+  const regressionActive = Boolean(regressionTask && !isTerminalTask(regressionTask))
+  const regressionItems = regressionTask?.result?.items || []
+  const regressionSummary = regressionTask?.result?.summary
+  const regressionTotal = regressionSummary?.total ?? regressionTask?.caseIds?.length ?? regressionItems.length
+  const regressionCompleted = (regressionSummary?.pass || 0)
+    + (regressionSummary?.fail || 0)
+    + (regressionSummary?.error || 0)
+    + (regressionSummary?.skip || 0)
+  const regressionProgress = regressionTotal ? Math.min(100, Math.round((regressionCompleted / regressionTotal) * 100)) : 0
+
   const stats = useMemo(() => {
     const latest = cases.map((item) => latestRunByCase.get(item.caseId)).filter(Boolean) as ValidationRun[]
     const completed = latest.filter(isTerminalRun)
     const matched = completed.filter((run) => runMatched(run) === true).length
     return {
       total: cases.length,
-      passed: latest.filter((run) => normalizeConclusion(run.actualConclusion) === 'pass').length,
-      failed: latest.filter((run) => normalizeConclusion(run.actualConclusion) === 'fail').length,
-      confirm: latest.filter((run) => normalizeConclusion(run.actualConclusion) === 'confirm').length,
-      suggestion: latest.filter((run) => normalizeConclusion(run.actualConclusion) === 'suggestion').length,
+      passed: completed.filter((run) => normalizeConclusion(run.actualConclusion) === 'pass').length,
+      failed: completed.filter((run) => normalizeConclusion(run.actualConclusion) === 'fail').length,
+      confirm: completed.filter((run) => normalizeConclusion(run.actualConclusion) === 'confirm').length,
+      suggestion: completed.filter((run) => normalizeConclusion(run.actualConclusion) === 'suggestion').length,
       agreementRate: completed.length ? Math.round((matched / completed.length) * 1000) / 10 : null,
       recent: latest
         .map((run) => run.finishedAt || run.startedAt || '')
@@ -291,10 +455,6 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
   }, [cases, conclusionFilter, latestRunByCase, matchFilter, query])
 
   function openCreator() {
-    if (examplesBackend) {
-      openOriginalValidationWorkbench()
-      return
-    }
     setEditingCase(null)
     form.resetFields()
     form.setFieldsValue({ expectedConclusion: 'confirm' })
@@ -302,10 +462,6 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
   }
 
   function openEditor(record: ValidationCase) {
-    if (examplesBackend) {
-      openOriginalValidationWorkbench()
-      return
-    }
     setEditingCase(record)
     form.setFieldsValue({
       caseName: record.caseName,
@@ -313,6 +469,9 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
       requirement: record.requirement,
       reviewContent: record.reviewContent || '',
       expectedConclusion: normalizeConclusion(record.expectedConclusion),
+      expectedIssuePatternsText: joinValues(record.expectedIssuePatterns),
+      forbiddenIssuePatternsText: joinValues(record.forbiddenIssuePatterns),
+      maxIssueCount: record.maxIssueCount,
       apiDocIdsText: joinValues(record.apiDocIds),
       businessRuleIdsText: joinValues(record.businessRuleIds),
       tagsText: joinValues(record.tags),
@@ -330,6 +489,9 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
         requirement: values.requirement,
         reviewContent: values.reviewContent,
         expectedConclusion: normalizeConclusion(values.expectedConclusion),
+        expectedIssuePatterns: splitText(values.expectedIssuePatternsText),
+        forbiddenIssuePatterns: splitText(values.forbiddenIssuePatternsText),
+        maxIssueCount: values.maxIssueCount,
         apiDocIds: splitText(values.apiDocIdsText),
         businessRuleIds: splitText(values.businessRuleIdsText),
         tags: splitText(values.tagsText),
@@ -351,10 +513,6 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
   }
 
   async function handleImportCases(file: File) {
-    if (examplesBackend) {
-      openOriginalValidationWorkbench()
-      return false
-    }
     setImporting(true)
     try {
       const result = await importValidationCases(file)
@@ -374,10 +532,6 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
   }
 
   function confirmDelete(record: ValidationCase) {
-    if (examplesBackend) {
-      openOriginalValidationWorkbench()
-      return
-    }
     Modal.confirm({
       title: '确认删除验证案例？',
       content: `将删除「${record.caseName}」，历史运行记录会保留。`,
@@ -398,32 +552,30 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
   }
 
   async function executeOne(record: ValidationCase) {
+    if (regressionActive) {
+      onNotice({ type: 'info', message: '已有验证任务正在执行，请等待当前任务结束' })
+      return
+    }
     setRunningIds((ids) => [...ids, record.caseId])
+    let regressionSubmitted = false
     try {
-      if (examplesBackend) {
-        const response = await runRegression({ exampleIds: [record.caseId], skipReviewer: true, skipStageValidation: true })
-        await pollTask(response.taskId)
-        onNotice({ type: 'success', message: '验证案例执行完成，可在原有功能台查看详细结果' })
-        return
-      }
-      const run = await runValidationCase(record.caseId)
-      setActiveRun(run)
-      setResultOpen(true)
-      onNotice({ type: 'success', message: '验证任务已进入全局队列' })
-      await loadAll()
+      const response = await runRegression({ exampleIds: [record.caseId], skipReviewer: true, skipStageValidation: true })
+      regressionSubmitted = true
+      window.localStorage.setItem(REGRESSION_TASK_STORAGE_KEY, response.taskId)
+      setRegressionTaskId(response.taskId)
+      setRegressionTask(response.task as TaskRecord<RegressionTaskResult>)
+      onNotice({ type: 'success', message: '验证任务已提交，切换页面后仍可返回查看进度' })
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : '验证执行失败'
       onNotice({ type: 'error', message })
     } finally {
-      setRunningIds((ids) => ids.filter((id) => id !== record.caseId))
+      if (!regressionSubmitted) {
+        setRunningIds((ids) => ids.filter((id) => id !== record.caseId))
+      }
     }
   }
 
   function confirmBatchDelete() {
-    if (examplesBackend) {
-      openOriginalValidationWorkbench()
-      return
-    }
     Modal.confirm({
       title: '确认批量删除验证案例？',
       content: `将删除已选 ${selectedRowKeys.length} 条案例，历史运行记录会保留。`,
@@ -446,31 +598,70 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
 
   async function executeBatch() {
     const ids = selectedRowKeys.map(String)
+    if (regressionActive) {
+      onNotice({ type: 'info', message: '已有验证任务正在执行，请等待当前任务结束' })
+      return
+    }
     setRunningIds(ids)
+    let regressionSubmitted = false
     try {
-      if (examplesBackend) {
-        const response = await runRegression({ exampleIds: ids, skipReviewer: true, skipStageValidation: true })
-        await pollTask(response.taskId)
-        onNotice({ type: 'success', message: `已完成 ${ids.length} 条回归验证，可在原有功能台查看详细结果` })
-        return
-      }
-      const result = await batchRunValidationCases(ids)
-      setBatchResult(result)
-      onNotice({
-        type: result.failed ? 'warning' : 'success',
-        message: `批量验证已提交：入队 ${result.success}，失败 ${result.failed}`,
-      })
-      await loadAll()
+      const response = await runRegression({ exampleIds: ids, skipReviewer: true, skipStageValidation: true })
+      regressionSubmitted = true
+      window.localStorage.setItem(REGRESSION_TASK_STORAGE_KEY, response.taskId)
+      setRegressionTaskId(response.taskId)
+      setRegressionTask(response.task as TaskRecord<RegressionTaskResult>)
+      onNotice({ type: 'success', message: `已提交 ${ids.length} 条回归验证，切换页面后仍可返回查看进度` })
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : '批量执行失败'
       onNotice({ type: 'error', message })
     } finally {
-      setRunningIds([])
+      if (!regressionSubmitted) setRunningIds([])
     }
+  }
+
+  async function refreshRegressionSnapshot() {
+    if (!regressionTaskId) return
+    setRegressionRecovering(true)
+    try {
+      const task = await fetchTask(regressionTaskId) as TaskRecord<RegressionTaskResult>
+      setRegressionTask(task)
+      setRunningIds(isTerminalTask(task) ? [] : task.caseIds || [])
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : '刷新验证任务失败'
+      onNotice({ type: 'error', message })
+    } finally {
+      setRegressionRecovering(false)
+    }
+  }
+
+  function terminateRegression() {
+    if (!regressionTaskId || !regressionActive || regressionCancelling) return
+    Modal.confirm({
+      title: '确认终止本次回归验证？',
+      content: '排队中的案例会被取消，正在运行的 Claude 调用会被终止，已完成结果仍会保留。',
+      okText: '终止执行',
+      okButtonProps: { danger: true },
+      cancelText: '继续执行',
+      onOk: async () => {
+        setRegressionCancelling(true)
+        try {
+          const task = await cancelTask(regressionTaskId) as TaskRecord<RegressionTaskResult>
+          setRegressionTask(task)
+          setRunningIds(isTerminalTask(task) ? [] : task.caseIds || [])
+          if (isTerminalTask(task)) setRegressionCancelling(false)
+          onNotice({ type: 'warning', message: '已请求终止回归验证，正在停止运行中的调用' })
+        } catch (caught) {
+          setRegressionCancelling(false)
+          onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '终止回归验证失败' })
+          throw caught
+        }
+      },
+    })
   }
 
   function openRunResult(run?: ValidationRun) {
     if (!run) return
+    setActiveRunDocument('review')
     setActiveRun(run)
     setResultOpen(true)
   }
@@ -492,6 +683,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
       render: (_value, record) => {
         const run = latestRunByCase.get(record.caseId)
         if (!run) return <Tag>未执行</Tag>
+        if (!isTerminalRun(run)) return <Tag color="processing">执行中</Tag>
         return <Tag color={conclusionColor(run.actualConclusion)}>{conclusionLabel(run.actualConclusion)}</Tag>
       },
     },
@@ -519,7 +711,13 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
         return (
           <Space wrap onClick={(event) => event.stopPropagation()}>
             <Button type="link" icon={<CopyOutlined />} onClick={() => onCopyToSingle(record)}>复制到单因子</Button>
-            <Button type="link" icon={<PlayCircleOutlined />} loading={runningIds.includes(record.caseId)} onClick={() => executeOne(record)}>
+            <Button
+              type="link"
+              icon={<PlayCircleOutlined />}
+              disabled={regressionActive && !runningIds.includes(record.caseId)}
+              loading={runningIds.includes(record.caseId)}
+              onClick={() => executeOne(record)}
+            >
               执行验证
             </Button>
             <Button type="link" icon={<EyeOutlined />} disabled={!latestRun} onClick={() => openRunResult(latestRun)}>
@@ -556,14 +754,105 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
         <Col xs={24} sm={12} xl={4}><Card className="compact-card"><CompactDateStat title="最近执行时间" value={stats.recent} /></Card></Col>
       </Row>
 
-      {examplesBackend ? (
-        <Alert
-          showIcon
-          type="info"
-          message="当前后端使用 examples 验证集接口"
-          description="新页面支持查看、复制到单因子和提交回归验证；新增、编辑、删除和结果明细继续在原有功能台使用。"
-          action={<Button size="small" onClick={openOriginalValidationWorkbench}>打开原有功能台</Button>}
-        />
+      {regressionTask || regressionRecovering ? (
+        <Card
+          className="compact-card"
+          title="最近一次回归验证任务"
+          extra={(
+            <Space size={8}>
+              <Button
+                danger
+                size="small"
+                icon={<StopOutlined />}
+                loading={regressionCancelling}
+                disabled={!regressionTaskId || !regressionActive}
+                onClick={terminateRegression}
+              >
+                终止执行
+              </Button>
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={regressionRecovering}
+                disabled={!regressionTaskId}
+                onClick={() => void refreshRegressionSnapshot()}
+              >
+                刷新进度
+              </Button>
+            </Space>
+          )}
+        >
+          {regressionTask ? (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Alert
+                showIcon
+                type={regressionTask.status === 'error' ? 'error' : isTerminalTask(regressionTask) ? 'success' : 'info'}
+                message={(
+                  <Space wrap>
+                    <span>任务状态</span>
+                    <Tag color={taskStatusColor(regressionTask.status)}>{taskStatusLabel(regressionTask.status)}</Tag>
+                    <Typography.Text type="secondary">{regressionSummary?.currentTitle || ''}</Typography.Text>
+                  </Space>
+                )}
+                description={regressionTask.result?.stderr || (regressionActive ? '任务仍在后端执行，离开页面不会中断；返回验证集页面会自动恢复。' : '任务结果已保留，可查看每条案例的实际结论和报告。')}
+              />
+              <Descriptions bordered column={{ xs: 1, sm: 2, lg: 4 }} size="small">
+                <Descriptions.Item label="Task ID">{regressionTask.id || '-'}</Descriptions.Item>
+                <Descriptions.Item label="总数">{regressionTotal}</Descriptions.Item>
+                <Descriptions.Item label="通过">{regressionSummary?.pass || 0}</Descriptions.Item>
+                <Descriptions.Item label="未通过">{(regressionSummary?.fail || 0) + (regressionSummary?.error || 0)}</Descriptions.Item>
+              </Descriptions>
+              <Progress
+                percent={regressionProgress}
+                status={regressionTask.status === 'error' ? 'exception' : regressionTask.status === 'done' ? 'success' : 'active'}
+                format={() => `${regressionCompleted} / ${regressionTotal}`}
+              />
+              <Table<RegressionTaskItem>
+                rowKey={(record, index) => record.id || `regression-${index}`}
+                className="compact-table"
+                size="small"
+                pagination={{ pageSize: 5, size: 'small' }}
+                dataSource={regressionItems}
+                columns={[
+                  { title: '案例', dataIndex: 'title', ellipsis: true, render: (value?: string, record?: RegressionTaskItem) => value || record?.id || '-' },
+                  {
+                    title: '状态',
+                    dataIndex: 'status',
+                    width: 100,
+                    render: (value?: string) => <Tag color={regressionItemStatusColor(value)}>{value || '等待中'}</Tag>,
+                  },
+                  {
+                    title: '实际结论',
+                    dataIndex: 'verdict',
+                    width: 110,
+                    render: (value?: string) => value && value !== 'idle' ? conclusionLabel(value) : '-',
+                  },
+                  {
+                    title: '期望匹配',
+                    width: 110,
+                    render: (_value, record) => {
+                      if (record.status === 'running') return <Tag color="processing">执行中</Tag>
+                      if (record.expectedOk) return <Tag color="success">匹配</Tag>
+                      if (['fail', 'error'].includes(String(record.status || ''))) return <Tag color="error">不匹配</Tag>
+                      return <Tag>待执行</Tag>
+                    },
+                  },
+                  {
+                    title: '结果',
+                    width: 100,
+                    render: (_value, record) => (
+                      <Button type="link" size="small" disabled={!record.raw && !record.reviewFileId} onClick={() => openRegressionResult(record)}>
+                        查看
+                      </Button>
+                    ),
+                  },
+                ]}
+              />
+            </Space>
+          ) : (
+            <Typography.Text type="secondary">正在恢复最近一次验证任务...</Typography.Text>
+          )}
+        </Card>
       ) : null}
 
       {loadError ? (
@@ -610,7 +899,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
             ]}
           />
           <Tooltip title={selectedRowKeys.length ? `将执行已选 ${selectedRowKeys.length} 条案例` : '请先选择验证案例'}>
-            <span><Button size="small" disabled={!selectedRowKeys.length} loading={!!runningIds.length} onClick={executeBatch}>批量执行</Button></span>
+            <span><Button size="small" disabled={!selectedRowKeys.length || regressionActive} loading={regressionActive} onClick={executeBatch}>批量执行</Button></span>
           </Tooltip>
           <Tooltip title={selectedRowKeys.length ? `将删除已选 ${selectedRowKeys.length} 条案例，删除会二次确认` : '请先选择验证案例'}>
             <span><Button size="small" danger disabled={!selectedRowKeys.length} onClick={confirmBatchDelete}>批量删除</Button></span>
@@ -655,6 +944,9 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
               <Descriptions.Item label="案例 ID">{detailCase.caseId}</Descriptions.Item>
               <Descriptions.Item label="因子名称">{detailCase.factorName}</Descriptions.Item>
               <Descriptions.Item label="期望结论">{conclusionLabel(detailCase.expectedConclusion)}</Descriptions.Item>
+              <Descriptions.Item label="期望问题关键词">{detailCase.expectedIssuePatterns?.join('、') || '-'}</Descriptions.Item>
+              <Descriptions.Item label="禁止问题关键词">{detailCase.forbiddenIssuePatterns?.join('、') || '-'}</Descriptions.Item>
+              <Descriptions.Item label="最大问题数">{detailCase.maxIssueCount ?? '-'}</Descriptions.Item>
               <Descriptions.Item label="标签">{detailCase.tags?.length ? detailCase.tags.join('、') : '-'}</Descriptions.Item>
               <Descriptions.Item label="接口文档">{detailCase.apiDocIds?.join('、') || '-'}</Descriptions.Item>
               <Descriptions.Item label="业务规则">{detailCase.businessRuleIds?.join('、') || '-'}</Descriptions.Item>
@@ -677,6 +969,8 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
                     <Descriptions.Item label="结束时间">{formatDate(detailRun.finishedAt)}</Descriptions.Item>
                     <Descriptions.Item label="标准文件">{detailRun.standardFile || '-'}</Descriptions.Item>
                     <Descriptions.Item label="报告文件">{detailRun.reviewFile || '-'}</Descriptions.Item>
+                    <Descriptions.Item label="结论匹配">{detailRun.conclusionMatched == null ? '-' : detailRun.conclusionMatched ? '一致' : '不一致'}</Descriptions.Item>
+                    <Descriptions.Item label="问题匹配">{detailRun.issuesMatched == null ? '-' : detailRun.issuesMatched ? '一致' : '不一致'}</Descriptions.Item>
                   </Descriptions>
                   <Button size="small" icon={<EyeOutlined />} onClick={() => openRunResult(detailRun)}>
                     打开运行详情
@@ -714,6 +1008,15 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
                 { label: '建议项', value: 'suggestion' },
               ]}
             />
+          </Form.Item>
+          <Form.Item name="expectedIssuePatternsText" label="期望问题关键词">
+            <Input.TextArea rows={2} placeholder="可选，每行一个；评审报告需全部包含" />
+          </Form.Item>
+          <Form.Item name="forbiddenIssuePatternsText" label="禁止问题关键词">
+            <Input.TextArea rows={2} placeholder="可选，每行一个；评审报告不得出现" />
+          </Form.Item>
+          <Form.Item name="maxIssueCount" label="最大问题数">
+            <InputNumber min={0} precision={0} placeholder="可选" style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="apiDocIdsText" label="关联接口文档" rules={[{ required: true, message: '请输入至少一个接口文档' }]}>
             <Input.TextArea rows={2} placeholder="每行一个，或用逗号分隔" />
@@ -754,17 +1057,86 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
               <Descriptions.Item label="报告文件">{activeRun.reviewFile || '-'}</Descriptions.Item>
             </Descriptions>
             <Space wrap>
-              <Tooltip title={activeRun.standardFile ? '打开本次运行生成的准出文档' : '本次运行未返回准出文档'}>
-                <span>
-                  <Button disabled={!activeRun.standardFile} href={activeRun.standardFile ? `/outputs/${encodeURIComponent(activeRun.standardFile)}` : undefined} target="_blank">查看准出文档</Button>
-                </span>
-              </Tooltip>
-              <Tooltip title={activeRun.reviewFile ? '打开本次运行生成的评审报告' : '本次运行未返回评审报告'}>
-                <span>
-                  <Button disabled={!activeRun.reviewFile} href={activeRun.reviewFile ? `/outputs/${encodeURIComponent(activeRun.reviewFile)}` : undefined} target="_blank">查看评审结果</Button>
-                </span>
-              </Tooltip>
+              <Button
+                type={activeRunDocument === 'review' ? 'primary' : 'default'}
+                disabled={!activeRun.reviewFile}
+                onClick={() => setActiveRunDocument('review')}
+              >
+                查看评审结果
+              </Button>
+              <Button
+                type={activeRunDocument === 'standard' ? 'primary' : 'default'}
+                disabled={!activeRun.standardFile}
+                onClick={() => setActiveRunDocument('standard')}
+              >
+                查看标准
+              </Button>
             </Space>
+            <Card className="compact-card" title={activeRunDocument === 'review' ? '评审结果' : '标准'}>
+              {loadingRegressionFile === activeRunFileId ? (
+                <Typography.Text type="secondary">正在读取文档...</Typography.Text>
+              ) : (
+                <MarkdownViewer
+                  content={activeRunContent || activeRun.error || '暂无文档内容'}
+                  fileName={activeRunFileId || (activeRunDocument === 'review' ? '评审结果.md' : '标准.md')}
+                />
+              )}
+            </Card>
+          </Space>
+        ) : null}
+      </Drawer>
+
+      <Drawer
+        className="drawer-compact"
+        title={activeRegressionItem?.title || activeRegressionItem?.id || '回归结果详情'}
+        width="min(900px, 92vw)"
+        open={!!activeRegressionItem}
+        onClose={() => setActiveRegressionItem(null)}
+      >
+        {activeRegressionItem ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Alert
+              showIcon
+              type={activeRegressionItem.status === 'pass' ? 'success' : activeRegressionItem.status === 'running' ? 'info' : 'error'}
+              message={`执行状态：${activeRegressionItem.status || '未知'}`}
+              description={activeRegressionItem.expectedOk ? '实际结论与期望一致' : activeRegressionItem.status === 'running' ? '案例仍在执行' : '实际结论与期望不一致或执行失败'}
+            />
+            <Descriptions bordered column={1} size="small">
+              <Descriptions.Item label="案例 ID">{activeRegressionItem.id || '-'}</Descriptions.Item>
+              <Descriptions.Item label="期望结论">{activeRegressionItem.expected || '-'}</Descriptions.Item>
+              <Descriptions.Item label="实际结论">{activeRegressionItem.verdict && activeRegressionItem.verdict !== 'idle' ? conclusionLabel(activeRegressionItem.verdict) : '-'}</Descriptions.Item>
+              <Descriptions.Item label="标准文件">{activeRegressionItem.standardFileId || '-'}</Descriptions.Item>
+              <Descriptions.Item label="报告文件">{activeRegressionItem.reviewFileId || '-'}</Descriptions.Item>
+            </Descriptions>
+            <Space wrap>
+              <Button
+                type={activeRegressionDocument === 'review' ? 'primary' : 'default'}
+                disabled={!activeRegressionItem.raw && !activeRegressionItem.reportPreview && !activeRegressionItem.reviewFileId}
+                onClick={() => setActiveRegressionDocument('review')}
+              >
+                查看评审结果
+              </Button>
+              <Button
+                type={activeRegressionDocument === 'standard' ? 'primary' : 'default'}
+                disabled={!activeRegressionItem.standardText && !activeRegressionItem.standardFileId}
+                onClick={() => setActiveRegressionDocument('standard')}
+              >
+                查看标准
+              </Button>
+            </Space>
+            <Card
+              className="compact-card"
+              title={activeRegressionDocument === 'review' ? '评审结果' : '标准'}
+            >
+              {loadingRegressionFile === activeRegressionFileId ? (
+                <Typography.Text type="secondary">正在读取文档...</Typography.Text>
+              ) : (
+                <MarkdownViewer
+                  content={activeRegressionContent || '暂无文档内容'}
+                  fileName={activeRegressionFileId || (activeRegressionDocument === 'review' ? '评审结果.md' : '标准.md')}
+                />
+              )}
+            </Card>
           </Space>
         ) : null}
       </Drawer>
@@ -805,54 +1177,6 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
         ) : null}
       </Modal>
 
-      <Modal
-        title="批量验证结果"
-        open={!!batchResult}
-        onCancel={() => setBatchResult(null)}
-        footer={<Button type="primary" onClick={() => setBatchResult(null)}>关闭</Button>}
-        width="min(900px, 90vw)"
-      >
-        {batchResult ? (
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Alert
-              showIcon
-              type={batchResult.failed || batchResult.mismatched ? 'warning' : 'success'}
-              message={`总数 ${batchResult.total}，成功 ${batchResult.success}，失败 ${batchResult.failed}，待确认 ${batchResult.confirm ?? 0}，不符合预期 ${batchResult.mismatched}`}
-            />
-            <Table
-              rowKey="id"
-              className="compact-table"
-              size="small"
-              pagination={false}
-              dataSource={batchResult.items}
-              columns={[
-                { title: '案例 ID', dataIndex: 'id', ellipsis: true },
-                { title: '状态', render: (_value, record) => record.success ? <Tag color="success">成功</Tag> : <Tag color="error">失败</Tag> },
-                { title: '实际结论', render: (_value, record) => record.run?.actualConclusion ? conclusionLabel(record.run.actualConclusion) : '-' },
-                {
-                  title: '是否符合',
-                  render: (_value, record) => {
-                    const matched = runMatched(record.run)
-                    if (matched === true) return '符合'
-                    if (matched === false) return '不符合'
-                    return record.run ? '执行中' : '-'
-                  },
-                },
-                {
-                  title: '结果',
-                  width: 120,
-                  render: (_value, record) => (
-                    <Button type="link" size="small" icon={<EyeOutlined />} disabled={!record.run} onClick={() => openRunResult(record.run)}>
-                      查看结果
-                    </Button>
-                  ),
-                },
-                { title: '错误明细', dataIndex: 'error', ellipsis: true, render: (value?: string) => value || '-' },
-              ]}
-            />
-          </Space>
-        ) : null}
-      </Modal>
     </Space>
   )
 }

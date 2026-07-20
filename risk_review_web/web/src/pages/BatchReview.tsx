@@ -25,7 +25,7 @@ import { AppError, cancelTask, fetchTask, parseExcel, runBatchReview } from '../
 import type { AppNotice, BatchResultItem, BatchRow, TaskRecord } from '../types/review'
 import { EmptyState } from '../components/EmptyState'
 import { HeaderActions } from '../components/AppLayout'
-import { normalizeStatusText } from '../utils/reviewTransform'
+import { normalizeStatusText, taskFailureMessage } from '../utils/reviewTransform'
 
 interface BatchReviewProps {
   onNotice: (notice: AppNotice) => void
@@ -79,6 +79,7 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
   const [taskId, setTaskId] = useState<string>()
   const [task, setTask] = useState<TaskRecord<BatchTaskResult> | null>(null)
   const [running, setRunning] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailTitle, setDetailTitle] = useState('批量结果详情')
@@ -113,12 +114,13 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
         const status = String(nextTask.status || '').toLowerCase()
         if (terminalStatuses.has(status)) {
           setRunning(false)
+          setStopping(false)
           if (status === 'done') {
             onNotice({ type: 'success', message: '批量评审完成' })
           } else if (status === 'cancelled') {
             onNotice({ type: 'warning', message: '批量评审已停止' })
           } else {
-            onNotice({ type: 'error', message: nextTask.result?.stderr || '批量评审失败' })
+            onNotice({ type: 'error', message: taskFailureMessage(nextTask.result, '批量评审失败') })
           }
           return
         }
@@ -128,6 +130,7 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
         if (cancelled) return
         const message = caught instanceof Error ? caught.message : '批量任务轮询失败'
         setRunning(false)
+        setStopping(false)
         onNotice({ type: 'error', message })
       }
     }
@@ -164,6 +167,7 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
       setTask(null)
       setTaskId(undefined)
       setRunning(false)
+      setStopping(false)
       onNotice({ type: 'success', message: `已导入 ${parsed.items?.length || 0} 条记录` })
     } catch (caught) {
       const message = caught instanceof AppError || caught instanceof Error ? caught.message : '解析文件失败'
@@ -186,6 +190,7 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
       setTaskId(response.taskId)
       setTask(response.task as TaskRecord<BatchTaskResult>)
       setRunning(true)
+      setStopping(false)
       onNotice({ type: 'success', message: '批量评审任务已提交' })
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : '批量评审提交失败'
@@ -196,15 +201,20 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
   }
 
   async function handleStop() {
-    if (!taskId) return
+    if (!taskId || stopping) return
 
+    setStopping(true)
     try {
       const nextTask = await cancelTask(taskId) as TaskRecord<BatchTaskResult>
       setTask(nextTask)
-      setRunning(false)
-      onNotice({ type: 'warning', message: '已请求停止批量任务' })
+      if (terminalStatuses.has(String(nextTask.status || '').toLowerCase())) {
+        setRunning(false)
+        setStopping(false)
+      }
+      onNotice({ type: 'warning', message: '已请求终止批量评审，正在停止运行中的调用' })
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : '停止任务失败'
+      setStopping(false)
+      const message = caught instanceof Error ? caught.message : '终止任务失败'
       onNotice({ type: 'error', message })
     }
   }
@@ -305,8 +315,8 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
           </Tooltip>
           <Tooltip title={running && taskId ? '调用后端取消当前批量任务' : '当前没有运行中的批量任务'}>
             <span>
-              <Button danger disabled={!running || !taskId} onClick={handleStop}>
-                停止任务
+              <Button danger disabled={!running || !taskId} loading={stopping} onClick={handleStop}>
+                终止执行
               </Button>
             </span>
           </Tooltip>
@@ -377,8 +387,8 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
               <Col xs={12} md={4}><Statistic title="执行中" value={stats.running} /></Col>
               <Col xs={12} md={4}><Statistic title="排队" value={stats.queued} /></Col>
             </Row>
-            {task.result?.stderr ? (
-              <Alert type="error" showIcon message="任务错误" description={task.result.stderr} />
+            {String(task.status || '').toLowerCase() === 'error' ? (
+              <Alert type="error" showIcon message="任务错误" description={taskFailureMessage(task.result, '批量评审失败')} />
             ) : null}
           </Space>
         ) : (

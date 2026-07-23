@@ -18,11 +18,17 @@ const CONCLUSION_LABELS: Record<string, string> = {
 interface TaskFailureSource {
   stderr?: string
   stdout?: string
+  errorCategory?: string
+  suggestedAction?: string
 }
 
 export function taskFailureMessage(result: TaskFailureSource | null | undefined, fallback: string): string {
   const stderr = String(result?.stderr || '').trim()
-  if (stderr) return stderr
+  if (stderr) {
+    const category = String(result?.errorCategory || '').trim()
+    const action = String(result?.suggestedAction || '').trim()
+    return [category ? `${category}：${stderr}` : stderr, action].filter(Boolean).join('；')
+  }
   const explicitError = String(result?.stdout || '')
     .split(/\r?\n/)
     .map((line) => line.trim())

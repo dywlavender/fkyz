@@ -41,7 +41,10 @@ from risk_review_web.artifacts import (
     read_phase1_standard,
     save_standard_json_summary,
     standard_summary_name_for,
+    validate_phase1_standard_basic_output,
     validate_phase1_standard_output,
+    validate_phase2_review_basic_output,
+    validate_standard_json_basic,
     validate_standard_json_summary,
 )
 from risk_review_web.business_rules import (
@@ -73,12 +76,12 @@ from risk_review_web.paths import (
 from risk_review_web.prompt_builder import (
     build_phase1_prompt,
     build_phase2_prompt,
-    build_reviewer_prompt,
     build_direct_review_prompt,
 )
 from risk_review_web.scheduled_tasks import ScheduledTaskError, build_service as build_scheduled_task_service
 from risk_review_web.task_pool import GLOBAL_TASK_POOL
 from risk_review_web.utils import atomic_write_text, parse_frontmatter, read_text
+from risk_review_web.error_classification import attach_error_metadata, classify_task_error
 
 TASKS = {}
 TASK_LOCK = threading.Lock()
@@ -92,6 +95,10 @@ SCHEDULED_TASK_SERVICE = None
 # 任务记录回收：终态任务保留 N 分钟后删除；TASKS 总量不超过上限。
 TASK_TTL_SECONDS = int(os.environ.get("RISK_REVIEW_TASK_TTL", "1800"))
 TASK_MAX_COUNT = int(os.environ.get("RISK_REVIEW_TASK_MAX", "400"))
+
+
+def skip_strict_validation(payload: dict) -> bool:
+    return payload.get("skipStageValidation", True) is True
 
 
 def task_output_token(task_id: str) -> str:
@@ -1230,7 +1237,7 @@ def test_claude_print():
         }
 
 
-def build_prompt_phase1(payload: dict, review_feedback: str = "") -> str:
+def build_prompt_phase1(payload: dict) -> str:
     """Build prompt for Phase 1 only (standard spec, no draft)."""
     requirement = (payload.get("requirement") or "").strip()
     api_names = payload.get("apiNames") or []
@@ -1238,11 +1245,10 @@ def build_prompt_phase1(payload: dict, review_feedback: str = "") -> str:
     return build_phase1_prompt(
         requirement=requirement,
         api_names=api_names,
-        review_feedback=review_feedback,
     )
 
 
-def build_prompt_phase2(payload: dict, review_feedback: str = "") -> str:
+def build_prompt_phase2(payload: dict) -> str:
     """Build prompt for Phase 2 only (review against existing standard)."""
     draft = (payload.get("draft") or "").strip()
     phase2_context = payload.get("_phase2_context") or prepare_phase2_context(payload)
@@ -1250,7 +1256,6 @@ def build_prompt_phase2(payload: dict, review_feedback: str = "") -> str:
         standard_summary_json=phase2_context["standardSummaryJson"],
         standard_validation_status=phase2_context["standardValidationStatus"],
         draft=draft,
-        review_feedback=review_feedback,
     )
 
 
@@ -1297,6 +1302,29 @@ def create_phase1_isolated_workspace(task_id: str, payload: dict) -> Path:
         task_log(
             task_id,
             "Phase 1 隔离工作目录已创建，仅包含：" + "、".join(staged_files),
+        )
+        return workspace
+    except Exception:
+        shutil.rmtree(workspace, ignore_errors=True)
+        raise
+
+
+def create_phase2_isolated_workspace(task_id: str) -> Path:
+    workspace = Path(tempfile.mkdtemp(prefix=f"risk-review-phase2-{task_id[:8]}-"))
+    try:
+        staged_files = []
+        for source_path in (PHASE2_SKILL_PATH, BUSINESS_RULES_PATH):
+            source_path = source_path.resolve()
+            if not source_path.is_file():
+                continue
+            relative_path = source_path.relative_to(ROOT.resolve())
+            target_path = workspace / relative_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+            staged_files.append(relative_path.as_posix())
+        task_log(
+            task_id,
+            "Phase 2 隔离工作目录已创建，仅包含：" + "、".join(staged_files),
         )
         return workspace
     except Exception:
@@ -1416,76 +1444,8 @@ def run_claude_prompt(
             RUNNING_PROCS.pop(task_id, None)
 
 
-def parse_reviewer_json(text: str) -> dict | None:
-    source = (text or "").strip()
-    if not source:
-        return None
-    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", source, re.I)
-    if fenced:
-        source = fenced.group(1).strip()
-    try:
-        data = json.loads(source)
-    except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", source)
-        if not match:
-            return None
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
-    return data if isinstance(data, dict) else None
-
-
-def reviewer_passed(review: dict | None) -> bool:
-    if not isinstance(review, dict):
-        return False
-    coverage = review.get("coverageSummary") or []
-    has_failed_coverage = any(
-        isinstance(item, dict) and str(item.get("status") or "").lower() == "fail"
-        for item in coverage
-    )
-    return (
-        review.get("passed") is True
-        and review.get("fixRequired") is False
-        and not (review.get("blockingIssues") or [])
-        and not has_failed_coverage
-    )
-
-
-def reviewer_enabled(use_mock: bool = False, skip_reviewer: bool = False) -> bool:
-    if use_mock or skip_reviewer:
-        return False
-    return os.environ.get("RISK_REVIEW_REVIEWER_ENABLED", "1") != "0"
-
-
-def phase1_original_input(payload: dict) -> str:
-    api_names = "\n".join(f"- {name}" for name in (payload.get("apiNames") or []))
-    return "\n".join([
-        "【接口文档】",
-        api_names,
-        "【需求内容】",
-        (payload.get("requirement") or "").strip(),
-    ])
-
-
-def phase2_original_input(payload: dict, standard_summary_json: str = "") -> str:
-    validation_status = (
-        f"校验模式：跳过；已确认 schema_version={STANDARD_JSON_SCHEMA_VERSION}，本次按运行开关跳过 checksum 和完整语义校验，允许继续评审。"
-        if payload.get("skipStageValidation") is True
-        else "校验模式：严格；已由外部程序校验通过，input_checksum、public_rules_checksum、standard_json_checksum 均已校验一致。"
-    )
-    return "\n".join([
-        "【标准规范校验】",
-        validation_status,
-        "【结构化标准 JSON】",
-        standard_summary_json,
-        "【待评审准出内容】",
-        (payload.get("draft") or "").strip(),
-    ])
-
-
 def prepare_phase2_context(payload: dict) -> dict:
-    skip_stage_validation = payload.get("skipStageValidation") is True
+    skip_stage_validation = skip_strict_validation(payload)
     standard_text, std_path = read_phase1_standard(
         payload,
         validate_integrity=not skip_stage_validation,
@@ -1494,10 +1454,7 @@ def prepare_phase2_context(payload: dict) -> dict:
     if not summary_path.exists():
         raise ValueError(f"Phase 1 结构化标准 JSON 未找到：{summary_path.name}，请重新执行 Phase 1。")
     standard_summary = json.loads(read_text(summary_path))
-    if standard_summary.get("schema_version") != STANDARD_JSON_SCHEMA_VERSION:
-        raise ValueError(
-            f"结构化标准 JSON 版本不兼容：仅支持 {STANDARD_JSON_SCHEMA_VERSION}，请重新执行 Phase 1。"
-        )
+    validate_standard_json_basic(standard_summary)
     if not skip_stage_validation:
         validate_standard_json_summary(standard_summary)
         standard_meta = parse_frontmatter(standard_text)
@@ -1538,7 +1495,7 @@ def prepare_phase2_context(payload: dict) -> dict:
         "standardSummary": standard_summary,
         "standardSummaryJson": standard_summary_json,
         "standardValidationStatus": (
-            f"校验模式：跳过；已确认 schema_version={STANDARD_JSON_SCHEMA_VERSION}，本次按运行开关跳过 checksum 和完整语义校验，但所有 v4 hard 规则仍须严格评审，不得输出 checksum 校验停止提示。"
+            f"校验模式：跳过；结构化 JSON 可解析且 schema_version={STANDARD_JSON_SCHEMA_VERSION}，本次按运行开关跳过 checksum、完整章节和规则引用关系校验，但所有 v4 hard 规则仍须严格评审，不得输出 checksum 校验停止提示。"
             if skip_stage_validation
             else "校验模式：严格；已由外部程序校验通过，input_checksum、public_rules_checksum、standard_json_checksum 均已校验一致。"
         ),
@@ -1546,87 +1503,39 @@ def prepare_phase2_context(payload: dict) -> dict:
     }
 
 
-def run_reviewer(
-    task_id: str,
-    phase_label: str,
-    original_input: str,
-    candidate_output: str,
-    *,
-    isolated_workspace: Path | None = None,
-) -> dict | None:
-    prompt = build_reviewer_prompt(
-        phase_label=phase_label,
-        original_input=original_input,
-        candidate_output=candidate_output,
-    )
-    status, result = run_claude_prompt(
-        task_id,
-        f"{phase_label} Reviewer",
-        prompt,
-        isolated_workspace=isolated_workspace,
-    )
-    if status != "done":
-        task_log(task_id, f"{phase_label} Reviewer 调用失败：{result.get('stderr') or status}")
-        return None
-    review = parse_reviewer_json(result.get("stdout") or "")
-    if review is None:
-        task_log(task_id, f"{phase_label} Reviewer 输出不可解析")
-        return None
-    task_log(task_id, f"{phase_label} Reviewer 结果：{'通过' if reviewer_passed(review) else '需修复'}")
-    return review
-
-
-def run_generation_with_reviewer(
+def run_generation(
     *,
     task_id: str,
     phase_label: str,
     empty_error: str,
-    build_prompt,
-    original_input,
-    use_mock: bool = False,
-    skip_reviewer: bool = False,
+    prompt: str,
     isolated_workspace: Path | None = None,
-) -> tuple[str, dict, str, dict | None]:
+) -> tuple[str, dict, str]:
     raw_output = ""
-    last_review = None
     if task_cancel_requested(task_id):
-        return "cancelled", {"stdout": "", "stderr": f"{phase_label} 已取消。", "returncode": 130}, raw_output, last_review
+        return "cancelled", {"stdout": "", "stderr": f"{phase_label} 已取消。", "returncode": 130}, raw_output
 
-    task_log(task_id, f"{phase_label} 生成第 1 轮")
+    task_log(task_id, f"{phase_label} 开始生成")
     status, result = run_claude_prompt(
         task_id,
-        f"{phase_label} round 1",
-        build_prompt(""),
+        phase_label,
+        prompt,
         isolated_workspace=isolated_workspace,
     )
     if status != "done":
-        return status, result, raw_output, last_review
+        return status, result, raw_output
 
     raw_output = (result.get("stdout") or "").strip()
     if not raw_output:
         result.update({"stderr": empty_error, "returncode": 1})
-        return "error", result, raw_output, last_review
-
-    if reviewer_enabled(use_mock=use_mock, skip_reviewer=skip_reviewer):
-        task_log(task_id, f"{phase_label} Reviewer 审核第 1 次")
-        last_review = run_reviewer(
-            task_id,
-            phase_label,
-            original_input(),
-            raw_output,
-            isolated_workspace=isolated_workspace,
-        )
-        if not reviewer_passed(last_review):
-            task_log(task_id, f"{phase_label} Reviewer 未通过；按单次审核策略，不再重试生成，使用当前结果")
-    elif skip_reviewer:
-        task_log(task_id, f"{phase_label} Reviewer 已按本次运行开关跳过")
+        return "error", result, raw_output
     if task_cancel_requested(task_id):
         return "cancelled", {
             "stdout": raw_output,
             "stderr": f"{phase_label} 已取消。",
             "returncode": 130,
-        }, raw_output, last_review
-    return status, result, raw_output, last_review
+        }, raw_output
+    return status, result, raw_output
 
 
 def run_claude_phase1(payload: dict, task_id: str):
@@ -1640,10 +1549,13 @@ def run_claude_phase1(payload: dict, task_id: str):
     task_log(task_id, "Phase 1 开始")
     checksum = compute_phase1_checksum(payload)
     use_mock = os.environ.get("RISK_REVIEW_MOCK") == "1" or payload.get("mock") is True
-    skip_reviewer = payload.get("skipReviewer") is True
-    skip_stage_validation = payload.get("skipStageValidation") is True
+    skip_stage_validation = skip_strict_validation(payload)
     if not payload.get("forceRefresh"):
-        cached = find_cached_phase1_standard(checksum, allow_mock=use_mock)
+        cached = find_cached_phase1_standard(
+            checksum,
+            allow_mock=use_mock,
+            strict_validation=not skip_stage_validation,
+        )
         if cached:
             if task_cancel_requested(task_id):
                 mark_task_cancelled(task_id, "Phase 1 已取消。")
@@ -1789,7 +1701,6 @@ input_summary:
                 "checksum": checksum,
                 "stderr": "",
                 "cacheHit": False,
-                "reviewerSkipped": skip_reviewer,
                 "stageValidationSkipped": skip_stage_validation,
             }
             TASKS[task_id]["outputs"] = list_outputs()
@@ -1799,14 +1710,11 @@ input_summary:
 
     isolated_workspace = create_phase1_isolated_workspace(task_id, payload)
     try:
-        status, result, raw_output, last_review = run_generation_with_reviewer(
+        status, result, raw_output = run_generation(
             task_id=task_id,
             phase_label="Phase 1",
             empty_error="Claude 未输出 Phase 1 标准加工规范正文",
-            build_prompt=lambda review_feedback: build_prompt_phase1(payload, review_feedback=review_feedback),
-            original_input=lambda: phase1_original_input(payload),
-            use_mock=False,
-            skip_reviewer=skip_reviewer,
+            prompt=build_prompt_phase1(payload),
             isolated_workspace=isolated_workspace,
         )
     finally:
@@ -1830,10 +1738,11 @@ input_summary:
                 mock=False,
             )
             try:
+                validate_phase1_standard_basic_output(output_text)
                 if not skip_stage_validation:
                     validate_phase1_standard_output(output_text)
                 else:
-                    task_log(task_id, "Phase 1 本地输出校验已按本次运行开关跳过")
+                    task_log(task_id, "Phase 1 基础产物校验通过；严格完整性校验已按运行开关跳过")
                 OUTPUTS_DIR.mkdir(exist_ok=True)
                 (OUTPUTS_DIR / output_name).write_text(output_text, encoding="utf-8")
                 summary_name = save_standard_json_summary(
@@ -1848,10 +1757,8 @@ input_summary:
                     "standardFileId": output_name,
                     "standardSummaryFileId": summary_name,
                     "checksum": checksum,
-                    "stderr": "" if reviewer_passed(last_review) or not reviewer_enabled(False, skip_reviewer) else "Reviewer 单次审核未通过，已按策略使用当前结果。",
+                    "stderr": "",
                     "cacheHit": False,
-                    "reviewer": last_review,
-                    "reviewerSkipped": skip_reviewer,
                     "stageValidationSkipped": skip_stage_validation,
                 })
                 task_log(task_id, f"Phase 1 文件已保存：outputs/{output_name}")
@@ -1861,10 +1768,11 @@ input_summary:
                     "returncode": 1,
                     "stdout": raw_output,
                     "stderr": str(exc),
-                    "reviewer": last_review,
                 })
                 task_log(task_id, f"Phase 1 输出校验失败：{exc}")
     with TASK_LOCK:
+        if status == "error":
+            attach_error_metadata(result, "Phase 1 执行失败")
         TASKS[task_id]["status"] = status
         TASKS[task_id]["result"] = result
         TASKS[task_id]["outputs"] = list_outputs()
@@ -1888,14 +1796,16 @@ def run_claude_phase2(payload: dict, task_id: str):
         task_log(task_id, str(e))
         with TASK_LOCK:
             TASKS[task_id]["status"] = "error"
-            TASKS[task_id]["result"] = {"stdout": "", "stderr": str(e), "returncode": 1}
+            TASKS[task_id]["result"] = attach_error_metadata(
+                {"stdout": "", "stderr": str(e), "returncode": 1},
+                "Phase 2 输入校验失败",
+            )
             TASKS[task_id]["outputs"] = list_outputs()
             TASKS[task_id]["updated"] = time.time()
         return
     
     use_mock = os.environ.get("RISK_REVIEW_MOCK") == "1" or payload.get("mock") is True
-    skip_reviewer = payload.get("skipReviewer") is True
-    skip_stage_validation = payload.get("skipStageValidation") is True
+    skip_stage_validation = skip_strict_validation(payload)
     
     if use_mock:
         task_log(task_id, "使用 Mock 模式（Phase 2）")
@@ -1941,7 +1851,6 @@ def run_claude_phase2(payload: dict, task_id: str):
                 "stdout": output_text,
                 "stderr": "",
                 "reviewFileId": output_name,
-                "reviewerSkipped": skip_reviewer,
                 "stageValidationSkipped": skip_stage_validation,
             }
             TASKS[task_id]["outputs"] = list_outputs()
@@ -1951,24 +1860,33 @@ def run_claude_phase2(payload: dict, task_id: str):
     
     standard_file_id = phase2_context["standardFileId"]
     standard_summary = phase2_context["standardSummary"]
-    standard_summary_json = phase2_context["standardSummaryJson"]
     if skip_stage_validation:
-        task_log(task_id, "Phase 2 标准摘要前置校验已按本次运行开关跳过")
-    status, result, raw_output, last_review = run_generation_with_reviewer(
-        task_id=task_id,
-        phase_label="Phase 2",
-        empty_error="Claude 未输出 Phase 2 评审报告正文",
-        build_prompt=lambda review_feedback: build_prompt_phase2(payload, review_feedback=review_feedback),
-        original_input=lambda: phase2_original_input(payload, standard_summary_json),
-        use_mock=False,
-        skip_reviewer=skip_reviewer,
-    )
+        task_log(task_id, "Phase 2 基础摘要校验通过；严格完整性校验已按运行开关跳过")
+    isolated_workspace = create_phase2_isolated_workspace(task_id)
+    try:
+        status, result, raw_output = run_generation(
+            task_id=task_id,
+            phase_label="Phase 2",
+            empty_error="Claude 未输出 Phase 2 评审报告正文",
+            prompt=build_prompt_phase2(payload),
+            isolated_workspace=isolated_workspace,
+        )
+    finally:
+        shutil.rmtree(isolated_workspace, ignore_errors=True)
+        task_log(task_id, "Phase 2 隔离工作目录已清理")
 
     if status == "done":
         if not raw_output:
             status = "error"
             result.update({"stderr": "Claude 未输出 Phase 2 评审报告正文", "returncode": 1})
         else:
+            try:
+                validate_phase2_review_basic_output(raw_output)
+            except ValueError as exc:
+                status = "error"
+                result.update({"stderr": str(exc), "returncode": 1})
+                raw_output = ""
+        if status == "done":
             factor_name = (payload.get("factorName") or "factor").strip()
             slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
             review_checksum = compute_review_checksum(payload, standard_summary)
@@ -1979,13 +1897,11 @@ def run_claude_phase2(payload: dict, task_id: str):
             result["stdout"] = saved_report
             result["reviewFileId"] = review_file_id
             result["reviewChecksum"] = review_checksum
-            result["reviewer"] = last_review
-            result["reviewerSkipped"] = skip_reviewer
             result["stageValidationSkipped"] = skip_stage_validation
-            if not (reviewer_passed(last_review) or not reviewer_enabled(False, skip_reviewer)):
-                result["stderr"] = "Reviewer 单次审核未通过，已按策略使用当前结果。"
             task_log(task_id, f"Phase 2 文件已保存：outputs/{review_file_id}")
     with TASK_LOCK:
+        if status == "error":
+            attach_error_metadata(result, "Phase 2 执行失败")
         TASKS[task_id]["status"] = status
         TASKS[task_id]["result"] = result
         TASKS[task_id]["outputs"] = list_outputs()
@@ -2174,8 +2090,7 @@ def run_regression_validation(payload: dict, task_id: str):
                 "requirement": example.get("requirement"),
                 "apiNames": example.get("apiNames") or [],
                 "mock": payload.get("mock"),
-                "skipReviewer": payload.get("skipReviewer") is True,
-                "skipStageValidation": payload.get("skipStageValidation") is True,
+                "skipStageValidation": skip_strict_validation(payload),
             }
             def on_phase1_done(phase1_result: dict):
                 item["standardFileId"] = phase1_result.get("standardFileId")
@@ -2260,6 +2175,7 @@ def run_regression_validation(payload: dict, task_id: str):
                 task_log(task_id, f"验证停止：{example.get('title') or example.get('id')}")
             else:
                 item.update({"status": "error", "raw": str(exc), "reportPreview": str(exc), "time": int(time.time() * 1000)})
+                item.update(classify_task_error(str(exc)))
                 upsert_validation_run({
                     "runId": run_id,
                     "status": "failed",
@@ -2574,8 +2490,7 @@ def run_review_mode_experiment(payload: dict, task_id: str):
                     "requirement": example.get("requirement"),
                     "apiNames": example.get("apiNames") or [],
                     "mock": payload.get("mock"),
-                    "skipReviewer": payload.get("skipReviewer") is True,
-                    "skipStageValidation": payload.get("skipStageValidation") is True,
+                    "skipStageValidation": skip_strict_validation(payload),
                     "forceRefresh": True,
                 }
                 pipeline = run_review_pipeline(
@@ -2872,8 +2787,7 @@ def run_review_pair(row: dict, payload: dict, task_id: str, index: int) -> dict:
                 "requirement": row.get("requirement"),
                 "apiNames": api_names,
                 "mock": payload.get("mock"),
-                "skipReviewer": payload.get("skipReviewer") is True,
-                "skipStageValidation": payload.get("skipStageValidation") is True,
+                "skipStageValidation": skip_strict_validation(payload),
             }
             pipeline = run_review_pipeline(
                 task_id,
@@ -2896,7 +2810,7 @@ def run_review_pair(row: dict, payload: dict, task_id: str, index: int) -> dict:
                 item.update({"status": "skip", "raw": "任务已取消", "skipReason": "任务已取消"})
                 return item
             task_log(task_id, f"{factor_name} 第 {attempt + 1} 次失败：{last_error}")
-    item.update({"status": "error", "raw": last_error})
+    item.update({"status": "error", "raw": last_error, **classify_task_error(last_error)})
     return item
 
 
@@ -2914,7 +2828,7 @@ def finish_batch_factor(task_id: str, index: int, items: list[dict], future):
     except CancelledError:
         item = {**items[index], "status": "skip", "raw": "任务已取消", "skipReason": "任务已取消"}
     except Exception as exc:
-        item = {**items[index], "status": "error", "raw": str(exc)}
+        item = {**items[index], "status": "error", "raw": str(exc), **classify_task_error(str(exc))}
     items[index] = item
     if item.get("status") == "done":
         message = f"完成：{item.get('factorName')}"
@@ -3466,7 +3380,7 @@ class Handler(BaseHTTPRequestHandler):
             if not payload.get("draft") or not payload.get("standardFileId"):
                 json_response(self, 400, {"error": "Phase 2 请填写待评审准出内容和标准文件 ID。"})
                 return
-            if payload.get("skipStageValidation") is not True and (
+            if not skip_strict_validation(payload) and (
                 not payload.get("requirement") or not payload.get("apiNames")
             ):
                 json_response(self, 400, {"error": "Phase 2 缺少 checksum 校验所需的需求内容或接口文档列表，请重新执行 Phase 1。"})

@@ -64,7 +64,6 @@ interface TaskFormValues {
   mode: CreateScheduledTaskRequest['mode']
   runtimeMode: CreateScheduledTaskRequest['runtimeMode']
   failurePolicy: CreateScheduledTaskRequest['failurePolicy']
-  skipReviewer: boolean
   skipStageValidation: boolean
   scheduleType: CreateScheduledTaskRequest['scheduleType']
   runDate?: dayjs.Dayjs
@@ -83,7 +82,6 @@ const DEFAULT_FORM_VALUES: TaskFormValues = {
   mode: 'phase1_phase2',
   runtimeMode: 'mock',
   failurePolicy: 'continue',
-  skipReviewer: true,
   skipStageValidation: true,
   scheduleType: 'daily',
   runTime: dayjs('02:00', 'HH:mm'),
@@ -367,7 +365,6 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
         mode: task.mode,
         runtimeMode: task.runtimeMode,
         failurePolicy: task.failurePolicy,
-        skipReviewer: task.skipReviewer ?? true,
         skipStageValidation: task.skipStageValidation ?? true,
         scheduleType: task.scheduleType,
         runDate: task.runDate ? dayjs(task.runDate, 'YYYY-MM-DD') : undefined,
@@ -479,7 +476,6 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
         runtimeMode: values.runtimeMode,
         concurrency: values.concurrency,
         failurePolicy: values.failurePolicy,
-        skipReviewer: values.skipReviewer,
         skipStageValidation: values.skipStageValidation,
         standardFile: values.standardFile,
         items: preview.items,
@@ -730,10 +726,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
                     ]}
                   />
                 </Form.Item>
-                <Form.Item name="skipReviewer" label="跳过 Reviewer" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item name="skipStageValidation" label="跳过阶段校验" valuePropName="checked">
+                <Form.Item name="skipStageValidation" label="跳过严格完整性校验" valuePropName="checked">
                   <Switch />
                 </Form.Item>
                 <Form.Item name="concurrency" label="并发数">

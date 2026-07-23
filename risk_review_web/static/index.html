@@ -142,20 +142,12 @@
             <button id="stopReviewBtn" class="run-btn stop-review-btn hidden" type="button">■ 停止评审</button>
           </div>
 
-          <div class="reviewer-toggle-row">
-            <label class="debug-toggle">
-              <input id="skipReviewerToggle" type="checkbox" checked>
-              <span>跳过 Reviewer（Phase 1 / Phase 2）</span>
-            </label>
-            <span class="debug-toggle-hint">开启后两个阶段均只执行主生成，不调用 Reviewer。</span>
-          </div>
-
-          <div class="reviewer-toggle-row">
+          <div class="validation-toggle-row">
             <label class="debug-toggle">
               <input id="skipStageValidationToggle" type="checkbox" checked>
-              <span>跳过阶段校验（Phase 1 / Phase 2）</span>
+              <span>跳过严格完整性校验（Phase 1 / Phase 2）</span>
             </label>
-            <span class="debug-toggle-hint">开启后不执行标准正文、结构化摘要及 checksum 的严格校验。</span>
+            <span class="debug-toggle-hint">基础 Markdown、JSON 可解析性和 v4 Schema 校验始终执行。</span>
           </div>
 
           <details class="advanced-review-panel">

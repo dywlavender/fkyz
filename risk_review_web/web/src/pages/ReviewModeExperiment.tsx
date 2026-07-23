@@ -193,7 +193,6 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
       const response = await createReviewModeExperiment({
         caseIds: selectedCaseIds.map(String),
         repetitions,
-        skipReviewer: true,
         skipStageValidation: true,
       })
       const experiment = await fetchReviewModeExperiment(response.experimentId)

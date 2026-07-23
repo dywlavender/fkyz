@@ -363,66 +363,6 @@ def field_leaf_name(field: str) -> str:
     return value.replace("[]", "")
 
 
-def validate_input_field_usage(summary: dict) -> None:
-    """Ensure every D1 field is a processing dependency, not acquisition metadata."""
-    rows = extract_input_field_rows(str(summary.get("inputs") or ""))
-    if not rows:
-        return
-
-    downstream = "\n".join(str(summary.get(key) or "") for key in (
-        "filters",
-        "array_handling",
-        "calculation",
-        "ratio_or_derivation",
-        "conditional_branches",
-    ))
-    association_only = re.compile(r"接口查询|调用接口|接口调用|请求接口|参数传递|主体关联|关联主体|上游数据获取")
-    processing_role = re.compile(r"过滤|时间窗口|窗口|数组|列表|计算|求和|计数|聚合|分组|去重|条件|分支|比率|衍生|最大|最小|取值")
-    legacy_direction = re.compile(r"接口请求参数|接口返回字段|请求参数|响应字段")
-
-    invalid_direction = []
-    association_fields = []
-    unused_fields = []
-    container_only_fields = []
-    structural_use = re.compile(r"存在|不存在|为空|非空|空数组|长度|数量|条数|计数|count\s*\(|size\s*\(|length\b|exists\s*\(", re.I)
-    for row in rows:
-        field = row["field"]
-        purpose = row["purpose"]
-        source = row["source"]
-        if legacy_direction.search(f"{field}\n{source}"):
-            invalid_direction.append(field)
-        if association_only.search(purpose) and not processing_role.search(purpose):
-            association_fields.append(field)
-        leaf = field_leaf_name(field)
-        if field not in downstream and (not leaf or leaf not in downstream):
-            unused_fields.append(field)
-        normalized_field = re.sub(r"\s+", "", field)
-        if normalized_field.endswith("[]") and not structural_use.search(purpose):
-            container_only_fields.append(field)
-
-    if invalid_direction:
-        raise ValueError(
-            "Phase 1 标准仍区分接口请求/返回方向；接口字段来源只应写接口名称和字段路径："
-            + "、".join(sorted(set(invalid_direction)))
-        )
-    if association_fields:
-        raise ValueError(
-            "Phase 1 标准将仅用于接口查询、参数传递或主体关联的字段列为因子加工输入字段："
-            + "、".join(sorted(set(association_fields)))
-        )
-    if unused_fields:
-        raise ValueError(
-            "Phase 1 标准存在未被过滤、数组处理、计算、聚合、衍生计算或条件分支引用的输入字段："
-            + "、".join(sorted(set(unused_fields)))
-        )
-    if container_only_fields:
-        raise ValueError(
-            "Phase 1 标准将仅用于承载或遍历的数组容器节点列为独立因子加工输入字段；"
-            "请保留实际使用的叶子字段完整路径，不要单列容器节点："
-            + "、".join(sorted(set(container_only_fields)))
-        )
-
-
 def build_rules_for_section(dimension_ref: str, section_text: str) -> list[dict]:
     config = STANDARD_DIMENSIONS[dimension_ref]
     heading = config["heading"]
@@ -497,17 +437,34 @@ def extract_selected_interpretations(sections: dict[str, str]) -> list[dict]:
     return selections
 
 
-def validate_standard_json_summary(summary: dict) -> None:
+def validate_standard_json_basic(summary: dict) -> None:
     if not isinstance(summary, dict):
         raise ValueError("结构化标准 JSON 格式无效。")
     if summary.get("schema_version") != STANDARD_JSON_SCHEMA_VERSION:
         raise ValueError("结构化标准 JSON schema_version 不是 risk_review_standard_json_v4，请重新执行 Phase 1。")
+
+
+def validate_standard_json_summary(summary: dict) -> None:
+    """Strict structural and referential validation.
+
+    Business semantics are deliberately left to Phase 1 and the validation set;
+    this function only verifies that the v4 artifact is complete and internally
+    consistent.
+    """
+    validate_standard_json_basic(summary)
     missing = sorted(field for field in STANDARD_JSON_TOP_LEVEL_FIELDS if field not in summary)
     if missing:
         raise ValueError(f"结构化标准 JSON 缺少顶层字段：{', '.join(missing)}")
     extra = sorted(field for field in summary if field not in STANDARD_JSON_TOP_LEVEL_FIELDS)
     if extra:
         raise ValueError(f"结构化标准 JSON 包含 v4 不支持的旧字段：{', '.join(extra)}")
+    empty_sections = [
+        config["heading"]
+        for config in STANDARD_DIMENSIONS.values()
+        if not str(summary.get(config["key"]) or "").strip()
+    ]
+    if empty_sections:
+        raise ValueError("结构化标准 JSON 缺少完整章节内容：" + "、".join(empty_sections))
     rules = summary.get("rules")
     if not isinstance(rules, list) or not rules:
         raise ValueError("结构化标准 JSON 缺少可评审 rules，请重新执行 Phase 1 摘要抽取。")
@@ -547,154 +504,38 @@ def validate_standard_json_summary(summary: dict) -> None:
         referenced = {item for item in rule.get("evidence_ids") or [] if str(item).startswith("SEL-")}
         if referenced and not referenced.issubset(selection_ids):
             raise ValueError(f"结构化标准 JSON 第 {index} 条规则引用了未登记的 SEL 选定解释。")
-    validate_input_field_usage(summary)
-    validate_default_strategy(summary)
-    validate_hard_logic_dependencies(summary)
 
 
-def validate_default_strategy(summary: dict) -> None:
-    section = str(summary.get("default_strategy") or "")
-    rows = [
-        row
-        for table in extract_markdown_tables(section)
-        for row in (table.get("rows") or [])
-    ]
-    if not rows:
-        raise ValueError("Phase 1 v4 标准缺少默认值异常兜底规则。")
-    forbidden = [
-        row
-        for row in rows
-        if (row.get("项目") or "").strip() in {"默认值", "具体默认值", "默认返回值"}
-    ]
-    if forbidden:
-        raise ValueError("Phase 1 v4 标准不得规定具体默认值，只保留异常返回配置默认值的语义。")
-    compact = _normalize_text(section)
-    if not all(token in compact for token in ("异常", "返回", "配置的默认值")):
-        raise ValueError("Phase 1 v4 标准的 D6 必须明确：异常时返回配置的默认值。")
+def validate_phase1_standard_basic_output(standard_text: str) -> None:
+    body = strip_yaml_frontmatter(standard_text)
+    if not body.strip():
+        raise ValueError("Claude 未输出 Phase 1 标准加工规范正文。")
+    if not re.match(r"#\s+标准加工规范\b", body.lstrip()):
+        raise ValueError("Claude 未输出完整 Phase 1 标准加工规范正文，stdout 必须以「# 标准加工规范」开头。")
+    if not re.search(r"^##\s+\S+", body, re.M):
+        raise ValueError("Phase 1 标准加工规范缺少可识别的 Markdown 二级章节。")
 
 
 def validate_phase1_standard_output(standard_text: str) -> None:
-    body = strip_yaml_frontmatter(standard_text)
-    if not re.search(r"^#\s+标准加工规范\b", body, re.M):
-        raise ValueError("Claude 未输出完整 Phase 1 标准加工规范正文，stdout 必须以「# 标准加工规范」开头。")
+    validate_phase1_standard_basic_output(standard_text)
     summary = build_standard_json_summary(standard_text)
     validate_standard_json_summary(summary)
-    validate_hard_logic_dependencies(summary)
 
 
-def _normalize_text(value: str) -> str:
-    return re.sub(r"\s+", "", str(value or ""))
-
-
-def _rule_mentions_other_rule(rule: dict, target_rule_id: str) -> bool:
-    text = f"{rule.get('content') or ''}\n{rule.get('basis_text') or ''}"
-    return bool(re.search(rf"\b{re.escape(target_rule_id)}\b", text))
-
-
-def _is_time_window_rule(rule: dict) -> bool:
-    if rule.get("dimension_ref") not in {"D3", "D4", "D5"}:
-        return False
-    text = f"{rule.get('content') or ''}\n{rule.get('basis_text') or ''}"
-    return any(token in text for token in ("时间窗口", "窗口起点", "窗口终点", "进件时点", "kprq", "kpyf", "日期", "月份"))
-
-
-def _contains_unresolved_marker(text: str) -> bool:
-    compact = _normalize_text(text)
-    unresolved_markers = (
-        "待确认",
-        "未明确",
-        "原始依据未明确",
-        "需确认",
-        "不适用：原始依据未明确",
-        "无法确定",
-        "未定位",
-        "未找到",
-    )
-    return any(marker in compact for marker in unresolved_markers)
-
-
-def _extract_boundary_table_map(filters_text: str) -> dict[str, str]:
-    for table in extract_markdown_tables(filters_text):
-        headers = table.get("headers") or []
-        if headers[:2] != ["项目", "内容"]:
-            continue
-        mapping = {}
-        for row in table.get("rows") or []:
-            key = str(row.get("项目") or "").strip()
-            value = str(row.get("内容") or "").strip()
-            if key:
-                mapping[key] = value
-        if any(key in mapping for key in ("基准时间点", "时间窗口粒度", "格式转换规则", "窗口起点计算规则", "窗口终点计算规则", "包含边界说明")):
-            return mapping
-    return {}
-
-
-def _rule_requires_time_window_closure(rule: dict) -> bool:
-    if rule.get("standard_level") != "hard":
-        return False
-    if not _is_time_window_rule(rule):
-        return False
-    text = f"{rule.get('content') or ''}\n{rule.get('basis_text') or ''}"
-    if _contains_unresolved_marker(text):
-        return False
-    return True
-
-
-def _boundary_value_has_structural_signal(label: str, value: str) -> bool:
-    compact = _normalize_text(value)
-    if not compact or _contains_unresolved_marker(compact):
-        return False
-    if label == "基准时间点":
-        return bool(extract_field_paths(value))
-    if label == "时间窗口粒度":
-        return any(token in compact for token in ("日", "天", "月", "自然月", "年", "季度"))
-    if label == "格式转换规则":
-        return any(token in compact for token in ("格式", "转换", "截取", "yyyy", "YYYY", "日期", "月份"))
-    if label in {"窗口起点计算规则", "窗口终点计算规则"}:
-        has_formula = any(token in value for token in (">=", "<=", ">", "<", "=", "+", "-", "[", "]", "(", ")", "前", "后"))
-        has_reference = bool(extract_field_paths(value)) or any(token in compact for token in ("进件时点", "申请时点", "申请月份", "基准时间点", "窗口起点", "窗口终点", "月初", "月末"))
-        return has_formula or has_reference
-    if label == "包含边界说明":
-        return any(token in compact for token in ("包含", "不包含", "闭区间", "开区间", ">=<=", "><", "含"))
-    return True
-
-
-def validate_hard_logic_dependencies(summary: dict) -> None:
-    rules = summary.get("rules") or []
-    unresolved = [
-        str(rule.get("rule_id"))
-        for rule in rules
-        if _contains_unresolved_marker(f"{rule.get('content') or ''}\n{rule.get('basis_text') or ''}")
+def validate_phase2_review_basic_output(review_text: str) -> None:
+    body = strip_yaml_frontmatter(review_text)
+    if not body.strip():
+        raise ValueError("Claude 未输出 Phase 2 评审报告正文。")
+    if not re.match(r"#\s+评审报告\b", body.lstrip()):
+        raise ValueError("Claude 未输出完整 Phase 2 评审报告正文，stdout 必须以「# 评审报告」开头。")
+    required_headings = ("总体结论", "汇总问题清单")
+    missing = [
+        heading
+        for heading in required_headings
+        if not re.search(rf"^##\s+{re.escape(heading)}\s*$", body, re.M)
     ]
-    if unresolved:
-        raise ValueError(
-            "Phase 1 v4 标准仍包含未确定的主链口径，请先选择最可能逻辑并固化为 hard："
-            + "、".join(unresolved)
-        )
-
-    filters_text = str(summary.get("filters") or "")
-    time_window_hard_rules = [rule for rule in rules if _rule_requires_time_window_closure(rule)]
-    if not time_window_hard_rules:
-        return
-
-    boundary_map = _extract_boundary_table_map(filters_text)
-    required_labels = ["基准时间点", "时间窗口粒度", "格式转换规则", "窗口起点计算规则", "窗口终点计算规则", "包含边界说明"]
-    missing = [label for label in required_labels if label not in boundary_map]
     if missing:
-        raise ValueError(
-            "Phase 1 标准的 hard 时间窗口规则缺少必要口径："
-            + "、".join(missing)
-        )
-
-    invalid = [
-        label for label in required_labels
-        if not _boundary_value_has_structural_signal(label, boundary_map.get(label, ""))
-    ]
-    if invalid:
-        raise ValueError(
-            "Phase 1 标准的 hard 时间窗口规则口径不完整或不可验证："
-            + "、".join(invalid)
-        )
+        raise ValueError("Phase 2 评审报告缺少必要章节：" + "、".join(missing))
 
 
 def build_standard_json_summary(standard_text: str) -> dict:
@@ -755,7 +596,9 @@ def build_standard_json_summary(standard_text: str) -> dict:
 
 
 def save_standard_json_summary(standard_file_id: str, standard_text: str, *, validate: bool = True) -> str:
+    validate_phase1_standard_basic_output(standard_text)
     summary = build_standard_json_summary(standard_text)
+    validate_standard_json_basic(summary)
     if validate:
         validate_standard_json_summary(summary)
     summary_name = standard_file_id.replace(".md", ".summary.json")
@@ -915,7 +758,12 @@ def compute_phase1_checksum(payload: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def find_cached_phase1_standard(checksum: str, allow_mock: bool = False) -> dict | None:
+def find_cached_phase1_standard(
+    checksum: str,
+    allow_mock: bool = False,
+    *,
+    strict_validation: bool = True,
+) -> dict | None:
     if not checksum or not OUTPUTS_DIR.exists():
         return None
     candidates = sorted(OUTPUTS_DIR.glob("standard-*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -944,7 +792,10 @@ def find_cached_phase1_standard(checksum: str, allow_mock: bool = False) -> dict
             continue
         try:
             summary = json.loads(read_text(summary_path))
-            validate_standard_json_summary(summary)
+            if strict_validation:
+                validate_standard_json_summary(summary)
+            else:
+                validate_standard_json_basic(summary)
             if compute_standard_json_checksum(summary) != meta.get("standard_json_checksum"):
                 continue
         except Exception:

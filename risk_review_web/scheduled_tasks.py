@@ -19,6 +19,7 @@ from typing import Any
 from zipfile import ZipFile
 
 from risk_review_web.api_docs import get_api_doc, list_api_docs
+from risk_review_web.error_classification import classify_task_error
 from risk_review_web.paths import OUTPUTS_DIR, SCHEDULED_RUNS_PATH, SCHEDULED_TASKS_PATH
 from risk_review_web.task_pool import GLOBAL_TASK_POOL
 from risk_review_web.utils import atomic_write_text, read_text
@@ -68,6 +69,13 @@ SCHEDULED_RUN_MAX_COUNT = max(10, int(os.environ.get("RISK_REVIEW_SCHEDULED_RUN_
 
 class ScheduledTaskError(ValueError):
     pass
+
+
+def enrich_error_metadata(payload: JsonDict) -> JsonDict:
+    error = str(payload.get("error") or "").strip()
+    if error:
+        payload.update(classify_task_error(error))
+    return payload
 
 
 def _now() -> datetime:
@@ -667,6 +675,7 @@ class ScheduledTaskService:
                     "status": "failed",
                     "finishedAt": now_text,
                     "error": "服务重启，原执行上下文已丢失。",
+                    **classify_task_error("服务重启，原执行上下文已丢失。"),
                 })
                 changed = True
             if changed:
@@ -898,17 +907,18 @@ class ScheduledTaskService:
                 "unknown": 0,
                 "durationMs": 0,
                 "items": [
-                    {
+                    enrich_error_metadata({
                         "index": index + 1,
                         "factorName": str(item.get("factorName") or f"row-{index + 1}"),
                         "status": "failed",
                         "standardFile": str(item.get("standardFile") or task.get("standardFile") or ""),
                         "reviewFile": "",
                         "error": error_message,
-                    }
+                    })
                     for index, item in enumerate(task.get("items") or [])
                 ],
                 "error": error_message,
+                **classify_task_error(error_message),
             },
         )
         if task.get("scheduleType") == "once":
@@ -1018,6 +1028,7 @@ class ScheduledTaskService:
                         "reviewFile": "",
                         "error": str(exc),
                     }
+                result = enrich_error_metadata(result)
                 with callback_lock:
                     ordered_results[current_index] = result
                     self._update_run(run_id, {"items": [value for value in ordered_results if value is not None]})
@@ -1072,14 +1083,14 @@ class ScheduledTaskService:
                     "error": "任务已终止",
                 }
             self.log(f"scheduled task item failed: runId={run_id} index={index + 1} factor={item.get('factorName') or ''} error={exc}")
-            return {
+            return enrich_error_metadata({
                 "index": index + 1,
                 "factorName": item.get("factorName") or f"row-{index + 1}",
                 "status": "failed",
                 "standardFile": item.get("standardFile") or task_standard_file,
                 "reviewFile": "",
                 "error": str(exc),
-            }
+            })
 
     def _execute_single_item(
         self,
@@ -1107,7 +1118,6 @@ class ScheduledTaskService:
                 {
                     "mock": mock,
                     "retry": 0,
-                    "skipReviewer": task.get("skipReviewer") is True,
                     "skipStageValidation": task.get("skipStageValidation") is True,
                 },
                 run_id,
@@ -1129,7 +1139,6 @@ class ScheduledTaskService:
                 "requirement": requirement,
                 "apiNames": api_names,
                 "mock": mock,
-                "skipReviewer": task.get("skipReviewer") is True,
                 "skipStageValidation": task.get("skipStageValidation") is True,
             }
             outcome = self.dependencies.run_phase1(payload, task_id)
@@ -1152,7 +1161,6 @@ class ScheduledTaskService:
                 "draft": build_item_draft(item),
                 "standardFileId": standard_file,
                 "mock": mock,
-                "skipReviewer": task.get("skipReviewer") is True,
                 "skipStageValidation": task.get("skipStageValidation") is True,
             }
             task_id = f"{run_id}-p2-{index + 1}"
@@ -1225,7 +1233,6 @@ class ScheduledTaskService:
             "runtimeMode": runtime_mode,
             "concurrency": concurrency,
             "failurePolicy": failure_policy,
-            "skipReviewer": bool(payload.get("skipReviewer", True)),
             "skipStageValidation": bool(payload.get("skipStageValidation", True)),
             "standardFile": standard_file,
             "items": normalized_items,

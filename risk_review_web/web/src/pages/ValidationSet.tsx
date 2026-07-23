@@ -560,7 +560,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
     setRunningIds((ids) => [...ids, record.caseId])
     let regressionSubmitted = false
     try {
-      const response = await runRegression({ exampleIds: [record.caseId], skipReviewer: true, skipStageValidation: true })
+      const response = await runRegression({ exampleIds: [record.caseId], skipStageValidation: true })
       regressionSubmitted = true
       window.localStorage.setItem(REGRESSION_TASK_STORAGE_KEY, response.taskId)
       setRegressionTaskId(response.taskId)
@@ -606,7 +606,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
     setRunningIds(ids)
     let regressionSubmitted = false
     try {
-      const response = await runRegression({ exampleIds: ids, skipReviewer: true, skipStageValidation: true })
+      const response = await runRegression({ exampleIds: ids, skipStageValidation: true })
       regressionSubmitted = true
       window.localStorage.setItem(REGRESSION_TASK_STORAGE_KEY, response.taskId)
       setRegressionTaskId(response.taskId)

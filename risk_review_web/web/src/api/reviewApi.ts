@@ -216,7 +216,6 @@ export async function runBatchReview(payload: {
   rows: BatchRow[]
   concurrency?: number
   mock?: boolean
-  skipReviewer?: boolean
   skipStageValidation?: boolean
   retry?: number
   resume?: boolean
@@ -230,7 +229,6 @@ export async function runBatchReview(payload: {
 
 export async function runRegression(payload: {
   exampleIds?: string[]
-  skipReviewer?: boolean
   skipStageValidation?: boolean
 }) {
   return requestJson<{ taskId: string; task: TaskRecord }>('/api/validation/regression', {
@@ -312,7 +310,6 @@ export async function fetchValidationRun(runId: string): Promise<ValidationRun> 
 export async function createReviewModeExperiment(payload: {
   caseIds: string[]
   repetitions?: number
-  skipReviewer?: boolean
   skipStageValidation?: boolean
   mock?: boolean
 }): Promise<{ experimentId: string; taskId: string; task: TaskRecord<ReviewModeExperiment> }> {

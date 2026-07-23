@@ -12,9 +12,10 @@
 - 全局任务池：`risk_review_web/task_pool.py`
 - 定时任务调度与持久化：`risk_review_web/scheduled_tasks.py`
 - 标准与报告校验：`risk_review_web/artifacts.py`
+- 统一任务错误分类：`risk_review_web/error_classification.py`
 - Prompt 装配：`risk_review_web/prompt_builder.py`
 - 路径定义：`risk_review_web/paths.py`
-- Phase 1/Phase 2/Reviewer Prompt：`risk_review_web/prompts/`
+- Phase 1/Phase 2 Prompt：`risk_review_web/prompts/`
 - 规则引擎 Skill：`risk_review_web/prompts/risk-review-skill/`
 - React 前端源码：`risk_review_web/web/src/`
 - React 前端构建配置：`risk_review_web/web/vite.config.ts`
@@ -54,7 +55,7 @@ outputs/
 - 不存在“因子输出字段”评审维度；规则编号 D6 后直接使用 D8、D9。
 - 默认值只校验统一语义：“字段缺失、格式错误或数据异常时返回默认值”；具体返回值不进入标准，也不参与评审。
 
-契约变更必须完整修改生成、结构化摘要、校验、Reviewer、前端展示、Mock 和回归链路，不得通过新增兼容限制保留旧逻辑。
+契约变更必须完整修改生成、结构化摘要、校验、前端展示、Mock 和回归链路，不得通过新增兼容限制保留旧逻辑。
 
 ## 5. 阶段与运行开关
 
@@ -66,15 +67,12 @@ outputs/
 
 只依据 Phase 1 的 v4 结构化摘要、待评审准出内容和允许使用的公共业务规则评审。不得重新读取接口文档、重新推导标准或改变 Phase 1 的选定解释。
 
-### Reviewer
-
-Reviewer 只审核候选输出是否遵守当前阶段 Skill，不重写正文。开启“跳过 Reviewer”时，Phase 1 和 Phase 2 都不得调用 Reviewer。
-
 ### 阶段校验
 
-- 关闭“跳过阶段校验”：强制执行 schema、正文语义和 checksum 校验。
-- 开启“跳过阶段校验”：允许未完成 checksum/完整语义校验的 v4 摘要继续，但仍拒绝非 v4 schema，也不降低 hard 规则约束。
-- P2-A1/P2-A2 和相关提示词必须与开关语义保持一致。
+- 基础校验永远执行：模型输出非空、Markdown 基础结构可识别、JSON 可解析且 schema_version 为 v4。
+- 关闭“跳过严格完整性校验”：额外执行 checksum、完整章节和规则引用关系校验。
+- 开启“跳过严格完整性校验”：只跳过上述严格完整性校验，不降低 v4 hard 规则约束；当前默认开启。
+- 不得使用固定业务措辞或时间窗口表格项正则作为阶段阻断条件。
 
 ## 6. Claude 调用约束
 
@@ -82,10 +80,12 @@ Reviewer 只审核候选输出是否遵守当前阶段 Skill，不重写正文�
 - stdout 必须是完整 Markdown 正文；不得只输出摘要、路径、保存提示、计划或检查过程。
 - Claude 不得自行保存标准或报告；后端负责规范化、校验和落盘。
 - 调用目录必须保证读取到本项目的 `CLAUDE.md`，不得误读其他知识库运行契约。
-- Phase 1、Phase 2 和 Reviewer 只能读取当前阶段明确允许的 Skill 和输入。
+- Phase 1、Phase 2 只能读取当前阶段明确允许的 Skill 和输入。
 - 不得把因子名、内部任务 ID、客户端 ID 或线程池信息拼入模型业务输入。
 - Phase 1 必须在按任务创建的临时隔离工作目录中运行；目录内只复制 Phase 1 Skill、当次指定接口文档和公共业务规则。
 - Phase 1 Claude 调用只允许在隔离目录内使用只读 `Read`、`Glob`、`Grep`，必须禁用 Bash、写文件工具、Slash Commands、项目自定义配置和外部 MCP；任务结束后立即清理隔离目录。
+- Phase 2 必须在按任务创建的临时隔离工作目录中运行；目录内只复制 Phase 2 Skill 和公共业务规则，结构化摘要与待评审内容通过 Prompt 提供。
+- Phase 2 Claude 调用使用与 Phase 1 相同的只读工具和隔离限制，任务结束后立即清理隔离目录。
 - 不得把允许读取的文件全文一次性拼入 Prompt 代替文件隔离。
 
 ## 7. 全局任务池与并发
@@ -96,7 +96,7 @@ Reviewer 只审核候选输出是否遵守当前阶段 Skill，不重写正文�
 - 单因子 Phase 2
 - 批量评审的每条因子流水线
 - 验证集/回归案例执行
-- 流水线内部的 Reviewer 与重试
+- 流水线内部的阶段调用与重试
 - 定时任务的每条因子流水线
 
 约束如下：
@@ -108,7 +108,7 @@ Reviewer 只审核候选输出是否遵守当前阶段 Skill，不重写正文�
 - `scheduled_tasks.py` 只允许保留一个不执行业务加工的计时扫描线程；到期因子必须提交到 `GLOBAL_TASK_POOL`，不得在调度线程内调用 Claude。
 - 批量任务必须按父任务公平轮询，不能一次占满全局队列导致其他登录用户长期饥饿。
 - 已排队任务取消时从全局队列移除；运行中任务取消时终止对应 Claude 进程组，并停止后续阶段。
-- 不得从全局 Worker 内同步提交并等待同一个全局池的子任务，避免线程池死锁。批量/案例流水线应在已占用的 Worker 内顺序执行 Phase 1、Phase 2 和 Reviewer。
+- 不得从全局 Worker 内同步提交并等待同一个全局池的子任务，避免线程池死锁。批量/案例流水线应在已占用的 Worker 内顺序执行 Phase 1 和 Phase 2。
 
 当前全局池是单 Python 进程内全局。若部署多个后端进程或多台服务器，必须改用 Redis 等集中式队列和分布式锁，不能宣称进程内线程池实现了跨节点全局并发。
 

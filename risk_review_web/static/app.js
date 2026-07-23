@@ -794,7 +794,6 @@ async function runRegressionValidation() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         clientId: CLIENT_INSTANCE_ID,
-        skipReviewer: shouldSkipReviewer(),
         skipStageValidation: shouldSkipStageValidation(),
       }),
     });
@@ -1380,7 +1379,6 @@ async function runPhase1() {
         requirement,
         apiNames,
         debugClaude: isClaudeDebugEnabled(),
-        skipReviewer: shouldSkipReviewer(),
         skipStageValidation: shouldSkipStageValidation(),
       }),
     });
@@ -1477,7 +1475,6 @@ async function runPhase2() {
         draft,
         standardFileId: state.standardFileId,
         debugClaude: isClaudeDebugEnabled(),
-        skipReviewer: shouldSkipReviewer(),
         skipStageValidation: shouldSkipStageValidation(),
       }),
     });
@@ -2143,10 +2140,6 @@ function isClaudeDebugEnabled() {
   return Boolean($("#claudeDebugToggle")?.checked);
 }
 
-function shouldSkipReviewer() {
-  return Boolean($("#skipReviewerToggle")?.checked);
-}
-
 function shouldSkipStageValidation() {
   return Boolean($("#skipStageValidationToggle")?.checked);
 }
@@ -2411,7 +2404,6 @@ async function startBatchReview() {
         concurrency: Number($("#batchConcurrency")?.value || 1),
         retry: Number($("#batchRetry")?.value || 0),
         resume: ($("#batchResume")?.value || "1") === "1",
-        skipReviewer: shouldSkipReviewer(),
         skipStageValidation: shouldSkipStageValidation(),
       }),
     });

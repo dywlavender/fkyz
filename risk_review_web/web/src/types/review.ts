@@ -1,5 +1,11 @@
 export type ReviewConclusion = 'pass' | 'fail' | 'confirm' | 'suggestion' | string
 
+export interface TaskErrorMetadata {
+  errorCode?: string
+  errorCategory?: string
+  suggestedAction?: string
+}
+
 export type ReviewVerdict =
   | 'pass'
   | 'fail'
@@ -73,7 +79,6 @@ export interface Phase1Request {
   requirement: string
   apiNames: string[]
   debugClaude?: boolean
-  skipReviewer?: boolean
   skipStageValidation?: boolean
   clientId?: string
   forceRefresh?: boolean
@@ -91,8 +96,6 @@ export interface Phase1Response {
   standardRawFileId?: string
   standardValidationFileId?: string
   standardJsonChecksum?: string
-  reviewer?: unknown
-  reviewerSkipped?: boolean
   success?: boolean
   blocking?: boolean
   validationSummary?: ValidationSummary
@@ -106,7 +109,6 @@ export interface Phase2Request {
   draft: string
   standardFileId: string
   debugClaude?: boolean
-  skipReviewer?: boolean
   skipStageValidation?: boolean
   clientId?: string
 }
@@ -120,8 +122,6 @@ export interface Phase2Response {
   reviewRawFileId?: string
   reviewValidationFileId?: string
   reviewChecksum?: string
-  reviewer?: unknown
-  reviewerSkipped?: boolean
   success?: boolean
   blocking?: boolean
   degraded?: boolean
@@ -395,7 +395,7 @@ export interface ValidationCaseImportResult {
   columns: string[]
 }
 
-export interface ValidationRun {
+export interface ValidationRun extends TaskErrorMetadata {
   groupId?: string
   runId: string
   caseId: string
@@ -517,7 +517,7 @@ export interface ReviewModeExperiment {
   error?: string | null
 }
 
-export interface RegressionTaskItem {
+export interface RegressionTaskItem extends TaskErrorMetadata {
   index?: number
   id?: string
   title?: string
@@ -574,7 +574,7 @@ export interface BatchRow {
   draft?: string
 }
 
-export interface BatchResultItem {
+export interface BatchResultItem extends TaskErrorMetadata {
   index?: number
   factorName?: string
   requirement?: string
@@ -665,7 +665,6 @@ export interface ScheduledTask {
   runtimeMode: 'mock' | 'claude'
   concurrency: number
   failurePolicy: 'continue' | 'stop'
-  skipReviewer: boolean
   skipStageValidation: boolean
   standardFile?: string
   items: ScheduledTaskItem[]
@@ -677,7 +676,7 @@ export interface ScheduledTask {
   lastRunStatus?: ScheduledRunStatus | string | null
 }
 
-export interface ScheduledRunItem {
+export interface ScheduledRunItem extends TaskErrorMetadata {
   index: number
   factorName: string
   status: string
@@ -731,7 +730,6 @@ export interface CreateScheduledTaskRequest {
   runtimeMode: 'mock' | 'claude'
   concurrency: number
   failurePolicy: 'continue' | 'stop'
-  skipReviewer: boolean
   skipStageValidation: boolean
   standardFile?: string
   items: ScheduledTaskItem[]

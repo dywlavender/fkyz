@@ -1465,7 +1465,7 @@ a { color: inherit; }
 .debug-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #111827; user-select: none; }
 .debug-toggle input { width: 14px; height: 14px; accent-color: var(--blue); }
 .debug-toggle-hint { font-size: 11px; color: #6b7280; }
-.reviewer-toggle-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 10px 0 12px; padding: 8px 10px; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; }
+.validation-toggle-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 10px 0 12px; padding: 8px 10px; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; }
 .debug-modal-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 14px; background: #0b1020; color: #d7e3ff; border-top: 1px solid #111827; }
 .modal-viewbar {
   display: flex;

@@ -273,7 +273,6 @@ export function SingleReview(props: SingleReviewProps) {
   const [activeStep, setActiveStep] = useState(0)
   const [oneClickRunning, setOneClickRunning] = useState(false)
   const [oneClickPhase, setOneClickPhase] = useState<'phase1' | 'phase2' | null>(null)
-  const [skipReviewer, setSkipReviewer] = useState(true)
   const [skipStageValidation, setSkipStageValidation] = useState(true)
   const [showExecutionLog, setShowExecutionLog] = useState(false)
   const [executionLogOpen, setExecutionLogOpen] = useState(false)
@@ -742,14 +741,12 @@ export function SingleReview(props: SingleReviewProps) {
   async function executePhase1(values: Pick<ReviewFormValues, 'factorName' | 'requirement' | 'apiNames'>, runToken: number) {
     openExecutionProcessIfEnabled()
     // appendExecutionLog('phase1', 'info', 'Phase 1 任务提交中')
-    if (skipReviewer) appendExecutionLog('phase1', 'info', 'Reviewer 已跳过')
-    if (skipStageValidation) appendExecutionLog('phase1', 'info', '阶段校验已跳过')
+    if (skipStageValidation) appendExecutionLog('phase1', 'info', '严格完整性校验已跳过，基础产物校验仍会执行')
     const response = await runPhase1({
       factorName: values.factorName,
       requirement: values.requirement,
       apiNames: values.apiNames,
       debugClaude: showExecutionLog,
-      skipReviewer,
       skipStageValidation,
     })
     if (runTokenRef.current !== runToken) {
@@ -806,8 +803,7 @@ export function SingleReview(props: SingleReviewProps) {
   async function executePhase2(values: ReviewFormValues, standardFileId: string, draft: string, runToken: number) {
     openExecutionProcessIfEnabled()
     appendExecutionLog('phase2', 'info', 'Phase 2 任务提交中')
-    if (skipReviewer) appendExecutionLog('phase2', 'info', 'Reviewer 已跳过')
-    if (skipStageValidation) appendExecutionLog('phase2', 'info', '阶段校验已跳过')
+    if (skipStageValidation) appendExecutionLog('phase2', 'info', '严格完整性校验已跳过，基础摘要和报告校验仍会执行')
     const response = await runPhase2({
       factorName: values.factorName,
       requirement: values.requirement,
@@ -815,7 +811,6 @@ export function SingleReview(props: SingleReviewProps) {
       draft,
       standardFileId,
       debugClaude: showExecutionLog,
-      skipReviewer,
       skipStageValidation,
     })
     if (runTokenRef.current !== runToken) {
@@ -1220,18 +1215,11 @@ export function SingleReview(props: SingleReviewProps) {
 	                    </Typography.Text>
 	                    <Space size={12} wrap>
 	                      <Checkbox
-	                        checked={skipReviewer}
-	                        disabled={executionDisabled}
-	                        onChange={(event) => setSkipReviewer(event.target.checked)}
-	                      >
-	                        跳过 Reviewer
-	                      </Checkbox>
-	                      <Checkbox
 	                        checked={skipStageValidation}
 	                        disabled={executionDisabled}
 	                        onChange={(event) => setSkipStageValidation(event.target.checked)}
 	                      >
-	                        跳过阶段校验
+	                        跳过严格完整性校验
 	                      </Checkbox>
 	                      <Checkbox
 	                        checked={showExecutionLog}

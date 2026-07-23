@@ -43,7 +43,6 @@ interface BatchTaskResult {
 interface BatchSessionState {
   rows?: BatchRow[]
   concurrency?: number
-  skipReviewer?: boolean
   skipStageValidation?: boolean
   taskId?: string
 }
@@ -113,7 +112,6 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
   const pageActive = usePageActive()
   const [rows, setRows] = useState<BatchRow[]>(() => readBatchSession().rows || [])
   const [concurrency, setConcurrency] = useState(() => readBatchSession().concurrency || 1)
-  const [skipReviewer, setSkipReviewer] = useState(() => readBatchSession().skipReviewer ?? true)
   const [skipStageValidation, setSkipStageValidation] = useState(() => readBatchSession().skipStageValidation ?? true)
   const [loading, setLoading] = useState(false)
   const [taskId, setTaskId] = useState<string | undefined>(() => readBatchSession().taskId)
@@ -154,12 +152,11 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
     const state: BatchSessionState = {
       rows,
       concurrency,
-      skipReviewer,
       skipStageValidation,
       taskId,
     }
     writeBatchSession(state)
-  }, [rows, concurrency, skipReviewer, skipStageValidation, taskId])
+  }, [rows, concurrency, skipStageValidation, taskId])
 
   useEffect(() => {
     if (!taskId || !running) return
@@ -295,7 +292,7 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
 
     setSubmitting(true)
     try {
-      const response = await runBatchReview({ rows, concurrency, skipReviewer, skipStageValidation })
+      const response = await runBatchReview({ rows, concurrency, skipStageValidation })
       setTaskId(response.taskId)
       const nextTask = response.task as TaskRecord<BatchTaskResult>
       setTask(nextTask)
@@ -584,11 +581,8 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
           </Descriptions.Item>
           <Descriptions.Item label="运行开关" span={2}>
             <Space wrap>
-              <Checkbox checked={skipReviewer} disabled={running} onChange={(event) => setSkipReviewer(event.target.checked)}>
-                跳过 Reviewer
-              </Checkbox>
               <Checkbox checked={skipStageValidation} disabled={running} onChange={(event) => setSkipStageValidation(event.target.checked)}>
-                跳过阶段校验
+                跳过严格完整性校验
               </Checkbox>
             </Space>
           </Descriptions.Item>

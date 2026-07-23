@@ -237,9 +237,14 @@ def normalize_batch_rows_from_table(rows: list[list[str]]) -> list[dict]:
     aliases = {
         "factorName": ["因子名", "因子中文名", "factorName", "factor_name"],
         "requirement": ["需求内容", "需求", "requirement"],
-        "apiDocs": ["接口文档", "接口", "apiDocs", "api_names"],
+        "apiDocs": ["接口文档", "接口", "接口文档ID", "apiDocs", "apiDocIds", "api_names"],
         "paramFields": ["因子加工输入字段", "paramFields"],
         "procLogic": ["加工逻辑", "逻辑", "procLogic"],
+        "draft": ["待评审内容", "准出内容", "reviewContent", "review_content", "draft"],
+        "defaultValues": ["默认值", "defaultVal", "defaultValues"],
+        "businessRuleIds": ["业务规则ID", "业务规则 ID", "businessRuleIds", "business_rule_ids"],
+        "standardFile": ["标准文件ID", "标准文件", "standardFile", "standard_file"],
+        "remark": ["备注", "remark"],
     }
     header = [str(cell).strip() for cell in rows[0]]
     col_map = {}
@@ -278,6 +283,134 @@ def list_outputs():
             }
         )
     return files
+
+
+def review_history_record_id(base: str) -> str:
+    """Match the browser's unsigned 32-bit JavaScript hash for existing session IDs."""
+    hash_value = 0
+    encoded = str(base).encode("utf-16-be", errors="surrogatepass")
+    for index in range(0, len(encoded), 2):
+        code_unit = int.from_bytes(encoded[index:index + 2], "big")
+        hash_value = ((hash_value * 31) + code_unit) & 0xFFFFFFFF
+    return f"session-{hash_value:08x}"
+
+
+def factor_name_from_output_name(name: str) -> str:
+    current = re.match(
+        r"^(?:standard|review)-(.+?)-\d{4}-\d{2}-\d{2}-[a-z0-9]{8}-[a-z0-9]{8}(?:\.|$)",
+        name,
+        re.I,
+    )
+    if current:
+        return current.group(1).replace("-", " ").strip()
+    legacy = re.match(
+        r"^(?:standard|review)-(.+)-\d{4}-\d{2}-\d{2}-[a-z0-9]{8}\.",
+        name,
+        re.I,
+    )
+    return legacy.group(1).replace("-", " ").strip() if legacy else name
+
+
+def parse_review_history_artifact(name: str) -> dict | None:
+    legacy = re.match(
+        r"^(standard|review)-(.+)\.(standard|review)\.(md|json|raw\.txt|validation\.json)$",
+        name,
+        re.I,
+    )
+    if legacy and legacy.group(1).lower() == legacy.group(3).lower():
+        extension = legacy.group(4).lower()
+        return {
+            "phase": legacy.group(1).lower(),
+            "base": legacy.group(2),
+            "kind": "raw" if extension == "raw.txt" else "validation" if extension == "validation.json" else extension,
+        }
+    current = re.match(
+        r"^(standard|review)-(.+)\.(md|summary\.json|raw\.txt|validation\.json)$",
+        name,
+        re.I,
+    )
+    if not current:
+        return None
+    extension = current.group(3).lower()
+    return {
+        "phase": current.group(1).lower(),
+        "base": f"{current.group(1).lower()}-{current.group(2)}",
+        "kind": (
+            "json"
+            if extension == "summary.json"
+            else "raw"
+            if extension == "raw.txt"
+            else "validation"
+            if extension == "validation.json"
+            else "md"
+        ),
+    }
+
+
+def review_history_records() -> list[dict]:
+    grouped: dict[str, dict] = {}
+    created_at_numbers: dict[str, int] = {}
+    for output in list_outputs():
+        parsed = parse_review_history_artifact(output["name"])
+        if not parsed:
+            continue
+        base = parsed["base"]
+        record = grouped.get(base)
+        if record is None:
+            record = {
+                "recordId": review_history_record_id(base),
+                "factorName": factor_name_from_output_name(output["name"]),
+                "createdAt": datetime.fromtimestamp(output.get("mtime") or 0, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                "source": "validation" if "vrun-" in base else "single",
+                "mode": "phase1_only",
+                "conclusion": "confirm",
+                "riskCount": 0,
+                "standardArtifacts": {},
+                "reviewArtifacts": {},
+            }
+            grouped[base] = record
+            created_at_numbers[base] = int(output.get("mtime") or 0)
+        if int(output.get("mtime") or 0) > created_at_numbers[base]:
+            created_at_numbers[base] = int(output.get("mtime") or 0)
+            record["createdAt"] = datetime.fromtimestamp(
+                output.get("mtime") or 0,
+                tz=timezone.utc,
+            ).isoformat().replace("+00:00", "Z")
+        artifact_group = record["standardArtifacts"] if parsed["phase"] == "standard" else record["reviewArtifacts"]
+        artifact_group[parsed["kind"]] = output["name"]
+        record["mode"] = (
+            "one_click"
+            if record["standardArtifacts"].get("md") and record["reviewArtifacts"].get("md")
+            else "phase2_only"
+            if record["reviewArtifacts"].get("md")
+            else "phase1_only"
+        )
+    return sorted(grouped.values(), key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+
+
+def delete_review_history_record(record_id: str) -> dict:
+    record = next(
+        (item for item in review_history_records() if item.get("recordId") == record_id),
+        None,
+    )
+    if not record:
+        raise FileNotFoundError("评审历史记录不存在")
+    file_names = {
+        str(file_name)
+        for group_name in ("standardArtifacts", "reviewArtifacts")
+        for file_name in (record.get(group_name) or {}).values()
+        if file_name
+    }
+    deleted_files = []
+    for file_name in sorted(file_names):
+        safe_name = Path(file_name)
+        if safe_name.is_absolute() or len(safe_name.parts) != 1 or safe_name.name != file_name:
+            raise ValueError(f"非法产物文件名：{file_name}")
+        artifact_path = OUTPUTS_DIR / safe_name
+        if artifact_path.exists() and artifact_path.is_file():
+            artifact_path.unlink()
+            deleted_files.append(file_name)
+    return {"recordId": record_id, "deletedFiles": deleted_files}
 
 
 def parse_examples():
@@ -2455,6 +2588,8 @@ class Handler(BaseHTTPRequestHandler):
             json_response(self, 200, {"api": doc})
         elif path == "/api/outputs":
             json_response(self, 200, {"outputs": list_outputs()})
+        elif path == "/api/review-history":
+            success_response(self, review_history_records())
         elif path == "/api/validation-cases":
             success_response(self, validation_cases())
         elif path.startswith("/api/validation-cases/"):
@@ -2945,6 +3080,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/review-history/"):
+            record_id = unquote(parsed.path.split("/")[-1])
+            try:
+                success_response(self, delete_review_history_record(record_id))
+            except FileNotFoundError as exc:
+                error_response(self, 404, str(exc))
+            except (OSError, ValueError) as exc:
+                error_response(self, 400, str(exc))
+            return
         if parsed.path.startswith("/api/validation-cases/"):
             case_id = unquote(parsed.path.split("/")[-1])
             with EXAMPLES_LOCK:

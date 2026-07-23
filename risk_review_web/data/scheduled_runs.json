@@ -1,1 +1,205 @@
-[]
+[
+  {
+    "runId": "run-20260720-203007-dd05",
+    "taskId": "task-20260720-202950-890d",
+    "taskName": "测试1",
+    "trigger": "manual",
+    "status": "partial_success",
+    "startedAt": "2026-07-20T20:30:07+08:00",
+    "finishedAt": "2026-07-20T21:23:50+08:00",
+    "total": 18,
+    "success": 6,
+    "failed": 12,
+    "unknown": 0,
+    "durationMs": 3223090,
+    "items": [
+      {
+        "index": 1,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201233363419013998268d9d6bdCOYdO4). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 2,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201239409529437638268d9d6u2kNg4ON). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 3,
+        "factorName": "投资人最近一次变更距今月份数",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201243129407943548268d9d6DmUBcUvz). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 4,
+        "factorName": "投资人最近一次变更距今月份数",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201246443907594818268d9d68poYhNZC). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 5,
+        "factorName": "提款金额检查",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-20-debb4e2b-85f6576b.md",
+        "reviewFile": "review-factor-2026-07-20-run20260-d0df3939.md",
+        "error": ""
+      },
+      {
+        "index": 6,
+        "factorName": "提款金额检查",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-20-50eb2035-b97b4c4a.md",
+        "reviewFile": "review-factor-2026-07-20-run20260-cf846016.md",
+        "error": ""
+      },
+      {
+        "index": 7,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 20260720125350632494348268d9d6toHG1dk4). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 8,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201257345462793808268d9d6TXSF71tT). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 9,
+        "factorName": "近6个月主账户成功入账金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201301029144373998268d9d6RUJBU0P5). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 10,
+        "factorName": "近6个月主账户成功入账金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201304377161621968268d9d6uRXCVKJN). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 11,
+        "factorName": "流动资金提款可用标志",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-20-debb4e2b-b43a3ba5.md",
+        "reviewFile": "review-factor-2026-07-20-run20260-82710f47.md",
+        "error": ""
+      },
+      {
+        "index": 12,
+        "factorName": "流动资金提款可用标志",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-20-debb4e2b-b43a3ba5.md",
+        "reviewFile": "review-factor-2026-07-20-run20260-b48ab088.md",
+        "error": ""
+      },
+      {
+        "index": 13,
+        "factorName": "近12个月有效购方数量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201312215237888598268d9d6XjibpWqs). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 14,
+        "factorName": "近12个月有效购方数量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201315494307317188268d9d6BE7XwlcE). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 15,
+        "factorName": "严重逾期存续贷款余额",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-20-debb4e2b-cd4de30e.md",
+        "reviewFile": "review-factor-2026-07-20-run20260-bfaa3df9.md",
+        "error": ""
+      },
+      {
+        "index": 16,
+        "factorName": "严重逾期存续贷款余额",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-20-debb4e2b-cd4de30e.md",
+        "reviewFile": "review-factor-2026-07-20-run20260-07f062fb.md",
+        "error": ""
+      },
+      {
+        "index": 17,
+        "factorName": "未来30天临期可售库存量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201320067676965248268d9d60iGH5ejS). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 18,
+        "factorName": "未来30天临期可售库存量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201323491981407138268d9d6PqUTe9zc). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      }
+    ],
+    "createdAt": "2026-07-20T20:30:07+08:00"
+  },
+  {
+    "runId": "run-20260720-215739-6465",
+    "taskId": "task-20260720-202950-890d",
+    "taskName": "测试1",
+    "trigger": "manual",
+    "status": "failed",
+    "startedAt": "2026-07-20T21:57:39+08:00",
+    "finishedAt": "2026-07-20T22:11:51+08:00",
+    "total": 18,
+    "success": 0,
+    "failed": 0,
+    "unknown": 0,
+    "durationMs": 0,
+    "items": [
+      {
+        "index": 1,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201401214143363068268d9d6F7lRbuj7). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 2,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201405054353558688268d9d6ybWr5rbX). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      },
+      {
+        "index": 3,
+        "factorName": "投资人最近一次变更距今月份数",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "error": "API Error: 500 sensitive_words_detected (request id: 202607201408398658561668268d9d666MturZx). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+      }
+    ],
+    "createdAt": "2026-07-20T21:57:39+08:00",
+    "error": "服务重启，原执行上下文已丢失。"
+  }
+]

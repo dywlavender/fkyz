@@ -41,7 +41,7 @@ import {
   AppError,
   runRegression,
 } from '../api/reviewApi'
-import { HeaderActions } from '../components/AppLayout'
+import { HeaderActions, usePageActive } from '../components/AppLayout'
 import { MarkdownViewer } from '../components/MarkdownViewer'
 import type {
   AppNotice,
@@ -214,6 +214,7 @@ function matchTag(run?: ValidationRun) {
 }
 
 export function ValidationSet({ examples, onNotice, onCopyToSingle }: ValidationSetProps) {
+  const pageActive = usePageActive()
   const [form] = Form.useForm<CaseFormValues>()
   const [cases, setCases] = useState<ValidationCase[]>([])
   const [runs, setRuns] = useState<ValidationRun[]>([])
@@ -733,7 +734,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
 
   return (
     <Space className="app-page" direction="vertical" size={12} style={{ width: '100%' }}>
-      <HeaderActions>
+      <HeaderActions page="validation-set">
         <Space className="app-header-action-space" size={8} wrap>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreator}>新增案例</Button>
           <Tooltip title="支持 CSV / XLSX；可直接提供待评审内容，或分别提供因子加工输入字段、加工逻辑和默认值">
@@ -937,7 +938,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
         )}
       </Card>
 
-      <Drawer className="drawer-compact" title={detailCase?.caseName || '案例详情'} width="min(820px, 90vw)" open={!!detailCase} onClose={() => setDetailCase(null)}>
+      <Drawer className="drawer-compact" title={detailCase?.caseName || '案例详情'} width="min(820px, 90vw)" open={pageActive && !!detailCase} mask={false} onClose={() => setDetailCase(null)}>
         {detailCase ? (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <Descriptions bordered column={1} size="small">
@@ -988,7 +989,8 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
         title={editingCase ? '编辑验证案例' : '新增验证案例'}
         className="drawer-compact"
         width="min(820px, 90vw)"
-        open={editorOpen}
+        open={pageActive && editorOpen}
+        mask={false}
         onClose={() => setEditorOpen(false)}
         extra={<Space><Button onClick={() => setEditorOpen(false)}>取消</Button><Button type="primary" onClick={saveCase}>保存</Button></Space>}
       >
@@ -1039,7 +1041,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
         </Form>
       </Drawer>
 
-      <Drawer className="drawer-compact" title="验证结果详情" width="min(860px, 90vw)" open={resultOpen} onClose={() => setResultOpen(false)}>
+      <Drawer className="drawer-compact" title="验证结果详情" width="min(860px, 90vw)" open={pageActive && resultOpen} mask={false} onClose={() => setResultOpen(false)}>
         {activeRun ? (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <Alert
@@ -1090,7 +1092,8 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
         className="drawer-compact"
         title={activeRegressionItem?.title || activeRegressionItem?.id || '回归结果详情'}
         width="min(900px, 92vw)"
-        open={!!activeRegressionItem}
+        open={pageActive && !!activeRegressionItem}
+        mask={false}
         onClose={() => setActiveRegressionItem(null)}
       >
         {activeRegressionItem ? (
@@ -1143,7 +1146,8 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
 
       <Modal
         title="案例导入结果"
-        open={!!importResult}
+        open={pageActive && !!importResult}
+        maskClosable={false}
         onCancel={() => setImportResult(null)}
         footer={<Button type="primary" onClick={() => setImportResult(null)}>关闭</Button>}
         width="min(900px, 90vw)"

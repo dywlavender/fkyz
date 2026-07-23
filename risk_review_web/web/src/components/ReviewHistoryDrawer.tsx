@@ -234,6 +234,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
       className="drawer-compact"
       title={record?.factorName || '评审历史详情'}
       open={open}
+      mask={false}
       width="min(920px, 90vw)"
       onClose={onClose}
       extra={record ? <DocumentDownloads record={record} /> : null}

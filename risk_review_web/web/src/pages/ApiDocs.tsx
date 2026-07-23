@@ -115,7 +115,7 @@ export function ApiDocs({ docs, onNotice }: ApiDocsProps) {
 
   return (
     <Space className="app-page" direction="vertical" size={12} style={{ width: '100%' }}>
-      <HeaderActions>
+      <HeaderActions page="api-docs">
         <Space className="app-header-action-space" size={8} wrap>
           <Button loading={loading} disabled={!active} onClick={reloadActiveDoc}>刷新当前文档</Button>
           <Tooltip title="后端暂未提供接口文档上传 API">

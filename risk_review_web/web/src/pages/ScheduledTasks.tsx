@@ -1,4 +1,4 @@
-import { DeleteOutlined, DownOutlined, EyeOutlined, MoreOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { DeleteOutlined, DownloadOutlined, DownOutlined, EyeOutlined, MoreOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   Alert,
   Button,
@@ -42,7 +42,8 @@ import {
   updateScheduledTask,
   AppError,
 } from '../api/reviewApi'
-import { HeaderActions } from '../components/AppLayout'
+import { HeaderActions, usePageActive } from '../components/AppLayout'
+import { downloadScheduledTaskImportTemplate } from '../utils/csvTemplates'
 import type {
   AppNotice,
   CreateScheduledTaskRequest,
@@ -108,6 +109,20 @@ function scheduleLabel(task: ScheduledTask) {
   return `Cron ${task.cron || '-'}`
 }
 
+const SCHEDULE_TYPE_LABELS: Record<TaskFormValues['scheduleType'], string> = {
+  once: '单次',
+  daily: '每日',
+  weekly: '每周',
+  monthly: '每月',
+  cron: 'Cron',
+}
+
+const TASK_MODE_LABELS: Record<TaskFormValues['mode'], string> = {
+  phase1_only: '仅执行 Phase 1',
+  phase1_phase2: '执行 Phase 1 + Phase 2',
+  phase2_only: '仅执行 Phase 2',
+}
+
 function statusColor(status?: string) {
   const normalized = String(status || '').toLowerCase()
   if (normalized === 'success') return 'success'
@@ -118,6 +133,7 @@ function statusColor(status?: string) {
 }
 
 export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
+  const pageActive = usePageActive()
   const [form] = Form.useForm<TaskFormValues>()
   const [tasks, setTasks] = useState<ScheduledTask[]>([])
   const [loading, setLoading] = useState(false)
@@ -154,6 +170,10 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
     form.setFieldsValue(DEFAULT_FORM_VALUES)
     void loadTasks()
   }, [])
+
+  useEffect(() => {
+    if (pageActive && preview) setCreatorOpen(true)
+  }, [pageActive])
 
   const previewColumns: ColumnsType<ScheduledTaskItem> = [
     { title: '因子名称', dataIndex: 'factorName' },
@@ -424,9 +444,9 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
     }
   }
 
-  const watchedScheduleType = Form.useWatch('scheduleType', form)
-  const watchedMode = Form.useWatch('mode', form)
-  const watchedIgnoreErrorRows = Form.useWatch('ignoreErrorRows', form)
+  const watchedScheduleType = Form.useWatch('scheduleType', { form, preserve: true })
+  const watchedMode = Form.useWatch('mode', { form, preserve: true })
+  const watchedIgnoreErrorRows = Form.useWatch('ignoreErrorRows', { form, preserve: true })
 
   const canCreate = useMemo(() => {
     if (!preview) return false
@@ -436,7 +456,8 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
 
   async function handleCreate() {
     try {
-      const values = await form.validateFields()
+      await form.validateFields()
+      const values = form.getFieldsValue(true)
       if (!preview) {
         onNotice({ type: 'warning', message: '请先上传并预览文件' })
         return
@@ -476,6 +497,17 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
       const message = caught instanceof Error ? caught.message : '创建任务失败'
       onNotice({ type: 'error', message })
     }
+  }
+
+  async function handleNextCreatorStep() {
+    if (creatorStep === 2) {
+      try {
+        await form.validateFields()
+      } catch {
+        return
+      }
+    }
+    setCreatorStep((value) => Math.min(3, value + 1))
   }
 
   function renderScheduleFields(scheduleType?: string) {
@@ -533,9 +565,10 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
 
   return (
     <Space className="app-page compact-form" direction="vertical" size={12} style={{ width: '100%' }}>
-      <HeaderActions>
+      <HeaderActions page="scheduled-tasks">
         <Space className="app-header-action-space" size={8} wrap>
           <Button icon={<ReloadOutlined />} loading={loading} onClick={loadTasks}>刷新</Button>
+          <Button icon={<DownloadOutlined />} onClick={downloadScheduledTaskImportTemplate}>下载模板</Button>
           <Tooltip title={backendUnavailable ? '当前后端尚未启用定时任务接口，页面和代码已保留' : undefined}>
             <span><Button type="primary" icon={<PlusOutlined />} disabled={backendUnavailable} onClick={openCreator}>新建任务</Button></span>
           </Tooltip>
@@ -583,7 +616,8 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
         className="drawer-compact"
         title={editingTaskId ? '编辑定时任务' : '新建定时任务'}
         width="min(980px, 90vw)"
-        open={creatorOpen}
+        open={pageActive && creatorOpen}
+        mask={false}
         onClose={() => setCreatorOpen(false)}
         extra={
           <Space>
@@ -592,8 +626,8 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
               {creatorStep < 3 ? (
                 <Button
                   type="primary"
-                onClick={() => setCreatorStep((value) => value + 1)}
-                disabled={(creatorStep === 0 && !preview) || (creatorStep === 1 && !preview)}
+                  onClick={() => void handleNextCreatorStep()}
+                  disabled={(creatorStep === 0 && !preview) || (creatorStep === 1 && !preview)}
                 >
                   下一步
                 </Button>
@@ -717,7 +751,8 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
                     当前预览文件：{selectedFile?.name || '-'}，有效因子 {preview?.items.length || 0} 个。
                   </Typography.Paragraph>
                   <Typography.Paragraph>
-                    任务将按 {watchedScheduleType || '-'} 周期执行，模式为 {watchedMode || '-'}。
+                    任务将按 {watchedScheduleType ? SCHEDULE_TYPE_LABELS[watchedScheduleType] : '-'} 周期执行，
+                    模式为 {watchedMode ? TASK_MODE_LABELS[watchedMode] : '-'}。
                   </Typography.Paragraph>
                 </Space>
               </Card>
@@ -730,7 +765,8 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
         className="drawer-compact"
         title={detailTask?.taskName || '任务详情'}
         width="min(960px, 90vw)"
-        open={detailOpen}
+        open={pageActive && detailOpen}
+        mask={false}
         onClose={() => setDetailOpen(false)}
       >
         {detailTask ? (

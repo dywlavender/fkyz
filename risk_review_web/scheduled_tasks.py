@@ -19,7 +19,7 @@ from typing import Any
 from zipfile import ZipFile
 
 from risk_review_web.api_docs import get_api_doc, list_api_docs
-from risk_review_web.paths import SCHEDULED_RUNS_PATH, SCHEDULED_TASKS_PATH
+from risk_review_web.paths import OUTPUTS_DIR, SCHEDULED_RUNS_PATH, SCHEDULED_TASKS_PATH
 from risk_review_web.task_pool import GLOBAL_TASK_POOL
 from risk_review_web.utils import atomic_write_text, read_text
 
@@ -528,6 +528,17 @@ def summarize_run_status(items: list[JsonDict]) -> tuple[str, int, int, int]:
     return status, success, failed, unknown
 
 
+def detect_review_conclusion(markdown: str) -> str:
+    source = str(markdown or "")
+    overall = re.search(r"\|\s*总体结论\s*\|\s*([^|]+?)\s*\|", source)
+    target = overall.group(1) if overall else source
+    if re.search(r"❌|不通过|未通过|不符合", target):
+        return "fail"
+    if re.search(r"✅|(?<!不)通过|符合", target):
+        return "pass"
+    return "unknown"
+
+
 @dataclass
 class SchedulerDependencies:
     run_review_pair: RunItemExecutor
@@ -591,11 +602,13 @@ class ScheduledTaskService:
         dependencies: SchedulerDependencies,
         log: LogFn | None = None,
         cancel_execution: CancelExecutionFn | None = None,
+        outputs_dir: Path = OUTPUTS_DIR,
     ) -> None:
         self.store = store
         self.dependencies = dependencies
         self.log = log or (lambda _message: None)
         self.cancel_execution = cancel_execution
+        self.outputs_dir = outputs_dir
         self.execution_lock = threading.RLock()
         self.running_task_ids: set[str] = set()
         self.run_futures: dict[str, list[Future]] = {}
@@ -757,7 +770,32 @@ class ScheduledTaskService:
         run = self.store.get_run(run_id)
         if not run:
             raise ScheduledTaskError("执行记录不存在。")
-        return run
+        return self._enrich_run_conclusions(run)
+
+    def _enrich_run_conclusions(self, run: JsonDict) -> JsonDict:
+        enriched_items: list[JsonDict] = []
+        output_root = self.outputs_dir.resolve()
+        for raw_item in run.get("items") or []:
+            item = dict(raw_item)
+            if item.get("reviewConclusion") in {"pass", "fail"}:
+                enriched_items.append(item)
+                continue
+            review_file = str(item.get("reviewFile") or "").strip()
+            if not review_file or Path(review_file).name != review_file:
+                item["reviewConclusion"] = "unknown"
+                enriched_items.append(item)
+                continue
+            candidate = (output_root / review_file).resolve()
+            if candidate.parent != output_root or not candidate.is_file():
+                item["reviewConclusion"] = "unknown"
+                enriched_items.append(item)
+                continue
+            try:
+                item["reviewConclusion"] = detect_review_conclusion(read_text(candidate))
+            except OSError:
+                item["reviewConclusion"] = "unknown"
+            enriched_items.append(item)
+        return {**run, "items": enriched_items}
 
     def cancel_run(self, run_id: str) -> JsonDict:
         run = self.get_run(run_id)
@@ -1081,6 +1119,7 @@ class ScheduledTaskService:
                 "status": "success" if pipeline_item.get("status") == "done" else "failed",
                 "standardFile": pipeline_item.get("standardFileId") or "",
                 "reviewFile": pipeline_item.get("reviewFileId") or "",
+                "reviewConclusion": detect_review_conclusion(str(pipeline_item.get("raw") or "")),
                 "error": "" if pipeline_item.get("status") == "done" else str(pipeline_item.get("raw") or "执行失败"),
             }
         if mode == "phase1_only":
@@ -1126,6 +1165,7 @@ class ScheduledTaskService:
                 "status": "success" if ok else "failed",
                 "standardFile": standard_file,
                 "reviewFile": result.get("reviewFileId") or "",
+                "reviewConclusion": detect_review_conclusion(str(result.get("stdout") or "")),
                 "error": "" if ok else str(result.get("stderr") or "Phase 2 失败"),
             }
         raise ScheduledTaskError("不支持的任务模式。")

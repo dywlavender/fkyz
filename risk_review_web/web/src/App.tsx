@@ -1,8 +1,8 @@
 import { FileSearchOutlined, HistoryOutlined } from '@ant-design/icons'
 import { App as AntdApp, Button, ConfigProvider, FloatButton, Space, Typography, message } from 'antd'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 
-import { AppLayout, type PageKey } from './components/AppLayout'
+import { AppLayout, PageActivity, type PageKey } from './components/AppLayout'
 import { ApiDocs } from './pages/ApiDocs'
 import { BatchReview } from './pages/BatchReview'
 import { History } from './pages/History'
@@ -25,8 +25,19 @@ function detectClaudeReady(health?: SystemHealth | null) {
   return Boolean(health?.claude?.claude_path) || Boolean(health?.claude?.mock_mode)
 }
 
+function KeptPage({ active, children }: { active: boolean; children: ReactNode }) {
+  return (
+    <div style={{ display: active ? 'block' : 'none' }}>
+      <PageActivity active={active}>{children}</PageActivity>
+    </div>
+  )
+}
+
 export default function App() {
   const [page, setPage] = useState<PageKey>('workbench')
+  const [visitedPages, setVisitedPages] = useState<Set<PageKey>>(
+    () => new Set<PageKey>(['workbench', 'single-review'])
+  )
   const [apiDocs, setApiDocs] = useState<ApiDocItem[]>([])
   const [examples, setExamples] = useState<ExampleItem[]>([])
   const [history, setHistory] = useState<ReviewHistoryRecord[]>([])
@@ -93,12 +104,21 @@ export default function App() {
     }
   }, [])
 
-  function handleNotice(notice: AppNotice) {
+  useEffect(() => {
+    setVisitedPages((current) => {
+      if (current.has(page)) return current
+      const next = new Set(current)
+      next.add(page)
+      return next
+    })
+  }, [page])
+
+  const handleNotice = useCallback((notice: AppNotice) => {
     messageApi.open({
       type: notice.type,
       content: notice.description ? `${notice.message}：${notice.description}` : notice.message,
     })
-  }
+  }, [messageApi])
 
   function renderPage() {
     if (loading) {
@@ -109,24 +129,11 @@ export default function App() {
       return <ErrorState error={error} onRetry={() => window.location.reload()} />
     }
 
-    const singleReviewNode = (
-      <div style={{ display: page === 'single-review' ? 'block' : 'none' }}>
-        <SingleReview
-          apiDocs={apiDocs}
-          examples={examples}
-          onNotice={handleNotice}
-          prefillCase={singlePrefill}
-          onPrefillConsumed={() => setSinglePrefill(null)}
-          prefillStandardRecord={standardPrefill}
-          onPrefillStandardConsumed={() => setStandardPrefill(null)}
-        />
-      </div>
-    )
-
-    let activePageNode = null
-    switch (page) {
-      case 'workbench':
-        activePageNode = (
+    const keep = (target: PageKey) => page === target || visitedPages.has(target)
+    return (
+      <>
+        {keep('workbench') ? (
+          <KeptPage active={page === 'workbench'}>
           <Workbench
             history={history}
             onOpenHistory={(record) => {
@@ -139,19 +146,37 @@ export default function App() {
             onNavigateValidation={() => setPage('validation-set')}
             onNavigateHistory={() => setPage('history')}
           />
-        )
-        break
-      case 'single-review':
-        activePageNode = null
-        break
-      case 'batch-review':
-        activePageNode = <BatchReview onNotice={handleNotice} />
-        break
-      case 'scheduled-tasks':
-        activePageNode = <ScheduledTasks onNotice={handleNotice} />
-        break
-      case 'validation-set':
-        activePageNode = (
+          </KeptPage>
+        ) : null}
+
+        {keep('single-review') ? (
+          <KeptPage active={page === 'single-review'}>
+            <SingleReview
+              apiDocs={apiDocs}
+              examples={examples}
+              onNotice={handleNotice}
+              prefillCase={singlePrefill}
+              onPrefillConsumed={() => setSinglePrefill(null)}
+              prefillStandardRecord={standardPrefill}
+              onPrefillStandardConsumed={() => setStandardPrefill(null)}
+            />
+          </KeptPage>
+        ) : null}
+
+        {keep('batch-review') ? (
+          <KeptPage active={page === 'batch-review'}>
+            <BatchReview onNotice={handleNotice} />
+          </KeptPage>
+        ) : null}
+
+        {keep('scheduled-tasks') ? (
+          <KeptPage active={page === 'scheduled-tasks'}>
+            <ScheduledTasks onNotice={handleNotice} />
+          </KeptPage>
+        ) : null}
+
+        {keep('validation-set') ? (
+          <KeptPage active={page === 'validation-set'}>
           <ValidationSet
             examples={examples}
             onNotice={handleNotice}
@@ -160,10 +185,11 @@ export default function App() {
               setPage('single-review')
             }}
           />
-        )
-        break
-      case 'history':
-        activePageNode = (
+          </KeptPage>
+        ) : null}
+
+        {keep('history') ? (
+          <KeptPage active={page === 'history'}>
           <History
             items={history}
             selectedRecordId={focusedHistoryRecordId}
@@ -178,25 +204,26 @@ export default function App() {
               if (focusedHistoryRecordId === recordId) setFocusedHistoryRecordId(undefined)
             }}
           />
-        )
-        break
-      case 'api-docs':
-        activePageNode = <ApiDocs docs={apiDocs} onNotice={handleNotice} />
-        break
-      case 'settings':
-        activePageNode = <Settings health={health} />
-        break
-      case 'legacy':
-        activePageNode = <LegacyWorkbench />
-        break
-      default:
-        activePageNode = null
-    }
+          </KeptPage>
+        ) : null}
 
-    return (
-      <>
-        {singleReviewNode}
-        {page === 'single-review' ? null : activePageNode}
+        {keep('api-docs') ? (
+          <KeptPage active={page === 'api-docs'}>
+            <ApiDocs docs={apiDocs} onNotice={handleNotice} />
+          </KeptPage>
+        ) : null}
+
+        {keep('settings') ? (
+          <KeptPage active={page === 'settings'}>
+            <Settings health={health} />
+          </KeptPage>
+        ) : null}
+
+        {keep('legacy') ? (
+          <KeptPage active={page === 'legacy'}>
+            <LegacyWorkbench />
+          </KeptPage>
+        ) : null}
       </>
     )
   }

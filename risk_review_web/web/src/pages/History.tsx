@@ -4,7 +4,7 @@ import type { Key } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { deleteReviewHistoryRecord } from '../api/reviewApi'
-import { HeaderActions } from '../components/AppLayout'
+import { HeaderActions, usePageActive } from '../components/AppLayout'
 import { EmptyState } from '../components/EmptyState'
 import { ReviewHistoryDrawer, hasArtifacts, modeLabel, sourceLabel } from '../components/ReviewHistoryDrawer'
 import { StatusBadge } from '../components/StatusBadge'
@@ -55,8 +55,10 @@ function createdTime(record: ReviewHistoryRecord) {
 }
 
 export function History(props: HistoryProps) {
+  const pageActive = usePageActive()
   const { items, selectedRecordId, onSelectedRecordConsumed, onReuse, onNotice, onDeleted } = props
   const [deleteTarget, setDeleteTarget] = useState<ReviewHistoryRecord | null>(null)
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [activeRecord, setActiveRecord] = useState<ReviewHistoryRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -91,46 +93,49 @@ export function History(props: HistoryProps) {
 
   function confirmBatchDelete() {
     if (!DELETE_SUPPORTED) return
+    if (!selectedRowKeys.length) return
+    setBatchDeleteOpen(true)
+  }
+
+  async function executeBatchDelete() {
     const ids = selectedRowKeys.map(String)
-    if (!ids.length) return
-    Modal.confirm({
-      title: '批量删除评审记录',
-      content: `将删除已选 ${ids.length} 条记录及其关联准出文档和评审结果文档，请确认。`,
-      okText: '批量删除',
-      cancelText: '取消',
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setDeleting(true)
-        const failed: Array<{ id: string; message: string }> = []
-        const succeeded: string[] = []
-        for (const id of ids) {
-          try {
-            await deleteReviewHistoryRecord(id)
-            succeeded.push(id)
-            onDeleted(id)
-          } catch (caught) {
-            failed.push({
-              id,
-              message: caught instanceof Error ? caught.message : '删除失败',
-            })
-          }
-        }
-        setSelectedRowKeys((current) => current.filter((key) => failed.some((item) => item.id === String(key))))
-        if (activeRecord && succeeded.includes(activeRecord.recordId)) {
-          setActiveRecord(null)
-        }
-        setDeleting(false)
-        if (failed.length) {
-          onNotice({
-            type: 'warning',
-            message: `批量删除完成：成功 ${ids.length - failed.length}，失败 ${failed.length}`,
-            description: failed.slice(0, 3).map((item) => `${item.id}: ${item.message}`).join('；'),
+    if (!ids.length || !DELETE_SUPPORTED) {
+      setBatchDeleteOpen(false)
+      return
+    }
+    setDeleting(true)
+    const failed: Array<{ id: string; message: string }> = []
+    const succeeded: string[] = []
+    try {
+      for (const id of ids) {
+        try {
+          await deleteReviewHistoryRecord(id)
+          succeeded.push(id)
+          onDeleted(id)
+        } catch (caught) {
+          failed.push({
+            id,
+            message: caught instanceof Error ? caught.message : '删除失败',
           })
-        } else {
-          onNotice({ type: 'success', message: `已删除 ${ids.length} 条历史记录` })
         }
-      },
-    })
+      }
+      setSelectedRowKeys((current) => current.filter((key) => failed.some((item) => item.id === String(key))))
+      if (activeRecord && succeeded.includes(activeRecord.recordId)) {
+        setActiveRecord(null)
+      }
+      setBatchDeleteOpen(false)
+      if (failed.length) {
+        onNotice({
+          type: 'warning',
+          message: `批量删除完成：成功 ${ids.length - failed.length}，失败 ${failed.length}`,
+          description: failed.slice(0, 3).map((item) => `${item.id}: ${item.message}`).join('；'),
+        })
+      } else {
+        onNotice({ type: 'success', message: `已删除 ${ids.length} 条历史记录` })
+      }
+    } finally {
+      setDeleting(false)
+    }
   }
 
   const filteredItems = useMemo(() => {
@@ -191,7 +196,7 @@ export function History(props: HistoryProps) {
 
   return (
     <Space className="app-page" direction="vertical" size={12} style={{ width: '100%' }}>
-      <HeaderActions>
+      <HeaderActions page="history">
         <Space className="app-header-action-space" size={8} wrap>
           <Button onClick={() => window.location.reload()}>刷新</Button>
           <Tooltip title={DELETE_SUPPORTED ? '按评审记录删除会调用后端接口删除关联产物，失败记录会保留。' : '当前后端不支持删除评审历史，不能执行前端假删除。'}>
@@ -269,14 +274,35 @@ export function History(props: HistoryProps) {
 
         <ReviewHistoryDrawer
           record={activeRecord}
-          open={!!activeRecord}
+          open={pageActive && !!activeRecord}
           onClose={() => setActiveRecord(null)}
           onNotice={onNotice}
         />
 
         <Modal
+          title="批量删除评审记录"
+          open={pageActive && batchDeleteOpen}
+          maskClosable={false}
+          onCancel={() => setBatchDeleteOpen(false)}
+          onOk={() => void executeBatchDelete()}
+          confirmLoading={deleting}
+          okText="批量删除"
+          cancelText="取消"
+          okButtonProps={{ danger: true, disabled: !DELETE_SUPPORTED || !selectedRowKeys.length }}
+          cancelButtonProps={{ disabled: deleting }}
+        >
+          <Typography.Paragraph>
+            将删除已选 {selectedRowKeys.length} 条记录及其关联准出文档和评审结果文档，请确认。
+          </Typography.Paragraph>
+          <Typography.Text type="secondary">
+            删除失败的记录会继续保留在列表和选中项中。
+          </Typography.Text>
+        </Modal>
+
+        <Modal
           title="删除评审记录"
-          open={!!deleteTarget}
+          open={pageActive && !!deleteTarget}
+          maskClosable={false}
           onCancel={() => setDeleteTarget(null)}
           onOk={confirmDelete}
           confirmLoading={deleting}

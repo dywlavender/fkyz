@@ -1,8 +1,10 @@
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Space, Statistic, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Modal, Space, Spin, Statistic, Table, Tag, Typography } from 'antd'
 import { useEffect, useState } from 'react'
 import type { ColumnsType } from 'antd/es/table'
 
-import { cancelScheduledRun, fetchScheduledRun, fetchScheduledRuns, runScheduledTaskNow } from '../api/reviewApi'
+import { cancelScheduledRun, fetchOutputText, fetchScheduledRun, fetchScheduledRuns, runScheduledTaskNow } from '../api/reviewApi'
+import { usePageActive } from '../components/AppLayout'
+import { MarkdownViewer } from '../components/MarkdownViewer'
 import type { AppNotice, ScheduledRun, ScheduledRunItem, ScheduledTask } from '../types/review'
 
 interface ScheduledTaskDetailProps {
@@ -25,7 +27,14 @@ function formatDate(value?: string) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
+function conclusionTag(value?: string) {
+  if (value === 'pass') return <Tag color="success">通过</Tag>
+  if (value === 'fail') return <Tag color="error">不符合</Tag>
+  return <Typography.Text type="secondary">-</Typography.Text>
+}
+
 export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
+  const pageActive = usePageActive()
   const { task, onNotice, onRefreshTask } = props
   const [runs, setRuns] = useState<ScheduledRun[]>([])
   const [loading, setLoading] = useState(false)
@@ -34,6 +43,12 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
   const [selectedRun, setSelectedRun] = useState<ScheduledRun | null>(null)
   const [runningNow, setRunningNow] = useState(false)
   const [cancellingRunId, setCancellingRunId] = useState<string>()
+  const [documentOpen, setDocumentOpen] = useState(false)
+  const [documentLoading, setDocumentLoading] = useState(false)
+  const [documentTitle, setDocumentTitle] = useState('文档')
+  const [documentFile, setDocumentFile] = useState('')
+  const [documentContent, setDocumentContent] = useState('')
+  const [documentError, setDocumentError] = useState('')
   const hasActiveRun = runs.some((run) => run.status === 'pending' || run.status === 'running')
 
   async function loadRuns() {
@@ -118,6 +133,25 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
     }
   }
 
+  async function openDocument(fileId: string | undefined, title: string) {
+    if (!fileId) return
+    setDocumentTitle(title)
+    setDocumentFile(fileId)
+    setDocumentContent('')
+    setDocumentError('')
+    setDocumentOpen(true)
+    setDocumentLoading(true)
+    try {
+      setDocumentContent(await fetchOutputText(fileId))
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : `读取${title}失败`
+      setDocumentError(message)
+      onNotice({ type: 'error', message })
+    } finally {
+      setDocumentLoading(false)
+    }
+  }
+
   const runColumns: ColumnsType<ScheduledRun> = [
     { title: '执行时间', dataIndex: 'startedAt', render: (value: string) => formatDate(value) },
     {
@@ -160,9 +194,37 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
       width: 120,
       render: (value: string) => <Tag color={statusColor(value)}>{value || '-'}</Tag>,
     },
-    { title: 'standardFile', dataIndex: 'standardFile', ellipsis: true },
-    { title: 'reviewFile', dataIndex: 'reviewFile', ellipsis: true },
+    {
+      title: '评审结果',
+      dataIndex: 'reviewConclusion',
+      width: 110,
+      render: (value?: string) => conclusionTag(value),
+    },
     { title: '错误信息', dataIndex: 'error', ellipsis: true, render: (value?: string) => value || '-' },
+    {
+      title: '操作',
+      width: 230,
+      render: (_value, record) => (
+        <Space size={4} wrap>
+          <Button
+            type="link"
+            size="small"
+            disabled={!record.standardFile}
+            onClick={() => void openDocument(record.standardFile, '标准文档')}
+          >
+            查看标准文档
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            disabled={!record.reviewFile}
+            onClick={() => void openDocument(record.reviewFile, '评审结果')}
+          >
+            查看评审结果
+          </Button>
+        </Space>
+      ),
+    },
   ]
 
   return (
@@ -219,7 +281,8 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
         className="drawer-compact"
         title={drawerTitle}
         width="min(860px, 90vw)"
-        open={drawerOpen}
+        open={pageActive && drawerOpen}
+        mask={false}
         onClose={() => setDrawerOpen(false)}
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -242,9 +305,28 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
               <Card className="compact-card"><Statistic title="未完成" value={selectedRun.unknown} /></Card>
             </Space>
           ) : null}
-          <Table rowKey={(record) => `${record.index}-${record.factorName}`} className="compact-table" size="small" dataSource={selectedRun?.items || []} columns={itemColumns} pagination={false} scroll={{ x: 900 }} />
+          <Table rowKey={(record) => `${record.index}-${record.factorName}`} className="compact-table" size="small" dataSource={selectedRun?.items || []} columns={itemColumns} pagination={false} scroll={{ x: 880 }} />
         </Space>
       </Drawer>
+
+      <Modal
+        title={documentTitle}
+        open={pageActive && documentOpen}
+        maskClosable={false}
+        width="min(920px, 92vw)"
+        footer={null}
+        onCancel={() => setDocumentOpen(false)}
+      >
+        <Spin spinning={documentLoading}>
+          {documentError ? (
+            <Alert type="error" showIcon message={`${documentTitle}读取失败`} description={documentError} />
+          ) : documentContent ? (
+            <MarkdownViewer content={documentContent} fileName={documentFile || `${documentTitle}.md`} />
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={documentLoading ? '正在读取文档…' : '暂无文档内容'} />
+          )}
+        </Spin>
+      </Modal>
     </Space>
   )
 }

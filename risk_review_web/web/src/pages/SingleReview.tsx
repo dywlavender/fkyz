@@ -23,6 +23,7 @@ import type { CSSProperties } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { EmptyState } from '../components/EmptyState'
+import { usePageActive } from '../components/AppLayout'
 import { MarkdownViewer, isJsonContent, isMarkdownContent } from '../components/MarkdownViewer'
 import { ReviewResultPanel } from '../components/ReviewResultPanel'
 import {
@@ -106,6 +107,7 @@ function validationSeverityTag(item: ValidationItem) {
 }
 
 function ValidationIssuesButton({ phase1, phase2 }: { phase1?: Phase1Response | null; phase2?: Phase2Response | null }) {
+  const pageActive = usePageActive()
   const [open, setOpen] = useState(false)
   const items = [
     ...(phase1?.validationItems || []).map((item) => ({ ...item, phase: 'Phase 1' })),
@@ -118,7 +120,8 @@ function ValidationIssuesButton({ phase1, phase2 }: { phase1?: Phase1Response | 
       </Button>
       <Modal
         title="校验问题"
-        open={open}
+        open={pageActive && open}
+        maskClosable={false}
         width="min(920px, 90vw)"
         footer={null}
         onCancel={() => setOpen(false)}
@@ -158,6 +161,7 @@ function ArtifactDocumentButton(props: {
   title: '准出文档' | '评审文档'
   onNotice: (notice: AppNotice) => void
 }) {
+  const pageActive = usePageActive()
   const { fileId, title, onNotice } = props
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -193,7 +197,8 @@ function ArtifactDocumentButton(props: {
       </Button>
       <Modal
         title={title}
-        open={open}
+        open={pageActive && open}
+        maskClosable={false}
         width="min(860px, 90vw)"
         footer={null}
         onCancel={() => setOpen(false)}
@@ -248,6 +253,7 @@ function ResultArtifactBar(props: {
 }
 
 export function SingleReview(props: SingleReviewProps) {
+  const pageActive = usePageActive()
   const { apiDocs, examples, onNotice, prefillCase, prefillStandardRecord, onPrefillConsumed, onPrefillStandardConsumed } = props
   const [form] = Form.useForm<ReviewFormValues>()
   const [loadingPhase1, setLoadingPhase1] = useState(false)
@@ -1335,7 +1341,8 @@ export function SingleReview(props: SingleReviewProps) {
 
       <Modal
         title={drawerTitle}
-        open={drawerOpen}
+        open={pageActive && drawerOpen}
+        maskClosable={false}
         width="min(860px, 90vw)"
         footer={null}
         onCancel={() => setDrawerOpen(false)}
@@ -1377,7 +1384,8 @@ export function SingleReview(props: SingleReviewProps) {
 
       <Modal
         title="执行日志"
-        open={executionLogOpen}
+        open={pageActive && executionLogOpen}
+        maskClosable={false}
         width="min(960px, 92vw)"
         footer={null}
         onCancel={() => setExecutionLogOpen(false)}
@@ -1409,7 +1417,8 @@ export function SingleReview(props: SingleReviewProps) {
 
       <Modal
         title="加载验证案例"
-        open={caseModalOpen}
+        open={pageActive && caseModalOpen}
+        maskClosable={false}
         width="min(920px, 90vw)"
         onCancel={() => setCaseModalOpen(false)}
         onOk={handleLoadCase}
@@ -1455,7 +1464,8 @@ export function SingleReview(props: SingleReviewProps) {
 
       <Modal
         title="确认清空当前页面内容？"
-        open={clearConfirmOpen}
+        open={pageActive && clearConfirmOpen}
+        maskClosable={false}
         onCancel={() => setClearConfirmOpen(false)}
         onOk={confirmClearPage}
         okText="清空"

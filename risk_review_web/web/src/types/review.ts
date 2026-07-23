@@ -618,6 +618,7 @@ export interface ScheduledRunItem {
   status: string
   standardFile?: string
   reviewFile?: string
+  reviewConclusion?: 'pass' | 'fail' | 'unknown' | string
   error?: string
 }
 

@@ -13,7 +13,7 @@ import {
 } from '@ant-design/icons'
 import { Badge, Button, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import type { GlobalPoolStatus } from '../types/review'
 
@@ -83,27 +83,47 @@ const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
   legacy: { title: '原有功能台', subtitle: '保留尚未迁移或仍需使用的页面、按钮与调试入口' },
 }
 
-const HeaderActionsContext = createContext<(actions: ReactNode) => void>(() => {})
+type HeaderActionsRegistry = (page: PageKey, actions: ReactNode | null) => void
 
-export function HeaderActions({ children }: { children: ReactNode }) {
-  const setHeaderActions = useContext(HeaderActionsContext)
+const HeaderActionsContext = createContext<HeaderActionsRegistry>(() => {})
+const PageActivityContext = createContext(true)
+
+export function PageActivity({ active, children }: { active: boolean; children: ReactNode }) {
+  return <PageActivityContext.Provider value={active}>{children}</PageActivityContext.Provider>
+}
+
+export function usePageActive() {
+  return useContext(PageActivityContext)
+}
+
+export function HeaderActions({ page, children }: { page: PageKey; children: ReactNode }) {
+  const registerHeaderActions = useContext(HeaderActionsContext)
   useEffect(() => {
-    setHeaderActions(children)
-    return () => setHeaderActions(null)
-  }, [children, setHeaderActions])
+    registerHeaderActions(page, children)
+    return () => registerHeaderActions(page, null)
+  }, [children, page, registerHeaderActions])
   return null
 }
 
 export function AppLayout(props: AppLayoutProps) {
   const { page, onNavigate, mockMode, claudeReady, pool, headerActions: propHeaderActions, children } = props
   const [collapsed, setCollapsed] = useState(false)
-  const [slotHeaderActions, setSlotHeaderActions] = useState<ReactNode>(null)
+  const [slotHeaderActions, setSlotHeaderActions] = useState<Partial<Record<PageKey, ReactNode>>>({})
   const meta = pageMeta[page]
-  const headerActions = propHeaderActions ?? slotHeaderActions
+  const headerActions = propHeaderActions ?? slotHeaderActions[page]
   const shellStyle = useMemo(
     () => ({ '--sider-width': collapsed ? '72px' : '244px' }) as CSSProperties,
     [collapsed]
   )
+  const registerHeaderActions = useCallback<HeaderActionsRegistry>((targetPage, actions) => {
+    setSlotHeaderActions((current) => {
+      if (current[targetPage] === actions) return current
+      const next = { ...current }
+      if (actions === null) delete next[targetPage]
+      else next[targetPage] = actions
+      return next
+    })
+  }, [])
 
   return (
     <Layout className={collapsed ? 'app-shell app-shell-collapsed' : 'app-shell'} style={shellStyle}>
@@ -174,7 +194,7 @@ export function AppLayout(props: AppLayoutProps) {
           {headerActions ? <div className="app-header-actions">{headerActions}</div> : null}
         </Layout.Header>
         <Layout.Content className="app-content">
-          <HeaderActionsContext.Provider value={setSlotHeaderActions}>
+          <HeaderActionsContext.Provider value={registerHeaderActions}>
             {children}
           </HeaderActionsContext.Provider>
         </Layout.Content>

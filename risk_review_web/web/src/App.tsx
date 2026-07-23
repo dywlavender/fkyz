@@ -10,6 +10,7 @@ import { ScheduledTasks } from './pages/ScheduledTasks'
 import { Settings } from './pages/Settings'
 import { SingleReview } from './pages/SingleReview'
 import { ValidationSet } from './pages/ValidationSet'
+import { ReviewModeExperimentPage } from './pages/ReviewModeExperiment'
 import { Workbench } from './pages/Workbench'
 import { LegacyWorkbench } from './pages/LegacyWorkbench'
 import { fetchApiDocs, fetchExamples, fetchGlobalPoolStatus, fetchHealth, fetchReviewHistory } from './api/reviewApi'
@@ -185,6 +186,12 @@ export default function App() {
               setPage('single-review')
             }}
           />
+          </KeptPage>
+        ) : null}
+
+        {keep('review-mode-experiment') ? (
+          <KeptPage active={page === 'review-mode-experiment'}>
+            <ReviewModeExperimentPage onNotice={handleNotice} />
           </KeptPage>
         ) : null}
 

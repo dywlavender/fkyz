@@ -3,6 +3,7 @@ import {
   AppstoreOutlined,
   BarsOutlined,
   DatabaseOutlined,
+  ExperimentOutlined,
   FileSearchOutlined,
   HistoryOutlined,
   MenuFoldOutlined,
@@ -23,6 +24,7 @@ export type PageKey =
   | 'batch-review'
   | 'scheduled-tasks'
   | 'validation-set'
+  | 'review-mode-experiment'
   | 'history'
   | 'api-docs'
   | 'settings'
@@ -44,6 +46,7 @@ const navItems: Array<{ key: PageKey; icon: ReactNode; label: string }> = [
   { key: 'batch-review', icon: <BarsOutlined />, label: '批量评审' },
   { key: 'scheduled-tasks', icon: <ScheduleOutlined />, label: '定时任务' },
   { key: 'validation-set', icon: <DatabaseOutlined />, label: '验证集' },
+  { key: 'review-mode-experiment', icon: <ExperimentOutlined />, label: '模式对比实验' },
   { key: 'history', icon: <HistoryOutlined />, label: '评审历史' },
   { key: 'api-docs', icon: <ApiOutlined />, label: '接口文档库' },
   { key: 'settings', icon: <SettingOutlined />, label: '系统设置' },
@@ -61,13 +64,13 @@ const items: MenuProps['items'] = [
     key: 'group-assets',
     label: '质量与资产',
     type: 'group',
-    children: navItems.slice(4, 7),
+    children: navItems.slice(4, 8),
   },
   {
     key: 'group-system',
     label: '系统',
     type: 'group',
-    children: navItems.slice(7),
+    children: navItems.slice(8),
   },
 ]
 
@@ -77,6 +80,7 @@ const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
   'batch-review': { title: '批量评审', subtitle: '批量导入、并发执行与结果回收' },
   'scheduled-tasks': { title: '定时任务', subtitle: '周期任务、运行状态与执行记录' },
   'validation-set': { title: '验证集', subtitle: '回归案例、期望结论与质量验证' },
+  'review-mode-experiment': { title: '评审模式对比实验', subtitle: '直接评审与两阶段评审的同案例基准对照' },
   history: { title: '评审历史', subtitle: '准出标准、评审报告与产物下载' },
   'api-docs': { title: '接口文档库', subtitle: '评审可引用的数据接口资产' },
   settings: { title: '系统设置', subtitle: '运行模式、依赖状态与环境配置' },

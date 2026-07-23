@@ -452,6 +452,71 @@ export interface BatchValidationRun {
   }>
 }
 
+export interface ReviewModeResult {
+  status: 'pending' | 'running' | 'success' | 'error' | 'cancelled' | string
+  actualConclusion?: string
+  conclusionMatched?: boolean
+  issuesMatched?: boolean | null
+  matched?: boolean
+  issueEvaluation?: ValidationRun['issueEvaluation']
+  issueStats?: {
+    fail?: number
+    pending?: number
+    suggest?: number
+  }
+  durationMs?: number
+  standardFile?: string
+  standardJsonFile?: string
+  reviewFile?: string
+  error?: string
+}
+
+export interface ReviewModeExperimentItem {
+  itemId: string
+  caseId: string
+  caseName: string
+  round: number
+  expectedConclusion?: string
+  issueBaselineConfigured?: boolean
+  direct: ReviewModeResult
+  twoStage: ReviewModeResult
+}
+
+export interface ReviewModeMetric {
+  completed: number
+  success: number
+  errors: number
+  conclusionMatched: number
+  issueEvaluated: number
+  issuesMatched: number
+  fullyMatched: number
+  conclusionAccuracy?: number | null
+  issueAccuracy?: number | null
+  fullAccuracy?: number | null
+  averageDurationMs?: number | null
+}
+
+export interface ReviewModeExperiment {
+  experimentId: string
+  taskId: string
+  status: 'queued' | 'running' | 'cancelling' | 'cancelled' | 'done' | 'error' | string
+  caseIds: string[]
+  caseCount: number
+  repetitions: number
+  createdAt: string
+  startedAt?: string | null
+  finishedAt?: string | null
+  items: ReviewModeExperimentItem[]
+  summary: {
+    total: number
+    completed: number
+    direct: ReviewModeMetric
+    twoStage: ReviewModeMetric
+    winner: 'direct' | 'twoStage' | 'tie' | string
+  }
+  error?: string | null
+}
+
 export interface RegressionTaskItem {
   index?: number
   id?: string

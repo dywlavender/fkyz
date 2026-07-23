@@ -56,6 +56,7 @@ from risk_review_web.paths import (
     EXAMPLES_DIR,
     EXAMPLES_PATH,
     VALIDATION_RUNS_PATH,
+    REVIEW_MODE_EXPERIMENTS_PATH,
     OUTPUTS_DIR,
     PHASE1_SKILL_PATH,
     PHASE2_SKILL_PATH,
@@ -73,6 +74,7 @@ from risk_review_web.prompt_builder import (
     build_phase1_prompt,
     build_phase2_prompt,
     build_reviewer_prompt,
+    build_direct_review_prompt,
 )
 from risk_review_web.scheduled_tasks import ScheduledTaskError, build_service as build_scheduled_task_service
 from risk_review_web.task_pool import GLOBAL_TASK_POOL
@@ -84,6 +86,7 @@ RUNNING_PROCS = {}
 RUNNING_PROCS_LOCK = threading.Lock()
 EXAMPLES_LOCK = threading.Lock()
 VALIDATION_RUNS_LOCK = threading.Lock()
+REVIEW_MODE_EXPERIMENTS_LOCK = threading.Lock()
 SCHEDULED_TASK_SERVICE = None
 
 # 任务记录回收：终态任务保留 N 分钟后删除；TASKS 总量不超过上限。
@@ -667,6 +670,74 @@ def latest_validation_runs_by_case() -> dict[str, dict]:
     return latest
 
 
+def parse_review_mode_experiments() -> list[dict]:
+    if not REVIEW_MODE_EXPERIMENTS_PATH.exists():
+        return []
+    try:
+        data = json.loads(read_text(REVIEW_MODE_EXPERIMENTS_PATH))
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_review_mode_experiments(experiments: list[dict]):
+    EXAMPLES_DIR.mkdir(exist_ok=True)
+    trimmed = sorted(
+        experiments,
+        key=lambda item: item.get("createdAt") or "",
+        reverse=True,
+    )[:200]
+    atomic_write_text(
+        REVIEW_MODE_EXPERIMENTS_PATH,
+        json.dumps(trimmed, ensure_ascii=False, indent=2),
+    )
+
+
+def upsert_review_mode_experiment(experiment: dict) -> dict:
+    with REVIEW_MODE_EXPERIMENTS_LOCK:
+        experiments = parse_review_mode_experiments()
+        experiment_id = str(experiment.get("experimentId") or "")
+        for index, current in enumerate(experiments):
+            if current.get("experimentId") == experiment_id:
+                experiments[index] = {**current, **experiment}
+                saved = experiments[index]
+                break
+        else:
+            experiments.append(experiment)
+            saved = experiment
+        save_review_mode_experiments(experiments)
+    return saved
+
+
+def get_review_mode_experiment(experiment_id: str) -> dict | None:
+    with REVIEW_MODE_EXPERIMENTS_LOCK:
+        return next(
+            (
+                item
+                for item in parse_review_mode_experiments()
+                if item.get("experimentId") == experiment_id
+            ),
+            None,
+        )
+
+
+def recover_stale_review_mode_experiments():
+    with REVIEW_MODE_EXPERIMENTS_LOCK:
+        experiments = parse_review_mode_experiments()
+        changed = False
+        for experiment in experiments:
+            if experiment.get("status") not in ("queued", "running", "cancelling"):
+                continue
+            experiment.update({
+                "status": "error",
+                "finishedAt": _iso_time(),
+                "error": "后端服务已重启，原对比实验无法继续，请重新执行",
+            })
+            changed = True
+        if changed:
+            save_review_mode_experiments(experiments)
+
+
 def validation_case_from_example(example: dict, latest_run: dict | None = None) -> dict:
     tags = _string_list(example.get("tags"))
     kind = str(example.get("kind") or "").strip()
@@ -1002,6 +1073,16 @@ def request_task_cancel(task_id: str) -> bool:
     for child_id in child_ids:
         terminate_task_process(child_id)
     cancel_validation_runs_for_task(task_id)
+    experiment_id = str((task or {}).get("experimentId") or "")
+    if experiment_id:
+        upsert_review_mode_experiment({
+            "experimentId": experiment_id,
+            "status": "cancelled" if queued_single_cancelled else "cancelling",
+            **({
+                "finishedAt": _iso_time(),
+                "error": "实验在全局线程池排队期间被取消",
+            } if queued_single_cancelled else {}),
+        })
     if task:
         task_log(
             task_id,
@@ -1991,20 +2072,15 @@ def expected_matches_verdict(example: dict, verdict: str) -> bool:
     expected = str(example.get("expected") or "")
     if not expected.strip():
         return True
-    allowed = set()
-    if re.search(r"不通过|不符合|失败|fail", expected, re.I):
-        allowed.add("fail")
-    if re.search(r"建议|修改|warn|suggest", expected, re.I):
-        allowed.add("warn")
-        allowed.add("pass")
-    if re.search(r"待确认|confirm", expected, re.I):
-        allowed.add("idle")
-    positive_expected = re.sub(r"不通过|不符合|失败|fail", "", expected, flags=re.I)
-    positive_expected = re.sub(r"建议修改后通过|建议|修改|warn|suggest(?:ion)?", "", positive_expected, flags=re.I)
-    if re.search(r"通过|符合|pass", positive_expected, re.I) or re.search(r"✅\s*(通过|符合)", expected):
-        allowed.add("pass")
-    if allowed:
-        return verdict in allowed
+    expected_code = validation_expected_code(expected)
+    if expected_code == "fail":
+        return verdict == "fail"
+    if expected_code == "confirm":
+        return verdict == "idle"
+    if expected_code == "suggestion":
+        return verdict in ("warn", "pass")
+    if expected_code == "pass":
+        return verdict == "pass"
     return True
 
 
@@ -2230,6 +2306,339 @@ def summarize_regression_items(items: list[dict], total: int | None = None) -> d
     }
 
 
+def experiment_mode_result(example: dict, report: str, *, duration_ms: int, **artifacts) -> dict:
+    verdict = detect_verdict_text(report)
+    conclusion_matched = expected_matches_verdict(example, verdict)
+    issue_evaluation = evaluate_issue_expectations(example, report)
+    issue_configured = bool(issue_evaluation.get("configured"))
+    issues_matched = bool(issue_evaluation.get("matched")) if issue_configured else None
+    return {
+        "status": "success",
+        "actualConclusion": "suggestion" if verdict == "warn" else "confirm" if verdict == "idle" else verdict,
+        "conclusionMatched": conclusion_matched,
+        "issuesMatched": issues_matched,
+        "matched": conclusion_matched and bool(issue_evaluation.get("matched")),
+        "issueEvaluation": issue_evaluation,
+        "issueStats": collect_review_stats(report),
+        "durationMs": duration_ms,
+        **artifacts,
+    }
+
+
+def summarize_experiment_mode(items: list[dict], mode: str) -> dict:
+    results = [
+        item.get(mode) or {}
+        for item in items
+        if (item.get(mode) or {}).get("status") in ("success", "error", "cancelled")
+    ]
+    successes = [item for item in results if item.get("status") == "success"]
+    issue_evaluated = [item for item in successes if item.get("issuesMatched") is not None]
+    durations = [int(item.get("durationMs") or 0) for item in successes]
+    return {
+        "completed": len(results),
+        "success": len(successes),
+        "errors": len([item for item in results if item.get("status") == "error"]),
+        "conclusionMatched": len([item for item in successes if item.get("conclusionMatched")]),
+        "issueEvaluated": len(issue_evaluated),
+        "issuesMatched": len([item for item in issue_evaluated if item.get("issuesMatched")]),
+        "fullyMatched": len([item for item in successes if item.get("matched")]),
+        "conclusionAccuracy": round(
+            100 * len([item for item in successes if item.get("conclusionMatched")]) / len(successes),
+            1,
+        ) if successes else None,
+        "issueAccuracy": round(
+            100 * len([item for item in issue_evaluated if item.get("issuesMatched")]) / len(issue_evaluated),
+            1,
+        ) if issue_evaluated else None,
+        "fullAccuracy": round(
+            100 * len([item for item in successes if item.get("matched")]) / len(successes),
+            1,
+        ) if successes else None,
+        "averageDurationMs": round(sum(durations) / len(durations)) if durations else None,
+    }
+
+
+def summarize_review_mode_experiment(items: list[dict], total: int) -> dict:
+    direct = summarize_experiment_mode(items, "direct")
+    two_stage = summarize_experiment_mode(items, "twoStage")
+    winner = "tie"
+    if direct.get("fullAccuracy") is not None and two_stage.get("fullAccuracy") is not None:
+        if direct["fullAccuracy"] > two_stage["fullAccuracy"]:
+            winner = "direct"
+        elif two_stage["fullAccuracy"] > direct["fullAccuracy"]:
+            winner = "twoStage"
+    return {
+        "total": total,
+        "completed": len([
+            item for item in items
+            if (item.get("direct") or {}).get("status") in ("success", "error", "cancelled")
+            and (item.get("twoStage") or {}).get("status") in ("success", "error", "cancelled")
+        ]),
+        "direct": direct,
+        "twoStage": two_stage,
+        "winner": winner,
+    }
+
+
+def mock_direct_review_report(example: dict) -> str:
+    expected = validation_expected_code(example.get("expected"))
+    expected_patterns = _string_list(example.get("expectedIssuePatterns"))
+    if expected == "fail":
+        issue = expected_patterns[0] if expected_patterns else "加工逻辑与需求存在明确不一致"
+        conclusion = "❌ 不通过，需修改"
+        count = 1
+        rows = (
+            f"| I-001 | ❌ 不符合 | {issue} | 需求与加工逻辑直接对照 | "
+            "可能导致加工结果偏离需求 | 按需求修正对应加工逻辑 |"
+        )
+    else:
+        conclusion = "✅ 通过"
+        count = 0
+        rows = "无"
+    return f"""# 直接评审报告
+
+## 输入解析
+
+| 项目 | 内容 |
+|---|---|
+| 需求内容 | 已提供 |
+| 待评审加工逻辑 | 已提供 |
+| 评审依据 | 仅比较本次输入，不使用外部标准 |
+
+## 总体结论
+
+| 项目 | 内容 |
+|---|---|
+| 总体结论 | {conclusion} |
+| 问题统计 | ❌ 不符合 {count} 项 / 🔵 待确认 0 项 / ⚠️ 建议 0 项 |
+
+## 汇总问题清单
+
+| 序号 | 级别 | 核心问题 | 输入依据 | 影响 | 修改建议 |
+|---|---|---|---|---|---|
+{rows}
+"""
+
+
+def run_direct_experiment_review(
+    parent_task_id: str,
+    example: dict,
+    item_index: int,
+    *,
+    mock: bool | None = None,
+) -> tuple[str, str]:
+    child_id = f"{parent_task_id}-{item_index}-direct"
+    create_task_record(
+        child_id,
+        task_type="comparison-direct",
+        parent_task_id=parent_task_id,
+    )
+    with TASK_LOCK:
+        TASKS[child_id]["status"] = "running"
+        TASKS[child_id]["updated"] = time.time()
+    use_mock = os.environ.get("RISK_REVIEW_MOCK") == "1" or mock is True
+    if use_mock:
+        time.sleep(0.05)
+        status = "cancelled" if task_cancel_requested(child_id) else "done"
+        result = {
+            "stdout": "" if status == "cancelled" else mock_direct_review_report(example),
+            "stderr": "直接评审已取消" if status == "cancelled" else "",
+            "returncode": 130 if status == "cancelled" else 0,
+        }
+    else:
+        prompt = build_direct_review_prompt(
+            requirement=str(example.get("requirement") or ""),
+            draft=str(example.get("draft") or example.get("reviewContent") or ""),
+        )
+        with tempfile.TemporaryDirectory(prefix="risk-review-direct-") as workspace:
+            status, result = run_claude_prompt(
+                child_id,
+                "Direct Review",
+                prompt,
+                isolated_workspace=Path(workspace),
+            )
+    with TASK_LOCK:
+        TASKS[child_id]["status"] = status
+        TASKS[child_id]["result"] = result
+        TASKS[child_id]["updated"] = time.time()
+    if status != "done":
+        raise RuntimeError(result.get("stderr") or "直接评审失败")
+    report = str(result.get("stdout") or "").strip()
+    if not report.startswith("# 直接评审报告"):
+        raise ValueError("直接评审输出格式错误：必须以“# 直接评审报告”开头")
+    safe_case = re.sub(r"[^a-zA-Z0-9_-]", "-", str(example.get("id") or "case")).strip("-") or "case"
+    file_id = (
+        f"direct-review-{safe_case}-{time.strftime('%Y-%m-%d')}-"
+        f"{task_output_token(child_id)}.md"
+    )
+    saved = "\n".join([
+        "---",
+        "mode: direct_review_experiment",
+        f"case_id: {safe_case}",
+        f"generated: {time.strftime('%Y-%m-%d')}",
+        "---",
+        report,
+        "",
+    ])
+    OUTPUTS_DIR.mkdir(exist_ok=True)
+    atomic_write_text(OUTPUTS_DIR / file_id, saved)
+    return saved, file_id
+
+
+def run_review_mode_experiment(payload: dict, task_id: str):
+    experiment_id = str(payload.get("experimentId") or task_id)
+    requested_ids = {
+        str(value)
+        for value in (payload.get("caseIds") or [])
+        if str(value).strip()
+    }
+    repetitions = max(1, min(3, int(payload.get("repetitions") or 1)))
+    with EXAMPLES_LOCK:
+        examples = [
+            item for item in parse_examples()
+            if not requested_ids or str(item.get("id") or "") in requested_ids
+        ]
+    total = len(examples) * repetitions
+    items: list[dict] = []
+    started_at = _iso_time()
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = "running"
+        TASKS[task_id]["updated"] = time.time()
+    upsert_review_mode_experiment({
+        "experimentId": experiment_id,
+        "taskId": task_id,
+        "status": "running",
+        "startedAt": started_at,
+        "items": items,
+        "summary": summarize_review_mode_experiment(items, total),
+    })
+    task_log(task_id, f"评审模式对比实验开始：{len(examples)} 个案例 × {repetitions} 次")
+    for round_index in range(repetitions):
+        for case_index, example in enumerate(examples):
+            if task_cancel_requested(task_id):
+                break
+            item_index = round_index * len(examples) + case_index
+            item = {
+                "itemId": f"{example.get('id')}-r{round_index + 1}",
+                "caseId": str(example.get("id") or ""),
+                "caseName": str(example.get("title") or example.get("id") or ""),
+                "round": round_index + 1,
+                "expectedConclusion": validation_expected_code(example.get("expected")),
+                "issueBaselineConfigured": bool(
+                    _string_list(example.get("expectedIssuePatterns"))
+                    or _string_list(example.get("forbiddenIssuePatterns"))
+                    or _optional_nonnegative_int(example.get("maxIssueCount")) is not None
+                ),
+                "direct": {"status": "running"},
+                "twoStage": {"status": "pending"},
+            }
+            items.append(item)
+            upsert_review_mode_experiment({
+                "experimentId": experiment_id,
+                "items": items,
+                "summary": summarize_review_mode_experiment(items, total),
+            })
+            direct_started = time.monotonic()
+            try:
+                report, file_id = run_direct_experiment_review(
+                    task_id,
+                    example,
+                    item_index,
+                    mock=payload.get("mock"),
+                )
+                item["direct"] = experiment_mode_result(
+                    example,
+                    report,
+                    duration_ms=round((time.monotonic() - direct_started) * 1000),
+                    reviewFile=file_id,
+                )
+            except Exception as exc:
+                item["direct"] = {
+                    "status": "cancelled" if task_cancel_requested(task_id) else "error",
+                    "durationMs": round((time.monotonic() - direct_started) * 1000),
+                    "error": str(exc),
+                }
+            if task_cancel_requested(task_id):
+                item["twoStage"] = {"status": "cancelled", "error": "实验已终止"}
+                break
+            item["twoStage"] = {"status": "running"}
+            upsert_review_mode_experiment({
+                "experimentId": experiment_id,
+                "items": items,
+                "summary": summarize_review_mode_experiment(items, total),
+            })
+            two_stage_started = time.monotonic()
+            try:
+                phase1_payload = {
+                    "factorName": example.get("factorName"),
+                    "requirement": example.get("requirement"),
+                    "apiNames": example.get("apiNames") or [],
+                    "mock": payload.get("mock"),
+                    "skipReviewer": payload.get("skipReviewer") is True,
+                    "skipStageValidation": payload.get("skipStageValidation") is True,
+                    "forceRefresh": True,
+                }
+                pipeline = run_review_pipeline(
+                    task_id,
+                    item_index,
+                    phase1_payload,
+                    str(example.get("draft") or ""),
+                    child_suffix="comparison",
+                    mock=payload.get("mock"),
+                    should_stop=lambda: task_cancel_requested(task_id),
+                )
+                if pipeline.get("stopped"):
+                    raise RuntimeError(str(pipeline.get("raw") or "两阶段评审已终止"))
+                phase1_result = pipeline.get("phase1") or {}
+                report = str(pipeline.get("raw") or "")
+                item["twoStage"] = experiment_mode_result(
+                    example,
+                    report,
+                    duration_ms=round((time.monotonic() - two_stage_started) * 1000),
+                    standardFile=phase1_result.get("standardFileId"),
+                    standardJsonFile=phase1_result.get("standardSummaryFileId"),
+                    reviewFile=pipeline.get("reviewFileId"),
+                )
+            except Exception as exc:
+                item["twoStage"] = {
+                    "status": "cancelled" if task_cancel_requested(task_id) else "error",
+                    "durationMs": round((time.monotonic() - two_stage_started) * 1000),
+                    "error": str(exc),
+                }
+            upsert_review_mode_experiment({
+                "experimentId": experiment_id,
+                "items": items,
+                "summary": summarize_review_mode_experiment(items, total),
+            })
+            with TASK_LOCK:
+                TASKS[task_id]["result"] = {
+                    "experimentId": experiment_id,
+                    "items": items,
+                    "summary": summarize_review_mode_experiment(items, total),
+                }
+                TASKS[task_id]["outputs"] = list_outputs()
+                TASKS[task_id]["updated"] = time.time()
+        if task_cancel_requested(task_id):
+            break
+    final_status = "cancelled" if task_cancel_requested(task_id) else "done"
+    summary = summarize_review_mode_experiment(items, total)
+    finished_at = _iso_time()
+    experiment = upsert_review_mode_experiment({
+        "experimentId": experiment_id,
+        "status": final_status,
+        "finishedAt": finished_at,
+        "items": items,
+        "summary": summary,
+        "error": None,
+    })
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = final_status
+        TASKS[task_id]["result"] = experiment
+        TASKS[task_id]["outputs"] = list_outputs()
+        TASKS[task_id]["updated"] = time.time()
+    task_log(task_id, "评审模式对比实验已终止" if final_status == "cancelled" else "评审模式对比实验完成")
+
+
 def create_task_record(
     task_id: str,
     debug_claude: bool = False,
@@ -2297,6 +2706,54 @@ def submit_regression_task(payload: dict, examples: list[dict]) -> tuple[str, di
     with TASK_LOCK:
         task = decorate_task(TASKS[task_id])
     return task_id, task, run_ids
+
+
+def submit_review_mode_experiment(payload: dict, examples: list[dict]) -> tuple[str, dict]:
+    task_id = str(uuid.uuid4())
+    experiment_id = f"experiment-{task_output_token(task_id)}"
+    repetitions = max(1, min(3, int(payload.get("repetitions") or 1)))
+    create_task_record(
+        task_id,
+        task_type="review-mode-experiment",
+        client_id=str(payload.get("clientId") or ""),
+        group_concurrency=1,
+    )
+    task_payload = {
+        **payload,
+        "experimentId": experiment_id,
+        "caseIds": [str(item.get("id") or "") for item in examples],
+        "repetitions": repetitions,
+    }
+    initial = {
+        "experimentId": experiment_id,
+        "taskId": task_id,
+        "status": "queued",
+        "caseIds": task_payload["caseIds"],
+        "caseCount": len(examples),
+        "repetitions": repetitions,
+        "createdAt": _iso_time(),
+        "startedAt": None,
+        "finishedAt": None,
+        "items": [],
+        "summary": summarize_review_mode_experiment([], len(examples) * repetitions),
+        "error": None,
+    }
+    upsert_review_mode_experiment(initial)
+    with TASK_LOCK:
+        TASKS[task_id]["caseIds"] = task_payload["caseIds"]
+        TASKS[task_id]["experimentId"] = experiment_id
+        TASKS[task_id]["result"] = initial
+    GLOBAL_TASK_POOL.submit(
+        task_id,
+        task_id,
+        run_review_mode_experiment,
+        task_payload,
+        task_id,
+        group_limit=1,
+    )
+    with TASK_LOCK:
+        task = decorate_task(TASKS[task_id])
+    return experiment_id, task
 
 
 def run_review_pipeline(
@@ -2616,6 +3073,18 @@ class Handler(BaseHTTPRequestHandler):
                 error_response(self, 404, "验证运行记录不存在")
                 return
             success_response(self, run)
+        elif path == "/api/review-mode-experiments":
+            with REVIEW_MODE_EXPERIMENTS_LOCK:
+                experiments = parse_review_mode_experiments()
+            experiments.sort(key=lambda item: item.get("createdAt") or "", reverse=True)
+            success_response(self, experiments)
+        elif path.startswith("/api/review-mode-experiments/"):
+            experiment_id = unquote(path.split("/")[-1])
+            experiment = get_review_mode_experiment(experiment_id)
+            if not experiment:
+                error_response(self, 404, "对比实验不存在")
+                return
+            success_response(self, experiment)
         elif path == "/api/examples":
             json_response(self, 200, {"examples": parse_examples()})
         elif path == "/api/business-rules":
@@ -2829,6 +3298,36 @@ class Handler(BaseHTTPRequestHandler):
                 "confirm": 0,
                 "mismatched": 0,
                 "items": items,
+            }, status=202)
+            return
+        if parsed.path == "/api/review-mode-experiments":
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+                return
+            selected = {
+                str(item)
+                for item in payload.get("caseIds") or []
+                if str(item).strip()
+            }
+            with EXAMPLES_LOCK:
+                examples = [
+                    item for item in parse_examples()
+                    if str(item.get("id") or "") in selected
+                ]
+            if not examples:
+                error_response(self, 400, "请至少选择一个验证案例")
+                return
+            try:
+                experiment_id, task = submit_review_mode_experiment(payload, examples)
+            except (TypeError, ValueError) as exc:
+                error_response(self, 400, str(exc))
+                return
+            success_response(self, {
+                "experimentId": experiment_id,
+                "taskId": task.get("id"),
+                "task": task,
             }, status=202)
             return
         if parsed.path.startswith("/api/validation-cases/") and parsed.path.endswith("/run"):
@@ -3165,6 +3664,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     recover_stale_validation_runs()
+    recover_stale_review_mode_experiments()
     scheduled_service = get_scheduled_task_service()
     scheduled_service.start_scheduler()
     port = int(os.environ.get("PORT", "8765"))

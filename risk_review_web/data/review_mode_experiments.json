@@ -1,0 +1,86 @@
+[
+  {
+    "experimentId": "experiment-f59d26d6-546c69da",
+    "taskId": "f59d26d6-8343-4ecd-b6b6-9004cc1377ca",
+    "status": "done",
+    "caseIds": [
+      "case-01"
+    ],
+    "caseCount": 1,
+    "repetitions": 1,
+    "createdAt": "2026-07-23T08:25:35.693904+00:00",
+    "startedAt": "2026-07-23T08:25:35.700569+00:00",
+    "finishedAt": "2026-07-23T08:30:41.159519+00:00",
+    "items": [
+      {
+        "itemId": "case-01-r1",
+        "caseId": "case-01",
+        "caseName": "近12个月医药采购金额 01 正向",
+        "round": 1,
+        "expectedConclusion": "pass",
+        "issueBaselineConfigured": true,
+        "direct": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": false,
+          "issuesMatched": false,
+          "matched": false,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": false,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 0,
+            "actualIssueCount": 1
+          },
+          "issueStats": {
+            "fail": 1,
+            "pending": 0,
+            "suggest": 0
+          },
+          "durationMs": 43696,
+          "reviewFile": "direct-review-case-01-2026-07-23-f59d26d6-263ccc96.md"
+        },
+        "twoStage": {
+          "status": "error",
+          "durationMs": 261736,
+          "error": "API Error: 500 sensitive_words_detected (request id: 20260723083038866388048268d9d6OS2GFR1l). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        }
+      }
+    ],
+    "summary": {
+      "total": 1,
+      "completed": 1,
+      "direct": {
+        "completed": 1,
+        "success": 1,
+        "errors": 0,
+        "conclusionMatched": 0,
+        "issueEvaluated": 1,
+        "issuesMatched": 0,
+        "fullyMatched": 0,
+        "conclusionAccuracy": 0.0,
+        "issueAccuracy": 0.0,
+        "fullAccuracy": 0.0,
+        "averageDurationMs": 43696
+      },
+      "twoStage": {
+        "completed": 1,
+        "success": 0,
+        "errors": 1,
+        "conclusionMatched": 0,
+        "issueEvaluated": 0,
+        "issuesMatched": 0,
+        "fullyMatched": 0,
+        "conclusionAccuracy": null,
+        "issueAccuracy": null,
+        "fullAccuracy": null,
+        "averageDurationMs": null
+      },
+      "winner": "tie"
+    },
+    "error": null
+  }
+]

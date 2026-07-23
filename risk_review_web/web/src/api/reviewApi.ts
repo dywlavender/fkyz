@@ -13,6 +13,7 @@ import type {
   Phase2Request,
   Phase2Response,
   ReviewHistoryRecord,
+  ReviewModeExperiment,
   ScheduledRun,
   ScheduledTask,
   SystemHealth,
@@ -306,6 +307,28 @@ export async function fetchValidationRuns(caseId?: string): Promise<ValidationRu
 
 export async function fetchValidationRun(runId: string): Promise<ValidationRun> {
   return requestApiData<ValidationRun>(`/api/validation-runs/${encodeURIComponent(runId)}`)
+}
+
+export async function createReviewModeExperiment(payload: {
+  caseIds: string[]
+  repetitions?: number
+  skipReviewer?: boolean
+  skipStageValidation?: boolean
+  mock?: boolean
+}): Promise<{ experimentId: string; taskId: string; task: TaskRecord<ReviewModeExperiment> }> {
+  return requestApiData<{ experimentId: string; taskId: string; task: TaskRecord<ReviewModeExperiment> }>('/api/review-mode-experiments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, clientId: getClientId() }),
+  })
+}
+
+export async function fetchReviewModeExperiments(): Promise<ReviewModeExperiment[]> {
+  return requestApiData<ReviewModeExperiment[]>('/api/review-mode-experiments')
+}
+
+export async function fetchReviewModeExperiment(experimentId: string): Promise<ReviewModeExperiment> {
+  return requestApiData<ReviewModeExperiment>(`/api/review-mode-experiments/${encodeURIComponent(experimentId)}`)
 }
 
 export async function deleteHistoryItem(_id: string): Promise<void> {

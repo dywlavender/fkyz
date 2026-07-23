@@ -16,6 +16,7 @@ VALIDATION_SET_GLOB = "*validation-set*.md"
 EXAMPLES_DIR = Path(__file__).resolve().parent / "data"
 EXAMPLES_PATH = EXAMPLES_DIR / "examples.json"
 VALIDATION_RUNS_PATH = EXAMPLES_DIR / "validation_runs.json"
+REVIEW_MODE_EXPERIMENTS_PATH = EXAMPLES_DIR / "review_mode_experiments.json"
 BUSINESS_RULES_PATH = EXAMPLES_DIR / "business_rules.json"
 SCHEDULED_TASKS_PATH = EXAMPLES_DIR / "scheduled_tasks.json"
 SCHEDULED_RUNS_PATH = EXAMPLES_DIR / "scheduled_runs.json"
@@ -33,6 +34,7 @@ PHASE1_PROMPT_PATH = PROMPTS_DIR / "phase1.md"
 PHASE2_PROMPT_PATH = PROMPTS_DIR / "phase2.md"
 REVIEWER_PROMPT_PATH = PROMPTS_DIR / "reviewer.md"
 REVIEW_FEEDBACK_PROMPT_PATH = PROMPTS_DIR / "review_feedback.md"
+DIRECT_REVIEW_PROMPT_PATH = PROMPTS_DIR / "direct_review.md"
 
 
 def resolve_validation_set_path() -> Path | None:

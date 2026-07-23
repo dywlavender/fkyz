@@ -8,6 +8,7 @@ from .paths import (
     PHASE2_CORE_RULES_PROMPT_PATH,
     PHASE2_PROMPT_PATH,
     REVIEW_FEEDBACK_PROMPT_PATH,
+    DIRECT_REVIEW_PROMPT_PATH,
     PHASE2_SKILL_PATH,
     REVIEWER_PROMPT_PATH,
     ROOT,
@@ -98,5 +99,15 @@ def build_review_feedback_prompt(*, blocking_issues: str, warnings: str) -> str:
         {
             "BLOCKING_ISSUES": blocking_issues or "无",
             "WARNINGS": warnings or "无",
+        },
+    )
+
+
+def build_direct_review_prompt(*, requirement: str, draft: str) -> str:
+    return render_template(
+        read_text(DIRECT_REVIEW_PROMPT_PATH),
+        {
+            "REQUIREMENT": requirement,
+            "DRAFT": draft,
         },
     )

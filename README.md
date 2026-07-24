@@ -1,13 +1,14 @@
 # 风控 AI 评审平台（Risk Review Web）
 
-基于 Claude Code 的风控因子加工规范生成与准出内容评审平台。输入因子需求与接口文档，由 Claude 两阶段产出「标准加工规范」并对「待评审准出内容」做对比评审，给出不符合 / 待确认 / 建议三级结论。
+基于 Claude Code 的风控因子加工逻辑评审平台。输入需求与接口文档后，Phase 1 生成唯一的「标准加工规范」，Phase 2 将待评审加工逻辑与该标准进行结果语义比较，输出通过、不通过或无法评审。
 
 > 本仓库根目录同时是「知识库」工作区，但 `risk_review_web/` 属于风控评审平台代码，不参与知识库的 INGEST / QUERY / LINT / REFLECT / MERGE 流程。详见 `AGENTS.md`。
 
 ## 能力概览
 
-- **Phase 1 · 标准加工规范**：根据因子名 + 需求内容 + 关联接口文档，生成含加工字段、字段溯源、过滤条件、计算逻辑、默认值兜底的标准规范。
-- **Phase 2 · 评审报告**：读取 Phase 1 规范 + 待评审准出内容（因子加工输入字段 / 加工逻辑 / 默认值），按多维度对比评审，输出总体结论与汇总问题清单。
+- **Phase 1 · 标准加工规范**：依据需求、指定接口文档、公共业务规则和统一《因子加工开发规范》，生成加工输入字段、标准加工逻辑、默认值兜底三部分内容。
+- **Phase 2 · 评审报告**：直接以冻结的 Phase 1 Markdown 为唯一业务标准，结合原始需求引用证据，评审待评审加工逻辑。
+- **统一开发规范**：稳定规则编号、闭集逻辑类型和完整性要求统一维护在 `factor_processing_spec.json`，Phase 1 与 Phase 2 共用。
 - **一键评审**：自动串联 Phase 1 → Phase 2，一次性完成完整评审。
 - **批量评审**：CSV / Excel 批量导入多条因子。
 - **验证集工作台**：基于 `data/examples.json` 做回归验证。
@@ -29,13 +30,16 @@
 │   ├── business_rules.py            # 业务规则读写
 │   ├── api_docs.py                  # 接口文档加载与缓存
 │   ├── utils.py
-│   ├── static/                      # 前端（index.html / app.js / style.css + vendor）
+│   ├── task_pool.py                 # 单后端进程全局任务池
+│   ├── scheduled_tasks.py           # 定时任务调度与持久化
+│   ├── web/src/                     # React 前端源码
+│   ├── static/                      # React 构建产物及原有功能台
 │   ├── data/
 │   │   ├── business_rules.json      # 业务规则数据
 │   │   └── examples.json            # 验证集数据
 │   ├── prompts/
-│   │   ├── phase1.md / phase2.md / core_rules.md / reviewer.md / review_feedback.md
-│   │   └── risk-review-skill/       # 风控评审 Skill（phase / core / template / output / build）
+│   │   ├── phase1.md / phase2.md / direct_review.md
+│   │   └── risk-review-skill/       # v5 Skill、开发规范、模板与派生 Prompt
 │   └── README.md                    # 前端功能详细说明
 ├── raw/api/                         # 接口文档源（本系统接口 / 外部接口）
 └── outputs/                         # 运行产物统一落盘目录（由后端写入）
@@ -83,6 +87,7 @@ RISK_REVIEW_MOCK=1 ./start_v2.sh
 | `RISK_REVIEW_CLAUDE_CMD` | `claude` / `claude.cmd` | Claude CLI 命令 |
 | `RISK_REVIEW_CLAUDE_TIMEOUT` | `600` | Claude 调用超时（秒） |
 | `RISK_REVIEW_REQUIRE_CLAUDE_HEALTH` | — | 设为 `1` 启动时检查 Claude 可用性 |
+| `RISK_REVIEW_GLOBAL_CONCURRENCY` | `3` | 单后端进程内全局 Claude 任务并发上限 |
 
 ## 数据流
 
@@ -90,9 +95,11 @@ RISK_REVIEW_MOCK=1 ./start_v2.sh
 用户输入 → 前端验证 → 后端 API → Claude Code → 结果返回 → 前端渲染
 ```
 
-- **Phase 1**：`POST /api/review/phase1` → 后端组装 `risk-review-skill/phase/phase1_standard.md` + 接口文档 → 调用 `claude -p` → 输出写入 `outputs/standard-<slug>.md` → 返回 `standardFileId` + checksum。
-- **Phase 2**：`POST /api/review/phase2` → 后端读取 Phase 1 产物 + 待评审内容 → 组装 `phase2_review.md` Prompt → 调用 `claude -p` → 返回评审报告。
+- **Phase 1**：`POST /api/review/phase1` → 在临时只读隔离目录中提供 Phase 1 Skill、统一开发规范、指定接口文档和公共业务规则 → 调用 `claude -p` → 写入标准 Markdown 与 `.metadata.json`。
+- **Phase 2**：`POST /api/review/phase2` → 在独立只读隔离目录中提供 Phase 2 Skill 和统一开发规范，并通过 Prompt 提供冻结标准、原始需求和待评审逻辑 → 返回仅含总体结论和问题清单的 Markdown 报告。
 - **一键评审**：前端 `runFullReview()` 顺序调用 Phase 1 → Phase 2。
+
+因子名仅用于页面展示和文件命名，不进入模型业务判断或标准缓存键。当前全局任务池只覆盖单个 Python 后端进程；不要同时启动多个后端实例共享同一 `data/` 目录。
 
 详细的前端页面布局、按钮语义与交互约定见 [`risk_review_web/README.md`](risk_review_web/README.md)。
 
@@ -100,5 +107,5 @@ RISK_REVIEW_MOCK=1 ./start_v2.sh
 
 - **Claude 调用契约**（见 `CLAUDE.md`）：Claude 只根据 Prompt 输出 Markdown 正文，**不得自行创建 / 修改 / 删除任何文件**；所有文件落盘由 Python 后端统一完成。
 - **输出目录**：运行产物统一写入项目根目录 `outputs/`，不要写入 `wiki/outputs/`。
-- **后端入口**：`risk_review_web/server_v2.py`；**前端**：`static/index.html` / `static/app.js` / `static/style.css`。
+- **后端入口**：`risk_review_web/server_v2.py`；**React 前端**：`risk_review_web/web/src/`；**原有功能台**：`static/index.html` / `static/app.js`。
 - **修改后至少执行**：Python 语法检查、前端 JS 语法检查、Mock 模式 Phase 1 / Phase 2 冒烟；如涉及验证集再跑一条回归验证。

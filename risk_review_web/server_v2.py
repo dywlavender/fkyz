@@ -29,23 +29,17 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from risk_review_web.api_docs import get_api_doc, list_api_docs
 from risk_review_web.artifacts import (
-    STANDARD_DIMENSIONS,
-    STANDARD_JSON_SCHEMA_VERSION,
-    STANDARD_JSON_TOP_LEVEL_FIELDS,
-    compute_standard_json_checksum,
+    STANDARD_SCHEMA_VERSION,
     compute_phase1_checksum,
     compute_review_checksum,
     find_cached_phase1_standard,
     normalize_phase1_output,
     normalize_review_output,
     read_phase1_standard,
-    save_standard_json_summary,
-    standard_summary_name_for,
+    save_standard_metadata,
+    strip_yaml_frontmatter,
     validate_phase1_standard_basic_output,
-    validate_phase1_standard_output,
     validate_phase2_review_basic_output,
-    validate_standard_json_basic,
-    validate_standard_json_summary,
 )
 from risk_review_web.business_rules import (
     BUSINESS_RULES_LOCK,
@@ -56,16 +50,15 @@ from risk_review_web.business_rules import (
 )
 from risk_review_web.paths import (
     BUSINESS_RULES_PATH,
+    FACTOR_PROCESSING_SPEC_PATH,
     EXAMPLES_DIR,
     EXAMPLES_PATH,
     VALIDATION_RUNS_PATH,
+    REVIEW_RECORDS_PATH,
     REVIEW_MODE_EXPERIMENTS_PATH,
     OUTPUTS_DIR,
     PHASE1_SKILL_PATH,
     PHASE2_SKILL_PATH,
-    CORE_RULES_PROMPT_PATH,
-    PHASE1_CORE_RULES_PROMPT_PATH,
-    PHASE2_CORE_RULES_PROMPT_PATH,
     RULE_ENGINE_BUILD_PATH,
     RULE_ENGINE_PHASE1_OUTPUT_PATH,
     RULE_ENGINE_PHASE2_OUTPUT_PATH,
@@ -90,15 +83,12 @@ RUNNING_PROCS_LOCK = threading.Lock()
 EXAMPLES_LOCK = threading.Lock()
 VALIDATION_RUNS_LOCK = threading.Lock()
 REVIEW_MODE_EXPERIMENTS_LOCK = threading.Lock()
+REVIEW_RECORDS_LOCK = threading.Lock()
 SCHEDULED_TASK_SERVICE = None
 
 # 任务记录回收：终态任务保留 N 分钟后删除；TASKS 总量不超过上限。
 TASK_TTL_SECONDS = int(os.environ.get("RISK_REVIEW_TASK_TTL", "1800"))
 TASK_MAX_COUNT = int(os.environ.get("RISK_REVIEW_TASK_MAX", "400"))
-
-
-def skip_strict_validation(payload: dict) -> bool:
-    return payload.get("skipStageValidation", True) is True
 
 
 def task_output_token(task_id: str) -> str:
@@ -335,7 +325,7 @@ def parse_review_history_artifact(name: str) -> dict | None:
             "kind": "raw" if extension == "raw.txt" else "validation" if extension == "validation.json" else extension,
         }
     current = re.match(
-        r"^(standard|review)-(.+)\.(md|summary\.json|raw\.txt|validation\.json)$",
+        r"^(standard|review)-(.+)\.(md|metadata\.json|raw\.txt|validation\.json)$",
         name,
         re.I,
     )
@@ -347,7 +337,7 @@ def parse_review_history_artifact(name: str) -> dict | None:
         "base": f"{current.group(1).lower()}-{current.group(2)}",
         "kind": (
             "json"
-            if extension == "summary.json"
+            if extension == "metadata.json"
             else "raw"
             if extension == "raw.txt"
             else "validation"
@@ -364,7 +354,16 @@ def review_history_records() -> list[dict]:
         parsed = parse_review_history_artifact(output["name"])
         if not parsed:
             continue
+        review_text = ""
         base = parsed["base"]
+        if parsed["phase"] == "review" and parsed["kind"] == "md":
+            try:
+                review_text = read_text(OUTPUTS_DIR / output["name"])
+                linked_standard = str(parse_frontmatter(review_text).get("standard_file") or "").strip()
+                if linked_standard and Path(linked_standard).name == linked_standard:
+                    base = Path(linked_standard).stem
+            except OSError:
+                review_text = ""
         record = grouped.get(base)
         if record is None:
             record = {
@@ -373,7 +372,7 @@ def review_history_records() -> list[dict]:
                 "createdAt": datetime.fromtimestamp(output.get("mtime") or 0, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
                 "source": "validation" if "vrun-" in base else "single",
                 "mode": "phase1_only",
-                "conclusion": "confirm",
+                "conclusion": "unreviewable",
                 "riskCount": 0,
                 "standardArtifacts": {},
                 "reviewArtifacts": {},
@@ -388,6 +387,14 @@ def review_history_records() -> list[dict]:
             ).isoformat().replace("+00:00", "Z")
         artifact_group = record["standardArtifacts"] if parsed["phase"] == "standard" else record["reviewArtifacts"]
         artifact_group[parsed["kind"]] = output["name"]
+        if parsed["phase"] == "review" and parsed["kind"] == "md":
+            try:
+                review_text = review_text or read_text(OUTPUTS_DIR / output["name"])
+                record["conclusion"] = detect_verdict_text(review_text)
+                record["riskCount"] = int(collect_review_stats(review_text).get("fail") or 0)
+            except OSError:
+                record["conclusion"] = "unreviewable"
+                record["riskCount"] = 0
         record["mode"] = (
             "one_click"
             if record["standardArtifacts"].get("md") and record["reviewArtifacts"].get("md")
@@ -569,13 +576,11 @@ def validation_expected_code(value: str | None) -> str:
     source = str(value or "").strip()
     if re.search(r"不通过|不符合|失败|fail", source, re.I):
         return "fail"
-    if re.search(r"待确认|confirm", source, re.I):
-        return "confirm"
-    if re.search(r"建议|warn|suggest", source, re.I):
-        return "suggestion"
+    if re.search(r"无法评审|unreviewable", source, re.I):
+        return "unreviewable"
     if re.search(r"通过|符合|pass", source, re.I):
         return "pass"
-    return source or "confirm"
+    return source or "unreviewable"
 
 
 def _iso_time(epoch_value=None) -> str:
@@ -1164,9 +1169,7 @@ def system_health() -> dict:
     required = [
         PHASE1_SKILL_PATH,
         PHASE2_SKILL_PATH,
-        CORE_RULES_PROMPT_PATH,
-        PHASE1_CORE_RULES_PROMPT_PATH,
-        PHASE2_CORE_RULES_PROMPT_PATH,
+        FACTOR_PROCESSING_SPEC_PATH,
         RULE_ENGINE_BUILD_PATH,
         RULE_ENGINE_PHASE1_OUTPUT_PATH,
         RULE_ENGINE_PHASE2_OUTPUT_PATH,
@@ -1253,8 +1256,8 @@ def build_prompt_phase2(payload: dict) -> str:
     draft = (payload.get("draft") or "").strip()
     phase2_context = payload.get("_phase2_context") or prepare_phase2_context(payload)
     return build_phase2_prompt(
-        standard_summary_json=phase2_context["standardSummaryJson"],
-        standard_validation_status=phase2_context["standardValidationStatus"],
+        standard_text=phase2_context["standardText"],
+        requirement=(payload.get("requirement") or "").strip(),
         draft=draft,
     )
 
@@ -1276,7 +1279,7 @@ def claude_failure_stderr(stdout: str, stderr: str, returncode: int | None) -> s
 def create_phase1_isolated_workspace(task_id: str, payload: dict) -> Path:
     workspace = Path(tempfile.mkdtemp(prefix=f"risk-review-phase1-{task_id[:8]}-"))
     try:
-        allowed_sources = [PHASE1_SKILL_PATH, BUSINESS_RULES_PATH]
+        allowed_sources = [PHASE1_SKILL_PATH, FACTOR_PROCESSING_SPEC_PATH, BUSINESS_RULES_PATH]
         for identifier in payload.get("apiNames") or []:
             doc = get_api_doc(str(identifier))
             if doc is None:
@@ -1313,7 +1316,7 @@ def create_phase2_isolated_workspace(task_id: str) -> Path:
     workspace = Path(tempfile.mkdtemp(prefix=f"risk-review-phase2-{task_id[:8]}-"))
     try:
         staged_files = []
-        for source_path in (PHASE2_SKILL_PATH, BUSINESS_RULES_PATH):
+        for source_path in (PHASE2_SKILL_PATH, FACTOR_PROCESSING_SPEC_PATH):
             source_path = source_path.resolve()
             if not source_path.is_file():
                 continue
@@ -1445,61 +1448,20 @@ def run_claude_prompt(
 
 
 def prepare_phase2_context(payload: dict) -> dict:
-    skip_stage_validation = skip_strict_validation(payload)
-    standard_text, std_path = read_phase1_standard(
-        payload,
-        validate_integrity=not skip_stage_validation,
+    standard_text, std_path = read_phase1_standard(payload)
+    requirement = (payload.get("requirement") or "").strip()
+    if not requirement:
+        raise ValueError("Phase 2 缺少原始需求，无法提供原文依据。")
+    model_standard_text = re.sub(
+        r"^# 标准加工规范[^\n]*",
+        "# 标准加工规范",
+        strip_yaml_frontmatter(standard_text),
+        count=1,
     )
-    summary_path = OUTPUTS_DIR / standard_summary_name_for(std_path.name)
-    if not summary_path.exists():
-        raise ValueError(f"Phase 1 结构化标准 JSON 未找到：{summary_path.name}，请重新执行 Phase 1。")
-    standard_summary = json.loads(read_text(summary_path))
-    validate_standard_json_basic(standard_summary)
-    if not skip_stage_validation:
-        validate_standard_json_summary(standard_summary)
-        standard_meta = parse_frontmatter(standard_text)
-        stored_standard_json_checksum = standard_meta.get("standard_json_checksum")
-        current_standard_json_checksum = compute_standard_json_checksum(standard_summary)
-        summary_standard_json_checksum = (standard_summary.get("source_metadata") or {}).get("standard_json_checksum")
-        if not stored_standard_json_checksum:
-            raise ValueError("Phase 1 标准文件缺少 standard_json_checksum，请重新执行 Phase 1。")
-        if stored_standard_json_checksum != current_standard_json_checksum:
-            raise ValueError(
-                "结构化标准 JSON 已变更（checksum 不匹配），请重新执行 Phase 1。"
-                f" stored={stored_standard_json_checksum[:8]}..., current={current_standard_json_checksum[:8]}..."
-            )
-        if summary_standard_json_checksum and summary_standard_json_checksum != current_standard_json_checksum:
-            raise ValueError(
-                "结构化标准 JSON 内部 checksum 不匹配，请重新执行 Phase 1。"
-                f" summary={summary_standard_json_checksum[:8]}..., current={current_standard_json_checksum[:8]}..."
-            )
-    review_standard_summary = {
-        key: value
-        for key, value in standard_summary.items()
-        if key in STANDARD_JSON_TOP_LEVEL_FIELDS or key == "input_parse"
-    }
-    review_standard_summary.pop("factor_name", None)
-    review_standard_summary["rules"] = [
-        rule
-        for rule in (review_standard_summary.get("rules") or [])
-        if isinstance(rule, dict) and rule.get("dimension_ref") in STANDARD_DIMENSIONS
-    ]
-    review_source_metadata = dict(review_standard_summary.get("source_metadata") or {})
-    review_source_metadata.pop("factor_slug", None)
-    review_standard_summary["source_metadata"] = review_source_metadata
-    standard_summary_json = json.dumps(review_standard_summary, ensure_ascii=False, indent=2)
     return {
-        "standardText": standard_text,
+        "standardText": model_standard_text,
         "standardPath": std_path,
         "standardFileId": std_path.name,
-        "standardSummary": standard_summary,
-        "standardSummaryJson": standard_summary_json,
-        "standardValidationStatus": (
-            f"校验模式：跳过；结构化 JSON 可解析且 schema_version={STANDARD_JSON_SCHEMA_VERSION}，本次按运行开关跳过 checksum、完整章节和规则引用关系校验，但所有 v4 hard 规则仍须严格评审，不得输出 checksum 校验停止提示。"
-            if skip_stage_validation
-            else "校验模式：严格；已由外部程序校验通过，input_checksum、public_rules_checksum、standard_json_checksum 均已校验一致。"
-        ),
-        "stageValidationSkipped": skip_stage_validation,
     }
 
 
@@ -1549,17 +1511,35 @@ def run_claude_phase1(payload: dict, task_id: str):
     task_log(task_id, "Phase 1 开始")
     checksum = compute_phase1_checksum(payload)
     use_mock = os.environ.get("RISK_REVIEW_MOCK") == "1" or payload.get("mock") is True
-    skip_stage_validation = skip_strict_validation(payload)
     if not payload.get("forceRefresh"):
-        cached = find_cached_phase1_standard(
-            checksum,
-            allow_mock=use_mock,
-            strict_validation=not skip_stage_validation,
-        )
+        cached = find_cached_phase1_standard(checksum, allow_mock=use_mock)
         if cached:
             if task_cancel_requested(task_id):
                 mark_task_cancelled(task_id, "Phase 1 已取消。")
                 return
+            current_factor_name = (payload.get("factorName") or "factor").strip()
+            cached_text = str(cached.get("stdout") or "")
+            cached_meta = parse_frontmatter(cached_text)
+            if str(cached_meta.get("factor_name") or "") != current_factor_name:
+                slug = re.sub(r"[^a-zA-Z0-9]", "-", current_factor_name.lower()).strip("-") or "factor"
+                output_name = f"standard-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
+                cached_text = normalize_phase1_output(
+                    cached_text,
+                    payload,
+                    slug,
+                    current_factor_name,
+                    checksum,
+                    mock=use_mock,
+                )
+                OUTPUTS_DIR.mkdir(exist_ok=True)
+                (OUTPUTS_DIR / output_name).write_text(cached_text, encoding="utf-8")
+                metadata_name = save_standard_metadata(output_name, cached_text, payload)
+                cached = {
+                    **cached,
+                    "standardFileId": output_name,
+                    "standardMetadataFileId": metadata_name,
+                    "stdout": cached_text,
+                }
             task_log(task_id, f"Phase 1 命中缓存：{cached['standardFileId']}")
             with TASK_LOCK:
                 TASKS[task_id]["status"] = "done"
@@ -1567,7 +1547,7 @@ def run_claude_phase1(payload: dict, task_id: str):
                     "returncode": 0,
                 "stdout": cached["stdout"],
                 "standardFileId": cached["standardFileId"],
-                "standardSummaryFileId": cached.get("standardSummaryFileId"),
+                "standardMetadataFileId": cached.get("standardMetadataFileId"),
                 "checksum": checksum,
                 "stderr": "",
                 "cacheHit": True,
@@ -1584,100 +1564,39 @@ def run_claude_phase1(payload: dict, task_id: str):
         factor_name = (payload.get("factorName") or "mockFactor").strip()
         slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
         output_name = f"standard-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
-        output_text = f"""---
-phase: 1
-factor_slug: {slug}
-factor_name: {factor_name}
-generated: {time.strftime('%Y-%m-%d')}
-input_checksum: {checksum}
-mock: true
-input_summary:
-  requirement: {str(payload.get("requirement") or "").strip()[:120]}
-  api_docs: [{", ".join([str(x).strip() for x in (payload.get("apiNames") or []) if str(x).strip()])}]
----
-
-# 标准加工规范 — {factor_name}
-
-## 0. 输入解析
-
-| 项目 | 内容 |
-|---|---|
-| 需求内容 | 已提供 |
-| 接口文档 | 已提供 |
-| 公共业务知识规则 | Mock 模式 |
-| 公共规则来源 | risk_review_web/data/business_rules.json |
-| 公共规则条目 | Mock 模式 |
-| 阶段说明 | Phase 1 仅生成标准加工规范，不接触待评审内容 |
+        mock_body = """# 标准加工规范
 
 ## 因子加工输入字段
-| 字段 | 字段来源 | 用途 | 依据等级 | 证据锚点 |
+
+| 字段完整路径 | 加工用途 |
+|---|---|
+| `授信申请接口.applyTime` | 时间筛选锚点 |
+| `外部接口.content[].mockDate` | 时间筛选 |
+| `外部接口.content[].mockAmount` | 聚合求和 |
+
+## 标准加工逻辑
+
+| 步骤 | 逻辑类型 | 标准逻辑 | 形成方式 | 选择理由 |
 |---|---|---|---|---|
-| 授信申请接口.applyTime | 授信申请接口.applyTime | 确定统计窗口终点 | 硬性标准 | API-001 |
-| 外部接口.content[].mockDate | 外部接口.content[].mockDate | 过滤时间窗口 | hard | API-002 |
-| 外部接口.content[].mockAmount | 外部接口.content[].mockAmount | 参与金额求和 | hard | API-002 |
+| 1 | `time_filter` | 将 `授信申请接口.applyTime` 转换为月份，以该月份减12个月为起点、该月份为终点，筛选 `外部接口.content[].mockDate` 位于闭区间内的记录 | `direct` | - |
+| 2 | `aggregation` | 对筛选后记录的 `外部接口.content[].mockAmount` 求和 | `direct` | - |
 
-## 字段溯源
-| 业务概念 | 接口字段名 | 字段类型 | 枚举值/格式 | 依据等级 | 证据锚点 | 备注 |
-|---|---|---|---|---|---|---|
-| 进件时点 | applyTime | string | 日期时间 | hard | API-001 | Mock 标准字段 |
-| 明细日期 | 外部接口.content[].mockDate | string | 月份 | hard | API-002 | Mock 标准字段 |
-| 明细金额 | 外部接口.content[].mockAmount | decimal | - | hard | API-002 | Mock 标准字段 |
+## 默认值兜底
 
-## 过滤条件
-| 序号 | 过滤字段名 | 过滤条件 | 逻辑关系 | 依据等级 | 证据锚点 |
-|---|---|---|---|---|---|
-| D3-001 | mockDate | mockDate 在统计窗口内 | AND | hard | REQ-001 |
-
-**边界说明**：
-
-| 项目 | 内容 | 依据等级 | 证据锚点 |
-|---|---|---|---|
-| 基准时间点 | 授信申请接口.applyTime | hard | API-001 |
-| 时间窗口粒度 | 月 | hard | INF-001 |
-| 格式转换规则 | 将 applyTime 转换为 yyyy-MM | hard | INF-001 |
-| 窗口起点计算规则 | endMonth - 12 个月 | hard | REQ-001 |
-| 窗口终点计算规则 | endMonth = 授信申请接口.applyTime 转换后的 yyyy-MM | hard | REQ-001、INF-001 |
-| 包含边界说明 | 起止边界均包含 | hard | REQ-001 |
-
-## 列表/数组字段处理
-| 字段名 | 是否适用 | 遍历逻辑 | 聚合口径 | 空数组处理 | 依据等级 | 证据锚点 |
-|---|---|---|---|---|---|---|
-| 外部接口.content[] | 是 | 遍历全部元素 | SUM(mockAmount) | 无符合记录返回配置默认值 | hard | API-002、INF-002 |
-
-## 计算逻辑
-| 步骤 | 规则 | 依据等级 | 证据锚点 |
-|---|---|---|---|
-| D5-001 | 读取授信申请接口.applyTime、外部接口.content[].mockDate 和外部接口.content[].mockAmount | hard | API-001、API-002 |
-| D5-002 | 将 applyTime 转为 yyyy-MM，过滤符合窗口条件的明细后对 mockAmount 求和 | hard | REQ-001、INF-001 |
-
-## 默认值兜底策略
-| 项目 | 内容 | 依据等级 | 证据锚点 |
-|---|---|---|---|
-| 异常兜底 | 因子加工输入字段缺失、格式错误或数据异常导致无法完成正常加工时，返回配置的默认值 | hard | PUB-001 |
-
-## 比率/衍生因子计算
-| 是否适用 | 分子定义 | 分母定义 | 分母为零处理 | 精度 | 依据等级 | 证据锚点 |
-|---|---|---|---|---|---|---|
-| 不适用 | 不适用 | 不适用 | 不适用 | 不适用 | hard | INF-003 |
-
-## 条件分支逻辑
-| 是否适用 | 分支条件 | 加工逻辑 | 默认逻辑 | 依据等级 | 证据锚点 |
-|---|---|---|---|---|---|
-| 不适用 | 不适用 | 按统一计算逻辑执行 | 无额外分支 | hard | INF-004 |
-
-## 选定解释
-| 选择编号 | 触发位置 | 原始歧义 | 选定口径 | 选择理由 | 证据锚点 |
-|---|---|---|---|---|---|
-无
+因子加工输入字段缺失、格式错误或数据异常导致无法完成正常加工时，返回配置的默认值。
 """
+        output_text = normalize_phase1_output(
+            mock_body,
+            payload,
+            slug,
+            factor_name,
+            checksum,
+            mock=True,
+        )
         OUTPUTS_DIR.mkdir(exist_ok=True)
         (OUTPUTS_DIR / output_name).write_text(output_text, encoding="utf-8")
         try:
-            summary_name = save_standard_json_summary(
-                output_name,
-                output_text,
-                validate=not skip_stage_validation,
-            )
+            metadata_name = save_standard_metadata(output_name, output_text, payload)
         except Exception as exc:
             with TASK_LOCK:
                 TASKS[task_id]["status"] = "error"
@@ -1697,11 +1616,10 @@ input_summary:
                 "returncode": 0,
                 "stdout": output_text,
                 "standardFileId": output_name,
-                "standardSummaryFileId": summary_name,
+                "standardMetadataFileId": metadata_name,
                 "checksum": checksum,
                 "stderr": "",
                 "cacheHit": False,
-                "stageValidationSkipped": skip_stage_validation,
             }
             TASKS[task_id]["outputs"] = list_outputs()
             TASKS[task_id]["updated"] = time.time()
@@ -1739,27 +1657,18 @@ input_summary:
             )
             try:
                 validate_phase1_standard_basic_output(output_text)
-                if not skip_stage_validation:
-                    validate_phase1_standard_output(output_text)
-                else:
-                    task_log(task_id, "Phase 1 基础产物校验通过；严格完整性校验已按运行开关跳过")
                 OUTPUTS_DIR.mkdir(exist_ok=True)
                 (OUTPUTS_DIR / output_name).write_text(output_text, encoding="utf-8")
-                summary_name = save_standard_json_summary(
-                    output_name,
-                    output_text,
-                    validate=not skip_stage_validation,
-                )
+                metadata_name = save_standard_metadata(output_name, output_text, payload)
                 output_text = read_text(OUTPUTS_DIR / output_name)
                 result.update({
                     "returncode": 0,
                     "stdout": output_text,
                     "standardFileId": output_name,
-                    "standardSummaryFileId": summary_name,
+                    "standardMetadataFileId": metadata_name,
                     "checksum": checksum,
                     "stderr": "",
                     "cacheHit": False,
-                    "stageValidationSkipped": skip_stage_validation,
                 })
                 task_log(task_id, f"Phase 1 文件已保存：outputs/{output_name}")
             except Exception as exc:
@@ -1805,7 +1714,6 @@ def run_claude_phase2(payload: dict, task_id: str):
         return
     
     use_mock = os.environ.get("RISK_REVIEW_MOCK") == "1" or payload.get("mock") is True
-    skip_stage_validation = skip_strict_validation(payload)
     
     if use_mock:
         task_log(task_id, "使用 Mock 模式（Phase 2）")
@@ -1818,28 +1726,15 @@ def run_claude_phase2(payload: dict, task_id: str):
         output_name = f"review-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
         output_text = f"""# 评审报告 — {factor_name}
 
-## 0. 输入解析
-| 项目 | 内容 |
-|---|---|
-| 因子名 | {factor_name} |
-| 标准规范来源 | outputs/{phase2_context["standardFileId"]} |
-| 标准规范校验 | {'已按运行开关跳过' if skip_stage_validation else '已由外部程序校验通过'} |
-| 结构化标准 JSON | {'已提供，未执行严格校验' if skip_stage_validation else '已提供且 schema 校验通过'} |
-| 公共业务知识规则 | Mock 模式 |
-| 待评审准出内容 | 已提供 |
-
 ## 总体结论
 | 项目 | 内容 |
 |---|---|
 | 总体结论 | ✅ 通过 |
-| 问题统计 | ❌ 不符合 0 项 / 🔵 待确认 0 项 / ⚠️ 建议 0 项 |
+| 问题统计 | 不符合 0 项 |
 
 ## 汇总问题清单
-| 序号 | 维度 | 级别 | 核心问题 | 依据 | 影响 | 修改建议 |
-|---|---|---|---|---|---|---|
-无
-
-## 待确认项
+| 序号 | 违反规范 | 核心问题 | 需求原文 | 标准加工逻辑 | 待评审原文 | 影响 | 修改建议 |
+|---|---|---|---|---|---|---|---|
 无
 """
         OUTPUTS_DIR.mkdir(exist_ok=True)
@@ -1851,7 +1746,6 @@ def run_claude_phase2(payload: dict, task_id: str):
                 "stdout": output_text,
                 "stderr": "",
                 "reviewFileId": output_name,
-                "stageValidationSkipped": skip_stage_validation,
             }
             TASKS[task_id]["outputs"] = list_outputs()
             TASKS[task_id]["updated"] = time.time()
@@ -1859,9 +1753,6 @@ def run_claude_phase2(payload: dict, task_id: str):
         return
     
     standard_file_id = phase2_context["standardFileId"]
-    standard_summary = phase2_context["standardSummary"]
-    if skip_stage_validation:
-        task_log(task_id, "Phase 2 基础摘要校验通过；严格完整性校验已按运行开关跳过")
     isolated_workspace = create_phase2_isolated_workspace(task_id)
     try:
         status, result, raw_output = run_generation(
@@ -1889,7 +1780,7 @@ def run_claude_phase2(payload: dict, task_id: str):
         if status == "done":
             factor_name = (payload.get("factorName") or "factor").strip()
             slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
-            review_checksum = compute_review_checksum(payload, standard_summary)
+            review_checksum = compute_review_checksum(payload, phase2_context["standardText"])
             review_file_id = f"review-{slug}-{time.strftime('%Y-%m-%d')}-{task_output_token(task_id)}.md"
             saved_report = normalize_review_output(raw_output, payload, slug, standard_file_id, review_checksum)
             OUTPUTS_DIR.mkdir(exist_ok=True)
@@ -1897,7 +1788,6 @@ def run_claude_phase2(payload: dict, task_id: str):
             result["stdout"] = saved_report
             result["reviewFileId"] = review_file_id
             result["reviewChecksum"] = review_checksum
-            result["stageValidationSkipped"] = skip_stage_validation
             task_log(task_id, f"Phase 2 文件已保存：outputs/{review_file_id}")
     with TASK_LOCK:
         if status == "error":
@@ -1929,14 +1819,11 @@ def detect_verdict_text(text: str) -> str:
     target = overall.group(1) if overall else source
     if re.search(r"❌\s*不通过", target):
         return "fail"
-    if re.search(r"⚠️\s*建议", target):
-        stats = collect_review_stats(source)
-        if stats.get("fail", 0) == 0 and stats.get("pending", 0) == 0 and stats.get("suggest", 0) > 0:
-            return "pass"
-        return "warn"
+    if re.search(r"⛔\s*无法评审|无法评审", target):
+        return "unreviewable"
     if re.search(r"✅\s*(通过|符合)", target):
         return "pass"
-    return "idle"
+    return "unreviewable"
 
 
 def collect_review_stats(text: str) -> dict:
@@ -1945,20 +1832,10 @@ def collect_review_stats(text: str) -> dict:
     if stats_match:
         stats_text = stats_match.group(1)
         fail_match = re.search(r"不符合\s*(\d+)\s*项", stats_text)
-        pending_match = re.search(r"待确认\s*(\d+)\s*项", stats_text)
-        suggest_match = re.search(r"建议\s*(\d+)\s*项", stats_text)
-        if fail_match or pending_match or suggest_match:
-            return {
-                "fail": int(fail_match.group(1)) if fail_match else 0,
-                "pending": int(pending_match.group(1)) if pending_match else 0,
-                "suggest": int(suggest_match.group(1)) if suggest_match else 0,
-            }
-    rows = re.findall(r"\|\s*结论\s*\|\s*([^|]+?)\s*\|", source)
-    return {
-        "fail": len([row for row in rows if re.search(r"❌\s*不符合", row)]),
-        "pending": len([row for row in rows if re.search(r"🔵\s*待确认|⚠️\s*待确认", row)]),
-        "suggest": len([row for row in rows if re.search(r"⚠️\s*建议", row)]),
-    }
+        if fail_match:
+            return {"fail": int(fail_match.group(1))}
+    issue_rows = re.findall(r"^\|\s*I-\d+\s*\|", source, re.M)
+    return {"fail": len(issue_rows)}
 
 
 def evaluate_issue_expectations(example: dict, report: str) -> dict:
@@ -1969,7 +1846,7 @@ def evaluate_issue_expectations(example: dict, report: str) -> dict:
     missing_patterns = [pattern for pattern in expected_patterns if pattern.casefold() not in source]
     forbidden_hits = [pattern for pattern in forbidden_patterns if pattern.casefold() in source]
     stats = collect_review_stats(report)
-    issue_count = sum(int(stats.get(key) or 0) for key in ("fail", "pending", "suggest"))
+    issue_count = int(stats.get("fail") or 0)
     count_matched = max_issue_count is None or issue_count <= max_issue_count
     configured = bool(expected_patterns or forbidden_patterns or max_issue_count is not None)
     return {
@@ -1991,10 +1868,8 @@ def expected_matches_verdict(example: dict, verdict: str) -> bool:
     expected_code = validation_expected_code(expected)
     if expected_code == "fail":
         return verdict == "fail"
-    if expected_code == "confirm":
-        return verdict == "idle"
-    if expected_code == "suggestion":
-        return verdict in ("warn", "pass")
+    if expected_code == "unreviewable":
+        return verdict == "unreviewable"
     if expected_code == "pass":
         return verdict == "pass"
     return True
@@ -2023,9 +1898,8 @@ def validation_run_for_example(
         "issuesMatched": None,
         "matched": None,
         "standardFile": None,
-        "standardJsonFile": None,
+        "standardMetadataFile": None,
         "reviewFile": None,
-        "reviewJsonFile": None,
         "startedAt": _iso_time(),
         "finishedAt": None,
         "error": None,
@@ -2066,7 +1940,7 @@ def run_regression_validation(payload: dict, task_id: str):
             "title": example.get("title"),
             "factorName": example.get("factorName"),
             "status": "running",
-            "verdict": "idle",
+            "verdict": "unreviewable",
             "expectedOk": False,
             "summary": {},
             "raw": "",
@@ -2090,18 +1964,17 @@ def run_regression_validation(payload: dict, task_id: str):
                 "requirement": example.get("requirement"),
                 "apiNames": example.get("apiNames") or [],
                 "mock": payload.get("mock"),
-                "skipStageValidation": skip_strict_validation(payload),
             }
             def on_phase1_done(phase1_result: dict):
                 item["standardFileId"] = phase1_result.get("standardFileId")
-                item["standardSummaryFileId"] = phase1_result.get("standardSummaryFileId")
+                item["standardMetadataFileId"] = phase1_result.get("standardMetadataFileId")
                 item["standardText"] = phase1_result.get("stdout") or ""
                 item["cacheHit"] = bool(phase1_result.get("cacheHit"))
                 upsert_validation_run({
                     "runId": run_id,
                     "status": "running",
                     "standardFile": phase1_result.get("standardFileId"),
-                    "standardJsonFile": phase1_result.get("standardSummaryFileId"),
+                    "standardMetadataFile": phase1_result.get("standardMetadataFileId"),
                 })
                 with TASK_LOCK:
                     TASKS[task_id]["result"] = {"items": items, "summary": summarize_regression_items(items, total=len(examples)), "stdout": "", "stderr": "", "returncode": 0}
@@ -2151,13 +2024,13 @@ def run_regression_validation(payload: dict, task_id: str):
             upsert_validation_run({
                 "runId": run_id,
                 "status": "success",
-                "actualConclusion": "suggestion" if verdict == "warn" else "confirm" if verdict == "idle" else verdict,
+                "actualConclusion": verdict,
                 "conclusionMatched": conclusion_matched,
                 "issuesMatched": issues_matched,
                 "issueEvaluation": issue_evaluation,
                 "matched": expected_ok,
                 "standardFile": item.get("standardFileId"),
-                "standardJsonFile": item.get("standardSummaryFileId"),
+                "standardMetadataFile": item.get("standardMetadataFileId"),
                 "reviewFile": review_file_id,
                 "finishedAt": _iso_time(),
                 "error": None,
@@ -2230,7 +2103,7 @@ def experiment_mode_result(example: dict, report: str, *, duration_ms: int, **ar
     issues_matched = bool(issue_evaluation.get("matched")) if issue_configured else None
     return {
         "status": "success",
-        "actualConclusion": "suggestion" if verdict == "warn" else "confirm" if verdict == "idle" else verdict,
+        "actualConclusion": verdict,
         "conclusionMatched": conclusion_matched,
         "issuesMatched": issues_matched,
         "matched": conclusion_matched and bool(issue_evaluation.get("matched")),
@@ -2304,8 +2177,8 @@ def mock_direct_review_report(example: dict) -> str:
         conclusion = "❌ 不通过，需修改"
         count = 1
         rows = (
-            f"| I-001 | ❌ 不符合 | {issue} | 需求与加工逻辑直接对照 | "
-            "可能导致加工结果偏离需求 | 按需求修正对应加工逻辑 |"
+            f"| I-001 | {issue} | 需求与加工逻辑直接对照 | 待评审逻辑存在对应差异 | "
+            "导致加工结果偏离需求 | 按需求修正对应加工逻辑 |"
         )
     else:
         conclusion = "✅ 通过"
@@ -2313,24 +2186,16 @@ def mock_direct_review_report(example: dict) -> str:
         rows = "无"
     return f"""# 直接评审报告
 
-## 输入解析
-
-| 项目 | 内容 |
-|---|---|
-| 需求内容 | 已提供 |
-| 待评审加工逻辑 | 已提供 |
-| 评审依据 | 仅比较本次输入，不使用外部标准 |
-
 ## 总体结论
 
 | 项目 | 内容 |
 |---|---|
 | 总体结论 | {conclusion} |
-| 问题统计 | ❌ 不符合 {count} 项 / 🔵 待确认 0 项 / ⚠️ 建议 0 项 |
+| 问题统计 | 不符合 {count} 项 |
 
 ## 汇总问题清单
 
-| 序号 | 级别 | 核心问题 | 输入依据 | 影响 | 修改建议 |
+| 序号 | 核心问题 | 需求原文 | 待评审原文 | 影响 | 修改建议 |
 |---|---|---|---|---|---|
 {rows}
 """
@@ -2490,7 +2355,6 @@ def run_review_mode_experiment(payload: dict, task_id: str):
                     "requirement": example.get("requirement"),
                     "apiNames": example.get("apiNames") or [],
                     "mock": payload.get("mock"),
-                    "skipStageValidation": skip_strict_validation(payload),
                     "forceRefresh": True,
                 }
                 pipeline = run_review_pipeline(
@@ -2511,7 +2375,7 @@ def run_review_mode_experiment(payload: dict, task_id: str):
                     report,
                     duration_ms=round((time.monotonic() - two_stage_started) * 1000),
                     standardFile=phase1_result.get("standardFileId"),
-                    standardJsonFile=phase1_result.get("standardSummaryFileId"),
+                    standardMetadataFile=phase1_result.get("standardMetadataFileId"),
                     reviewFile=pipeline.get("reviewFileId"),
                 )
             except Exception as exc:
@@ -2712,7 +2576,9 @@ def run_review_pipeline(
         }
 
     phase2_payload = {
-        **phase1_payload,
+        "factorName": phase1_payload.get("factorName"),
+        "requirement": phase1_payload.get("requirement"),
+        "debugClaude": phase1_payload.get("debugClaude"),
         "draft": draft,
         "standardFileId": phase1_result.get("standardFileId"),
         "mock": mock,
@@ -2761,7 +2627,7 @@ def run_review_pair(row: dict, payload: dict, task_id: str, index: int) -> dict:
         "raw": "",
         "standardText": row.get("standardText") or "",
         "standardFileId": row.get("standardFileId"),
-        "standardSummaryFileId": row.get("standardSummaryFileId"),
+        "standardMetadataFileId": row.get("standardMetadataFileId"),
         "cacheHit": False,
         "attempts": 0,
     }
@@ -2787,7 +2653,6 @@ def run_review_pair(row: dict, payload: dict, task_id: str, index: int) -> dict:
                 "requirement": row.get("requirement"),
                 "apiNames": api_names,
                 "mock": payload.get("mock"),
-                "skipStageValidation": skip_strict_validation(payload),
             }
             pipeline = run_review_pipeline(
                 task_id,
@@ -2799,7 +2664,7 @@ def run_review_pair(row: dict, payload: dict, task_id: str, index: int) -> dict:
             )
             phase1_result = pipeline["phase1"]
             item["standardFileId"] = phase1_result.get("standardFileId")
-            item["standardSummaryFileId"] = phase1_result.get("standardSummaryFileId")
+            item["standardMetadataFileId"] = phase1_result.get("standardMetadataFileId")
             item["standardText"] = phase1_result.get("stdout") or ""
             item["cacheHit"] = bool(phase1_result.get("cacheHit"))
             item.update({"status": "done", "raw": pipeline["raw"], "reviewFileId": pipeline.get("reviewFileId")})
@@ -2905,7 +2770,7 @@ def start_batch_review(payload: dict, task_id: str):
             "raw": "",
             "standardText": "",
             "standardFileId": None,
-            "standardSummaryFileId": None,
+            "standardMetadataFileId": None,
         }
         for index, row in enumerate(rows)
     ]
@@ -3209,7 +3074,7 @@ class Handler(BaseHTTPRequestHandler):
                 "total": len(items),
                 "success": len(items),
                 "failed": 0,
-                "confirm": 0,
+                "unreviewable": 0,
                 "mismatched": 0,
                 "items": items,
             }, status=202)
@@ -3377,13 +3242,8 @@ class Handler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 json_response(self, 400, {"error": "invalid json"})
                 return
-            if not payload.get("draft") or not payload.get("standardFileId"):
-                json_response(self, 400, {"error": "Phase 2 请填写待评审准出内容和标准文件 ID。"})
-                return
-            if not skip_strict_validation(payload) and (
-                not payload.get("requirement") or not payload.get("apiNames")
-            ):
-                json_response(self, 400, {"error": "Phase 2 缺少 checksum 校验所需的需求内容或接口文档列表，请重新执行 Phase 1。"})
+            if not payload.get("draft") or not payload.get("standardFileId") or not payload.get("requirement"):
+                json_response(self, 400, {"error": "Phase 2 请提供待评审加工逻辑、原始需求和标准文件 ID。"})
                 return
             task_id = str(uuid.uuid4())
             create_task_record(
@@ -3583,7 +3443,7 @@ def main():
     scheduled_service.start_scheduler()
     port = int(os.environ.get("PORT", "8765"))
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Risk review web v2 running at http://127.0.0.1:{port}")
+    print(f"Risk review web running at http://127.0.0.1:{port}")
     try:
         server.serve_forever()
     finally:

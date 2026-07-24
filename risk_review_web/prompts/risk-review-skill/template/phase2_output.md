@@ -1,10 +1,15 @@
-# Phase2 Output Template
-
-Do not wrap the output in a code fence. The body starts directly with:
+# Phase 2 Output Template
 
 # 评审报告
 
-## 输入解析
 ## 总体结论
+
+| 项目 | 内容 |
+|---|---|
+| 总体结论 | ✅ 通过 / ❌ 不通过，需修改 / ⛔ 无法评审 |
+| 问题统计 | 不符合 N 项 |
+
 ## 汇总问题清单
-## 待确认项
+
+| 序号 | 违反规范 | 核心问题 | 需求原文 | 标准加工逻辑 | 待评审原文 | 影响 | 修改建议 |
+|---|---|---|---|---|---|---|---|

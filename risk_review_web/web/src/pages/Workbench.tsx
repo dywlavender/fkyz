@@ -36,15 +36,15 @@ export function Workbench(props: WorkbenchProps) {
     onNavigateHistory,
   } = props
   const metrics = buildWorkbenchMetrics(history)
-  const reviewed = metrics.pass + metrics.fail + metrics.confirm + metrics.suggestion
+  const reviewed = metrics.pass + metrics.fail
   const passRate = reviewed ? Math.round((metrics.pass / reviewed) * 100) : 0
   const recentRiskItems = history
-    .filter((item) => item.conclusion === 'fail' || item.conclusion === 'confirm' || (item.riskCount ?? 0) > 0)
+    .filter((item) => item.conclusion === 'fail' || item.conclusion === 'unreviewable' || (item.riskCount ?? 0) > 0)
     .slice(0, 4)
 
   const columns: ColumnsType<ReviewHistoryRecord> = [
     { title: '因子名称', dataIndex: 'factorName', ellipsis: true },
-    { title: '结论', dataIndex: 'conclusion', width: 120, render: (value: ReviewHistoryRecord['conclusion']) => <StatusBadge value={value || 'confirm'} /> },
+    { title: '结论', dataIndex: 'conclusion', width: 120, render: (value: ReviewHistoryRecord['conclusion']) => <StatusBadge value={value || 'unreviewable'} /> },
     { title: '风险数', dataIndex: 'riskCount', width: 90, render: (value: ReviewHistoryRecord['riskCount']) => value ?? 0 },
     { title: '创建时间', dataIndex: 'createdAt', width: 180, render: (value: ReviewHistoryRecord['createdAt']) => formatDateTimeValue(value) },
     {
@@ -52,7 +52,7 @@ export function Workbench(props: WorkbenchProps) {
       width: 130,
       render: (_: unknown, record: ReviewHistoryRecord) => (
         <Space size={4} wrap>
-          <Tag color={record.standardArtifacts?.md || record.standardArtifacts?.json ? 'blue' : 'default'}>准出{record.standardArtifacts?.md || record.standardArtifacts?.json ? '有' : '无'}</Tag>
+          <Tag color={record.standardArtifacts?.md || record.standardArtifacts?.json ? 'blue' : 'default'}>标准{record.standardArtifacts?.md || record.standardArtifacts?.json ? '有' : '无'}</Tag>
           <Tag color={record.reviewArtifacts?.md || record.reviewArtifacts?.json ? 'green' : 'default'}>评审{record.reviewArtifacts?.md || record.reviewArtifacts?.json ? '有' : '无'}</Tag>
         </Space>
       ),
@@ -77,7 +77,7 @@ export function Workbench(props: WorkbenchProps) {
   const workflowItems = [
     {
       title: '单因子评审',
-      description: '生成准出标准并立即执行加工口径评审',
+      description: '生成标准加工规范并立即执行加工逻辑评审',
       icon: <FileSearchOutlined />,
       action: '开始评审',
       onClick: onNavigateSingle,
@@ -116,7 +116,7 @@ export function Workbench(props: WorkbenchProps) {
         </Col>
         <Col xs={12} md={6}>
           <Card className="compact-card metric-card metric-card-warning">
-            <Statistic prefix={<WarningOutlined />} title="不符合/待确认" value={metrics.fail + metrics.confirm} />
+            <Statistic prefix={<WarningOutlined />} title="不通过" value={metrics.fail} />
           </Card>
         </Col>
         <Col xs={12} md={6}>
@@ -164,7 +164,7 @@ export function Workbench(props: WorkbenchProps) {
                       <strong>{item.factorName || item.recordId}</strong>
                       <Typography.Text type="secondary">{formatDateTimeValue(item.createdAt)}</Typography.Text>
                     </span>
-	                    <StatusBadge value={item.conclusion || 'confirm'} />
+	                    <StatusBadge value={item.conclusion || 'unreviewable'} />
                   </button>
                 ))}
               </Space>

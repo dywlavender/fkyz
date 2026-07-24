@@ -1,9 +1,7 @@
 import type {
   HistoryItem,
   OutputArtifact,
-  Phase1Standard,
   ReviewHistoryRecord,
-  ReviewJsonPayload,
   ReviewResult,
   ReviewVerdict,
 } from '../types/review'
@@ -11,8 +9,7 @@ import type {
 const CONCLUSION_LABELS: Record<string, string> = {
   pass: 'pass',
   fail: 'fail',
-  confirm: 'confirm',
-  suggestion: 'suggestion',
+  unreviewable: 'unreviewable',
 }
 
 interface TaskFailureSource {
@@ -37,7 +34,7 @@ export function taskFailureMessage(result: TaskFailureSource | null | undefined,
 }
 
 export function mapVerdictToConclusion(value?: string): string {
-  if (!value) return 'confirm'
+  if (!value) return 'unreviewable'
   const normalized = String(value).trim().toLowerCase()
   return CONCLUSION_LABELS[normalized] ?? normalized
 }
@@ -46,7 +43,7 @@ export function verdictTone(value?: string): 'success' | 'error' | 'warning' | '
   const normalized = String(value || '').trim().toLowerCase()
   if (normalized === 'pass') return 'success'
   if (normalized === 'fail') return 'error'
-  if (normalized === 'confirm') return 'warning'
+  if (normalized === 'unreviewable') return 'warning'
   return 'default'
 }
 
@@ -111,72 +108,20 @@ export function parseDraftSections(draft?: string): { paramFields: string; procL
   return result
 }
 
-export function parseReviewResult(review: ReviewJsonPayload | null, rawMarkdown?: string): ReviewResult {
-  const summary = review?.summary
-  const markdownConclusion = (() => {
+export function parseReviewResult(rawMarkdown?: string): ReviewResult {
+  const conclusion = (() => {
     const overall = String(rawMarkdown || '').match(/\|\s*总体结论\s*\|\s*([^|]+)\|/)?.[1] || ''
     if (/✅|通过/.test(overall) && !/不通过/.test(overall)) return 'pass'
     if (/❌|不通过|不符合/.test(overall)) return 'fail'
-    if (/⚠️|建议/.test(overall)) return 'suggestion'
-    return 'confirm'
+    if (/⛔|无法评审/.test(overall)) return 'unreviewable'
+    return 'unreviewable'
   })()
-  const conclusion = review
-    ? mapVerdictToConclusion(review.conclusionBySystem || review.conclusion || review.finalConclusion)
-    : markdownConclusion
   return {
     conclusion,
-    riskLevel: review?.conclusionBySystem || review?.conclusion || review?.finalConclusion || conclusion,
-    summary: summary?.overall || (rawMarkdown ? '评审报告已生成，结构化明细请查看原始产物。' : ''),
-    ruleChecks: review?.ruleChecks || [],
-    stepChecks: review?.stepChecks || [],
+    riskLevel: conclusion,
+    summary: rawMarkdown ? '评审报告已生成。' : '',
     rawMarkdown,
     rawText: rawMarkdown,
-    issues: review?.issues || [],
-    checks: review?.checks || {},
-    majorRisks: summary?.majorRisks || [],
-    suggestions: summary?.suggestions || [],
-  }
-}
-
-export function parseStandardFromJson(data: unknown): Phase1Standard | null {
-  if (!data || typeof data !== 'object') return null
-  const source = data as Record<string, unknown>
-  if (source.schema_version !== 'risk_review_standard_json_v4') {
-    return data as Phase1Standard
-  }
-  const rules = Array.isArray(source.rules) ? source.rules as Array<Record<string, unknown>> : []
-  const calculationRules = rules.filter((rule) => String(rule.dimension_ref || '') === 'D5')
-  return {
-    schemaVersion: String(source.schema_version),
-    standardVersion: 'v4',
-    phase: 'phase1',
-    factorName: String(source.factor_name || ''),
-    summary: {
-      objective: '生成唯一、最可能、可执行的因子加工标准',
-      processingOverview: String(source.calculation || ''),
-      riskNotes: [],
-    },
-    processingLogic: {
-      object: '因子加工主链',
-      logicType: 'deterministic',
-      steps: calculationRules.map((rule, index) => ({
-        stepNo: index + 1,
-        type: String(rule.dimension_ref || 'D5'),
-        description: String(rule.content || ''),
-        inputFields: Array.isArray(rule.field_paths) ? rule.field_paths.map(String) : [],
-        basisRuleIds: [String(rule.rule_id || '')].filter(Boolean),
-      })),
-    },
-    rules: rules.map((rule) => ({
-      ruleId: String(rule.rule_id || ''),
-      dimension: String(rule.dimension_ref || rule.dimension || ''),
-      basisType: String(rule.basis_type || ''),
-      content: String(rule.content || ''),
-      evidence: Array.isArray(rule.evidence_ids) ? rule.evidence_ids.map(String) : [],
-    })),
-    arrayProcessingSpec: Array.isArray(source.selected_interpretations)
-      ? source.selected_interpretations as Array<Record<string, unknown>>
-      : [],
   }
 }
 
@@ -201,13 +146,13 @@ export function groupHistoryArtifacts(outputs: OutputArtifact[]): HistoryItem[] 
     const key = name
       .replace(/\.review\.(json|md|raw\.txt|validation\.json)$/i, '')
       .replace(/\.standard\.(json|md|raw\.txt|validation\.json)$/i, '')
-      .replace(/\.summary\.json$/i, '')
+      .replace(/\.metadata\.json$/i, '')
     const existing = grouped.get(key) ?? {
       id: key,
       fileName: name,
       type,
       factorName: factorNameFromFileName(name),
-      conclusion: 'confirm',
+      conclusion: 'unreviewable',
       createdAt: output.mtime,
       size: output.size,
     }
@@ -215,7 +160,7 @@ export function groupHistoryArtifacts(outputs: OutputArtifact[]): HistoryItem[] 
     existing.createdAt = Math.max(existing.createdAt, output.mtime)
     existing.size = Math.max(existing.size, output.size)
     if (name.endsWith('.md')) existing.markdownFile = name
-    if (name.endsWith('.json') && !name.endsWith('.validation.json') && !name.endsWith('.summary.json')) {
+    if (name.endsWith('.metadata.json')) {
       existing.jsonFile = name
     }
     if (name.endsWith('.raw.txt')) existing.rawFile = name
@@ -245,10 +190,10 @@ function parseArtifactName(name: string): { phase: 'standard' | 'review'; base: 
       kind: kind as keyof NonNullable<ReviewHistoryRecord['standardArtifacts']>,
     }
   }
-  const current = name.match(/^(standard|review)-(.+)\.(md|summary\.json|raw\.txt|validation\.json)$/i)
+  const current = name.match(/^(standard|review)-(.+)\.(md|metadata\.json|raw\.txt|validation\.json)$/i)
   if (!current) return null
   const ext = current[3].toLowerCase()
-  const kind = ext === 'summary.json' ? 'json' : ext === 'raw.txt' ? 'raw' : ext === 'validation.json' ? 'validation' : 'md'
+  const kind = ext === 'metadata.json' ? 'json' : ext === 'raw.txt' ? 'raw' : ext === 'validation.json' ? 'validation' : 'md'
   return {
     phase: current[1] as 'standard' | 'review',
     base: `${current[1]}-${current[2]}`,
@@ -269,7 +214,7 @@ export function groupOutputsToReviewHistory(outputs: OutputArtifact[]): ReviewHi
       createdAtNumber: output.mtime || 0,
       source: parsed.base.includes('vrun-') ? 'validation' : 'single',
       mode: 'phase1_only',
-      conclusion: 'confirm',
+      conclusion: 'unreviewable',
       riskCount: 0,
       standardArtifacts: {},
       reviewArtifacts: {},
@@ -308,22 +253,8 @@ export function buildWorkbenchMetrics(history: Array<HistoryItem | ReviewHistory
     total: todayItems.length,
     pass: todayItems.filter((item) => mapVerdictToConclusion(item.conclusion) === 'pass').length,
     fail: todayItems.filter((item) => mapVerdictToConclusion(item.conclusion) === 'fail').length,
-    confirm: todayItems.filter((item) => mapVerdictToConclusion(item.conclusion) === 'confirm').length,
-    suggestion: todayItems.filter((item) => mapVerdictToConclusion(item.conclusion) === 'suggestion').length,
+    unreviewable: todayItems.filter((item) => mapVerdictToConclusion(item.conclusion) === 'unreviewable').length,
   }
-}
-
-export function summarizeIssues(result?: ReviewResult | null) {
-  const issues = result?.issues || []
-  return {
-    fail: issues.filter((item) => item.level === 'fail').length,
-    confirm: issues.filter((item) => item.level === 'confirm').length,
-    suggestion: issues.filter((item) => item.level === 'suggestion').length,
-  }
-}
-
-export function normalizeConclusionFromReview(review: ReviewJsonPayload | null): string {
-  return mapVerdictToConclusion(review?.conclusionBySystem || review?.conclusion)
 }
 
 export function normalizeStatusText(status?: string): string {
@@ -355,6 +286,6 @@ export function toMultilineText(value: unknown): string {
 
 export function normalizeReviewVerdict(value?: string): ReviewVerdict {
   const normalized = String(value || '').trim().toLowerCase()
-  if (!normalized) return 'confirm'
+  if (!normalized) return 'unreviewable'
   return normalized
 }

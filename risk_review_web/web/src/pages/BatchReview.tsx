@@ -3,7 +3,6 @@ import {
   Alert,
   Button,
   Card,
-  Checkbox,
   Col,
   Descriptions,
   Drawer,
@@ -43,7 +42,6 @@ interface BatchTaskResult {
 interface BatchSessionState {
   rows?: BatchRow[]
   concurrency?: number
-  skipStageValidation?: boolean
   taskId?: string
 }
 
@@ -112,7 +110,6 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
   const pageActive = usePageActive()
   const [rows, setRows] = useState<BatchRow[]>(() => readBatchSession().rows || [])
   const [concurrency, setConcurrency] = useState(() => readBatchSession().concurrency || 1)
-  const [skipStageValidation, setSkipStageValidation] = useState(() => readBatchSession().skipStageValidation ?? true)
   const [loading, setLoading] = useState(false)
   const [taskId, setTaskId] = useState<string | undefined>(() => readBatchSession().taskId)
   const [task, setTask] = useState<TaskRecord<BatchTaskResult> | null>(null)
@@ -152,11 +149,10 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
     const state: BatchSessionState = {
       rows,
       concurrency,
-      skipStageValidation,
       taskId,
     }
     writeBatchSession(state)
-  }, [rows, concurrency, skipStageValidation, taskId])
+  }, [rows, concurrency, taskId])
 
   useEffect(() => {
     if (!taskId || !running) return
@@ -292,7 +288,7 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
 
     setSubmitting(true)
     try {
-      const response = await runBatchReview({ rows, concurrency, skipStageValidation })
+      const response = await runBatchReview({ rows, concurrency })
       setTaskId(response.taskId)
       const nextTask = response.task as TaskRecord<BatchTaskResult>
       setTask(nextTask)
@@ -579,13 +575,6 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
           <Descriptions.Item label="全局池位置">
             {task?.poolStatus === 'queued' ? `排队第 ${task.queuePosition || '-'} 位` : task?.poolStatus === 'running' ? '执行中' : '-'}
           </Descriptions.Item>
-          <Descriptions.Item label="运行开关" span={2}>
-            <Space wrap>
-              <Checkbox checked={skipStageValidation} disabled={running} onChange={(event) => setSkipStageValidation(event.target.checked)}>
-                跳过严格完整性校验
-              </Checkbox>
-            </Space>
-          </Descriptions.Item>
         </Descriptions>
         <Alert
           style={{ marginTop: 10 }}
@@ -678,7 +667,7 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
           type="info"
           showIcon
           message="这里展示当前后端进程中的批量任务记录。"
-          description="记录受后端任务保留时间配置限制，默认约保留 30 分钟，服务重启后不保留；已生成的准出和评审产物仍可在评审历史中查看。"
+          description="记录受后端任务保留时间配置限制，默认约保留 30 分钟，服务重启后不保留；已生成的标准和评审产物仍可在评审历史中查看。"
         />
         {batchHistory.length ? (
           <Table

@@ -1,10 +1,9 @@
-import type { Phase1Response, Phase1Standard, Phase2Response, ReviewResult } from '../types/review'
+import type { Phase1Response, Phase2Response, ReviewResult } from '../types/review'
 import { EmptyState } from './EmptyState'
 import { MarkdownViewer } from './MarkdownViewer'
 
 interface ReviewResultPanelProps {
   result: ReviewResult
-  standard?: Phase1Standard | null
   phase1?: Phase1Response | null
   phase2?: Phase2Response | null
   onOpenArtifact?: (fileId: string) => void

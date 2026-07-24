@@ -241,7 +241,6 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
           <Descriptions.Item label="运行模式">{task.runtimeMode}</Descriptions.Item>
           <Descriptions.Item label="执行周期">{task.scheduleType}</Descriptions.Item>
           <Descriptions.Item label="失败策略">{task.failurePolicy}</Descriptions.Item>
-          <Descriptions.Item label="严格完整性校验">{(task.skipStageValidation ?? true) ? '跳过' : '启用'}</Descriptions.Item>
           <Descriptions.Item label="并发数">{task.concurrency}</Descriptions.Item>
           <Descriptions.Item label="下次执行时间">{formatDate(task.nextRunAt)}</Descriptions.Item>
           <Descriptions.Item label="最近执行时间">{formatDate(task.lastRunAt)}</Descriptions.Item>

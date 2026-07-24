@@ -10,10 +10,9 @@ interface StatusBadgeProps {
 export function StatusBadge({ value }: StatusBadgeProps) {
   const label = mapVerdictToConclusion(value)
   const displayLabel: Record<string, string> = {
-    pass: '通过项',
-    fail: '不符合项',
-    confirm: '待确认项',
-    suggestion: '建议项',
+    pass: '通过',
+    fail: '不通过',
+    unreviewable: '无法评审',
   }
   const styles: Record<string, CSSProperties> = {
     pass: {
@@ -26,17 +25,12 @@ export function StatusBadge({ value }: StatusBadgeProps) {
       borderColor: '#ffccc7',
       color: '#a8071a',
     },
-    confirm: {
+    unreviewable: {
       background: '#fff7e6',
       borderColor: '#ffe7ba',
       color: '#ad6800',
     },
-    suggestion: {
-      background: '#f5f7fa',
-      borderColor: '#d8dee8',
-      color: '#5f6d80',
-    },
   }
 
-  return <Tag style={styles[label] || styles.confirm}>{displayLabel[label] || label}</Tag>
+  return <Tag style={styles[label] || styles.unreviewable}>{displayLabel[label] || label}</Tag>
 }

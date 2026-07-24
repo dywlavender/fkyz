@@ -12,7 +12,6 @@
     "runtimeMode": "claude",
     "concurrency": 1,
     "failurePolicy": "continue",
-    "skipStageValidation": true,
     "standardFile": "",
     "items": [
       {

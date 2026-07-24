@@ -21,7 +21,7 @@ interface HistoryProps {
 }
 
 function firstDownloadFile(record: ReviewHistoryRecord) {
-  return record.reviewArtifacts?.md || record.standardArtifacts?.md || record.reviewArtifacts?.json || record.standardArtifacts?.json
+  return record.reviewArtifacts?.md || record.standardArtifacts?.md || record.standardArtifacts?.json
 }
 
 function downloadHref(filename?: string) {
@@ -32,8 +32,8 @@ const DELETE_SUPPORTED = true
 const ALL_VALUE = '__all__'
 
 function artifactCompleteness(record: ReviewHistoryRecord) {
-  const standardCount = record.standardArtifacts ? Object.values(record.standardArtifacts).filter(Boolean).length : 0
-  const reviewCount = record.reviewArtifacts ? Object.values(record.reviewArtifacts).filter(Boolean).length : 0
+  const standardCount = [record.standardArtifacts?.md, record.standardArtifacts?.json].filter(Boolean).length
+  const reviewCount = [record.reviewArtifacts?.md].filter(Boolean).length
   return { standardCount, reviewCount, total: standardCount + reviewCount }
 }
 
@@ -155,7 +155,7 @@ export function History(props: HistoryProps) {
     { title: '因子名称', dataIndex: 'factorName', ellipsis: true, render: (value: string) => value || '-' },
     { title: '来源', dataIndex: 'source', width: 100, render: (value: string) => <Tag>{sourceLabel(value)}</Tag> },
     { title: '执行模式', dataIndex: 'mode', width: 150, render: (value: string) => modeLabel(value) },
-    { title: '最终结论', dataIndex: 'conclusion', width: 120, render: (value: string) => <StatusBadge value={value || 'confirm'} /> },
+    { title: '最终结论', dataIndex: 'conclusion', width: 120, render: (value: string) => <StatusBadge value={value || 'unreviewable'} /> },
     { title: '风险数', dataIndex: 'riskCount', width: 100, render: (value: number) => value ?? 0 },
     {
       title: '文档状态',
@@ -163,9 +163,9 @@ export function History(props: HistoryProps) {
       render: (_: unknown, record: ReviewHistoryRecord) => {
         const completeness = artifactCompleteness(record)
         return (
-          <Tooltip title={`准出产物 ${completeness.standardCount}/4，评审产物 ${completeness.reviewCount}/4，总计 ${completeness.total}/8。`}>
+          <Tooltip title={`标准产物 ${completeness.standardCount}/2，评审产物 ${completeness.reviewCount}/1，总计 ${completeness.total}/3。`}>
             <Space size={4} wrap>
-              <Tag color={hasArtifacts(record.standardArtifacts) ? 'blue' : 'default'}>准出：{hasArtifacts(record.standardArtifacts) ? '有' : '无'}</Tag>
+              <Tag color={hasArtifacts(record.standardArtifacts) ? 'blue' : 'default'}>标准：{hasArtifacts(record.standardArtifacts) ? '有' : '无'}</Tag>
               <Tag color={hasArtifacts(record.reviewArtifacts) ? 'green' : 'default'}>评审：{hasArtifacts(record.reviewArtifacts) ? '有' : '无'}</Tag>
             </Space>
           </Tooltip>
@@ -182,7 +182,7 @@ export function History(props: HistoryProps) {
         return (
           <Space onClick={(event) => event.stopPropagation()}>
             <Button type="link" onClick={() => setActiveRecord(record)}>查看</Button>
-            <Button type="link" disabled={!record.standardArtifacts?.md} onClick={() => setActiveRecord(record)}>准出文档</Button>
+            <Button type="link" disabled={!record.standardArtifacts?.md} onClick={() => setActiveRecord(record)}>标准加工规范</Button>
             <Button type="link" disabled={!downloadFile} href={downloadHref(downloadFile)} target="_blank" download={downloadFile}>下载</Button>
             <Button type="link" disabled={!record.standardArtifacts?.json} onClick={() => onReuse(record)}>复用标准</Button>
             <Tooltip title={DELETE_SUPPORTED ? '后端会删除该记录关联产物；成功后才从列表移除。' : '当前后端不支持删除评审历史，不能执行前端假删除。'}>
@@ -222,10 +222,9 @@ export function History(props: HistoryProps) {
             onChange={setConclusionFilter}
             options={[
               { label: '全部结论', value: ALL_VALUE },
-              { label: '通过项', value: 'pass' },
-              { label: '不符合项', value: 'fail' },
-              { label: '待确认项', value: 'confirm' },
-              { label: '建议项', value: 'suggestion' },
+              { label: '通过', value: 'pass' },
+              { label: '不通过', value: 'fail' },
+              { label: '无法评审', value: 'unreviewable' },
             ]}
           />
           <DatePicker.RangePicker
@@ -292,7 +291,7 @@ export function History(props: HistoryProps) {
           cancelButtonProps={{ disabled: deleting }}
         >
           <Typography.Paragraph>
-            将删除已选 {selectedRowKeys.length} 条记录及其关联准出文档和评审结果文档，请确认。
+            将删除已选 {selectedRowKeys.length} 条记录及其关联标准加工规范和评审结果文档，请确认。
           </Typography.Paragraph>
           <Typography.Text type="secondary">
             删除失败的记录会继续保留在列表和选中项中。
@@ -310,7 +309,7 @@ export function History(props: HistoryProps) {
           okButtonProps={{ danger: true, disabled: !DELETE_SUPPORTED }}
         >
           <Typography.Paragraph>
-            将调用后端删除该记录关联的准出文档和评审结果文档，包括 Markdown、JSON、raw、validation 文件。只有后端删除成功后，列表才会移除该记录。
+            将调用后端删除该记录关联的标准加工规范、元数据和评审结果文档。只有后端删除成功后，列表才会移除该记录。
           </Typography.Paragraph>
           <Typography.Text strong>{deleteTarget?.factorName || deleteTarget?.recordId}</Typography.Text>
         </Modal>

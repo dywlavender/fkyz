@@ -30,7 +30,7 @@ const state = {
   phase1Done: false,
   phase2Done: false,
   standardFileId: null,     // backend-stored standard file identifier
-  standardSummaryFileId: null,
+  standardMetadataFileId: null,
   standardChecksum: null,
   standardModalText: "",
   claudeDebugLogs: [],
@@ -96,7 +96,6 @@ const BUSINESS_RULE_TYPE_LABELS = {
   business_mandatory: "业务口径强制",
   exception_fallback: "异常兜底语义",
   default_assumption: "默认假设",
-  confirmation: "待确认补充",
 };
 
 function saveHistory() {
@@ -309,7 +308,7 @@ function renderExamplesList() {
 function getValidationDisplayStatus(result) {
   if (!result) return { className: "untested", label: "未验证", filterStatus: "untested" };
   if (result.verdict === "pass") return { className: "pass", label: "通过", filterStatus: "pass" };
-  if (result.verdict === "warn") return { className: "warn", label: "待确认", filterStatus: "pass" };
+  if (result.verdict === "unreviewable") return { className: "warn", label: "无法评审", filterStatus: "fail" };
   if (result.verdict === "fail") return { className: "fail", label: "不通过", filterStatus: "fail" };
   if (result.status === "error") return { className: "fail", label: "异常", filterStatus: "fail" };
   if (result.status === "pass") return { className: "pass", label: "通过", filterStatus: "pass" };
@@ -625,13 +624,10 @@ function expectedMatchesVerdict(example, verdict) {
   if (!expected.trim()) return true;
   const allowed = new Set();
   if (/不通过|不符合|失败|fail/i.test(expected)) allowed.add("fail");
-  if (/建议|修改|warn/i.test(expected)) {
-    allowed.add("warn");
-    allowed.add("pass");
-  }
+  if (/无法评审|unreviewable/i.test(expected)) allowed.add("unreviewable");
   const positiveExpected = expected
     .replace(/不通过|不符合|失败|fail/ig, "")
-    .replace(/建议修改后通过|建议|修改|warn/ig, "");
+    .replace(/无法评审|unreviewable/ig, "");
   if (/通过|符合|pass/i.test(positiveExpected) || /✅\s*(通过|符合)/.test(expected)) allowed.add("pass");
   if (allowed.size) return allowed.has(verdict);
   return true;
@@ -678,14 +674,14 @@ function renderValidationResultPanel() {
     el.innerHTML = '<span class="validation-muted">尚未验证。可点击“验证当前用例”。</span>';
     return;
   }
-  const verdictMap = { pass: "通过", warn: "存在待确认项", fail: "不通过", idle: "待确认" };
+  const verdictMap = { pass: "通过", fail: "不通过", unreviewable: "无法评审" };
   const verdictText = verdictMap[result.verdict] || result.verdict || "未知";
-  const statusText = result.verdict === "pass" ? "✅ 通过" : result.verdict === "warn" ? "⚠️ 存在待确认项" : result.verdict === "fail" ? "❌ 不通过" : "🔵 待确认";
+  const statusText = result.verdict === "pass" ? "✅ 通过" : result.verdict === "fail" ? "❌ 不通过" : "⛔ 无法评审";
   el.innerHTML = `
     <div class="validation-result-row"><b>${statusText}</b><span>${formatDate(result.time)}</span></div>
     <div class="validation-result-row"><span>实际结论</span><strong>${escapeHtml(verdictText)}</strong></div>
     <div class="validation-result-row"><span>期望匹配</span><strong>${result.expectedOk ? "匹配" : "不匹配"}</strong></div>
-    <div class="validation-result-row"><span>问题数</span><strong>不符合 ${result.summary?.fail || 0} / 待确认 ${result.summary?.pending || 0} / 建议 ${result.summary?.suggest || 0}</strong></div>
+    <div class="validation-result-row"><span>问题数</span><strong>不符合 ${result.summary?.fail || 0}</strong></div>
     <div class="example-actions" style="margin-top:8px">
       <button class="mini-btn" id="viewValidationStandardBtn" type="button" ${result.standardText || result.standardFileId ? "" : "disabled"}>查看标准规范</button>
       <button class="mini-btn" id="viewValidationReviewBtn" type="button" ${result.raw || result.reportPreview ? "" : "disabled"}>查看评审报告</button>
@@ -794,7 +790,6 @@ async function runRegressionValidation() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         clientId: CLIENT_INSTANCE_ID,
-        skipStageValidation: shouldSkipStageValidation(),
       }),
     });
     const data = await res.json();
@@ -898,7 +893,7 @@ async function pollRegressionTask(taskId) {
       if (!item.id || !["pass", "fail", "error"].includes(item.status)) return;
       const nextRecord = {
         status: item.status === "pass" ? "pass" : "fail",
-        verdict: item.verdict || "idle",
+        verdict: item.verdict || "unreviewable",
         expectedOk: Boolean(item.expectedOk),
         expected: item.expected || "",
         summary: item.summary || {},
@@ -1209,7 +1204,7 @@ function clearForm() {
   state.phase1Done = false;
   state.phase2Done = false;
   state.standardFileId = null;
-  state.standardSummaryFileId = null;
+  state.standardMetadataFileId = null;
   state.standardChecksum = null;
   $("#resultArea").classList.add("hidden");
   $("#copyAllBtn").classList.add("hidden");
@@ -1379,7 +1374,6 @@ async function runPhase1() {
         requirement,
         apiNames,
         debugClaude: isClaudeDebugEnabled(),
-        skipStageValidation: shouldSkipStageValidation(),
       }),
     });
     if (!res.ok) {
@@ -1401,7 +1395,7 @@ async function runPhase1() {
 function onPhase1Done(resultText, standardFileId, checksum, meta) {
   state.phase1Done = true;
   state.standardFileId = standardFileId;
-  state.standardSummaryFileId = meta?.standardSummaryFileId || null;
+  state.standardMetadataFileId = meta?.standardMetadataFileId || null;
   state.standardChecksum = checksum;
   state.step1 = resultText;
 
@@ -1454,7 +1448,7 @@ async function runPhase2() {
   const apiNames = selectedApis();
   const draft = buildPhase2Draft();
   if (!draft) {
-    addLog("请填写待评审准出内容（因子加工输入字段、加工逻辑）。", "err");
+    addLog("请填写待评审加工逻辑（因子加工输入字段、加工逻辑）。", "err");
     return;
   }
   state.busy = true;
@@ -1475,7 +1469,6 @@ async function runPhase2() {
         draft,
         standardFileId: state.standardFileId,
         debugClaude: isClaudeDebugEnabled(),
-        skipStageValidation: shouldSkipStageValidation(),
       }),
     });
     if (!res.ok) {
@@ -1518,7 +1511,7 @@ async function runFullReview() {
   // Validate Phase 2 inputs
   var draft = buildPhase2Draft();
   if (!draft) {
-    addLog("请填写待评审准出内容（因子加工输入字段、加工逻辑）。", "err");
+    addLog("请填写待评审加工逻辑（因子加工输入字段、加工逻辑）。", "err");
     return;
   }
   
@@ -1610,7 +1603,7 @@ async function pollTask(taskId, startedAt, meta) {
     if (task.status === "done") {
       var phase = meta.phase || 1;
       if (phase === 1) {
-        onPhase1Done(result.stdout || "", result.standardFileId, result.checksum, { ...meta, cacheHit: Boolean(result.cacheHit), standardSummaryFileId: result.standardSummaryFileId });
+        onPhase1Done(result.stdout || "", result.standardFileId, result.checksum, { ...meta, cacheHit: Boolean(result.cacheHit), standardMetadataFileId: result.standardMetadataFileId });
       } else {
         onPhase2Done(result.stdout || "", { ...meta, reviewFileId: result.reviewFileId });
       }
@@ -1709,22 +1702,9 @@ function collectStats(text) {
   if (statsMatch) {
     const statsText = statsMatch[1] || "";
     const failMatch = statsText.match(/不符合\s*(\d+)\s*项/);
-    const pendingMatch = statsText.match(/待确认\s*(\d+)\s*项/);
-    const suggestMatch = statsText.match(/建议\s*(\d+)\s*项/);
-    if (failMatch || pendingMatch || suggestMatch) {
-      return {
-        fail: failMatch ? Number(failMatch[1]) : 0,
-        pending: pendingMatch ? Number(pendingMatch[1]) : 0,
-        suggest: suggestMatch ? Number(suggestMatch[1]) : 0,
-      };
-    }
+    if (failMatch) return { fail: Number(failMatch[1]) };
   }
-  const conclusionRows = [...source.matchAll(/\|\s*结论\s*\|\s*([^|]+?)\s*\|/g)].map((match) => match[1]);
-  return {
-    fail: conclusionRows.filter((row) => /❌\s*不符合/.test(row)).length,
-    pending: conclusionRows.filter((row) => /🔵\s*待确认|⚠️\s*待确认/.test(row)).length,
-    suggest: conclusionRows.filter((row) => /⚠️\s*建议/.test(row)).length,
-  };
+  return { fail: [...source.matchAll(/^\|\s*I-\d+\s*\|/gm)].length };
 }
 
 function detectVerdict(text) {
@@ -1732,28 +1712,23 @@ function detectVerdict(text) {
   const overall = source.match(/\|\s*总体结论\s*\|\s*([^|]+?)\s*\|/);
   const target = overall ? overall[1] : source;
   if (/❌\s*不通过/.test(target)) return "fail";
-  if (/⚠️\s*建议/.test(target)) {
-    const stats = collectStats(source);
-    if (stats.fail === 0 && stats.pending === 0 && stats.suggest > 0) return "pass";
-    return "warn";
-  }
+  if (/⛔\s*无法评审|无法评审/.test(target)) return "unreviewable";
   if (/✅\s*(通过|符合)/.test(target)) return "pass";
-  return "idle";
+  return "unreviewable";
 }
 
 function updateOverview(text) {
   const stats = collectStats(text);
   $("#failCount").textContent = stats.fail;
-  $("#pendingCount").textContent = stats.pending;
-  $("#suggestCount").textContent = stats.suggest;
+  $("#pendingCount").textContent = detectVerdict(text) === "unreviewable" ? 1 : 0;
+  $("#suggestCount").textContent = stats.fail;
   const verdict = detectVerdict(text);
   const banner = $("#verdictBanner");
   banner.className = `verdict ${verdict}`;
   const labels = {
     pass: "总体结论：✅ 通过",
-    warn: "总体结论：⚠️ 存在待确认项",
     fail: "总体结论：❌ 不通过，需修改",
-    idle: "总体结论：待确认",
+    unreviewable: "总体结论：⛔ 无法评审",
   };
   banner.textContent = labels[verdict];
 }
@@ -1831,8 +1806,8 @@ function renderHistory() {
   }
   el.innerHTML = '<div class="history-table-head"><span></span><span>评审对象</span><span>结论</span><span>时间</span></div>' + pageRows.map(function(item, pageIndex) {
     const index = start + pageIndex;
-    const cls = item.verdict === "pass" ? "pass" : item.verdict === "warn" ? "warn" : "fail";
-    const label = item.verdict === "pass" ? "✅ 通过" : item.verdict === "warn" ? "⚠️ 待确认" : "❌ 不通过";
+    const cls = item.verdict === "pass" ? "pass" : item.verdict === "unreviewable" ? "warn" : "fail";
+    const label = item.verdict === "pass" ? "✅ 通过" : item.verdict === "unreviewable" ? "⛔ 无法评审" : "❌ 不通过";
     var checked = state.historyDeleteChecked[index] ? "checked" : "";
     return '<article class="hist-item" data-history-index="' + index + '">' +
       '<div class="hist-top">' +
@@ -1972,7 +1947,7 @@ function openReviewDetailModal(item) {
     if (item.procLogic) lines.push("逻辑：" + item.procLogic);
     if (item.defaultValues) lines.push("默认值：" + item.defaultValues);
     if ((item.apiNames || []).length) lines.push("接口：" + (item.apiNames || []).join("、"));
-    if (item.draft && !(item.paramFields || item.procLogic || item.defaultValues)) lines.push("待评审准出：" + item.draft);
+    if (item.draft && !(item.paramFields || item.procLogic || item.defaultValues)) lines.push("待评审加工逻辑：" + item.draft);
     inputs.innerHTML = lines.map(function(l) { return escapeHtml(l); }).join("<br>");
     inputs.dataset.hasInputs = "1";
   } else {
@@ -1986,11 +1961,11 @@ function openReviewDetailModal(item) {
   var verdict = item.verdict || detectVerdict(raw);
   var v = $("#modalVerdict");
   v.className = "verdict " + verdict;
-  var labels = {pass:"✅ 通过", warn:"⚠️ 存在待确认项", fail:"❌ 不通过，需修改", idle:"待确认"};
-  v.textContent = labels[verdict] || "待确认";
+  var labels = {pass:"✅ 通过", fail:"❌ 不通过，需修改", unreviewable:"⛔ 无法评审"};
+  v.textContent = labels[verdict] || "⛔ 无法评审";
   $("#modalFail").textContent = stats.fail || 0;
-  $("#modalPending").textContent = stats.pending || 0;
-  $("#modalSuggest").textContent = stats.suggest || 0;
+  $("#modalPending").textContent = verdict === "unreviewable" ? 1 : 0;
+  $("#modalSuggest").textContent = stats.fail || 0;
 
   openModal("historyModal");
   setHistoryModalView("issues");
@@ -2138,10 +2113,6 @@ function closeModal(id) {
 
 function isClaudeDebugEnabled() {
   return Boolean($("#claudeDebugToggle")?.checked);
-}
-
-function shouldSkipStageValidation() {
-  return Boolean($("#skipStageValidationToggle")?.checked);
 }
 
 function formatClaudeDebugLogs(logs) {
@@ -2404,7 +2375,6 @@ async function startBatchReview() {
         concurrency: Number($("#batchConcurrency")?.value || 1),
         retry: Number($("#batchRetry")?.value || 0),
         resume: ($("#batchResume")?.value || "1") === "1",
-        skipStageValidation: shouldSkipStageValidation(),
       }),
     });
     const data = await res.json();
@@ -2457,17 +2427,16 @@ function renderBatchProgress() {
 
 function getBatchVerdict(item) {
   const status = item?.status || "";
-  if (status === "queued" || status === "running") return { verdict: "idle", label: "总体结论：等待" };
-  if (status === "skip") return { verdict: "idle", label: "总体结论：跳过" };
+  if (status === "queued" || status === "running") return { verdict: "unreviewable", label: "总体结论：等待" };
+  if (status === "skip") return { verdict: "unreviewable", label: "总体结论：跳过" };
   if (status === "error") return { verdict: "fail", label: "总体结论：异常" };
   const verdict = item?.verdict || detectVerdict(item?.raw || item?.reportPreview || "");
   const labels = {
     pass: "总体结论：通过",
-    warn: "总体结论：待确认",
     fail: "总体结论：不通过",
-    idle: "总体结论：待确认",
+    unreviewable: "总体结论：无法评审",
   };
-  return { verdict: verdict || "idle", label: labels[verdict] || labels.idle };
+  return { verdict: verdict || "unreviewable", label: labels[verdict] || labels.unreviewable };
 }
 
 async function pollBatchTasks() {

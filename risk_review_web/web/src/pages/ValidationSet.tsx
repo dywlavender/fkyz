@@ -79,7 +79,7 @@ function conclusionColor(value?: string) {
   if (normalized.includes('|')) return 'processing'
   if (normalized === 'pass') return 'success'
   if (normalized === 'fail') return 'error'
-  if (normalized === 'confirm') return 'warning'
+  if (normalized === 'unreviewable') return 'warning'
   return 'default'
 }
 
@@ -142,25 +142,22 @@ function regressionItemStatusColor(value?: string) {
 }
 
 function normalizeConclusion(value?: string) {
-  const source = String(value || 'confirm').trim()
+  const source = String(value || 'unreviewable').trim()
   const candidates: string[] = []
   if (/✅|\bpass\b|通过/.test(source) && !/不通过/.test(source)) candidates.push('pass')
   if (/❌|\bfail\b|不通过|不符合/.test(source)) candidates.push('fail')
-  if (/⚠️|\bsuggestion\b|建议/.test(source)) candidates.push('suggestion')
-  if (/待确认|\bconfirm\b|\bunknown\b/.test(source)) candidates.push('confirm')
+  if (/⛔|无法评审|\bunreviewable\b|\bunknown\b/.test(source)) candidates.push('unreviewable')
   if (candidates.length) return [...new Set(candidates)].join('|')
   const normalized = source.toLowerCase()
-  if (normalized === 'unknown') return 'confirm'
-  if (normalized === 'skip') return 'suggestion'
-  return normalized || 'confirm'
+  if (normalized === 'unknown') return 'unreviewable'
+  return normalized || 'unreviewable'
 }
 
 function conclusionLabel(value?: string) {
   const labels: Record<string, string> = {
-    pass: '通过项',
-    fail: '不符合项',
-    confirm: '待确认项',
-    suggestion: '建议项',
+    pass: '通过',
+    fail: '不通过',
+    unreviewable: '无法评审',
   }
   const normalized = normalizeConclusion(value)
   if (normalized.includes('|')) {
@@ -421,8 +418,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
       total: cases.length,
       passed: completed.filter((run) => normalizeConclusion(run.actualConclusion) === 'pass').length,
       failed: completed.filter((run) => normalizeConclusion(run.actualConclusion) === 'fail').length,
-      confirm: completed.filter((run) => normalizeConclusion(run.actualConclusion) === 'confirm').length,
-      suggestion: completed.filter((run) => normalizeConclusion(run.actualConclusion) === 'suggestion').length,
+      unreviewable: completed.filter((run) => normalizeConclusion(run.actualConclusion) === 'unreviewable').length,
       agreementRate: completed.length ? Math.round((matched / completed.length) * 1000) / 10 : null,
       recent: latest
         .map((run) => run.finishedAt || run.startedAt || '')
@@ -450,7 +446,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
       if (matchFilter === 'matched' && runMatched(latestRun) !== true) return false
       if (matchFilter === 'mismatched' && runMatched(latestRun) !== false) return false
       if (matchFilter === 'unrun' && latestRun) return false
-      if (matchFilter === 'confirm' && normalizeConclusion(latestRun?.actualConclusion) !== 'confirm') return false
+      if (matchFilter === 'unreviewable' && normalizeConclusion(latestRun?.actualConclusion) !== 'unreviewable') return false
       return true
     })
   }, [cases, conclusionFilter, latestRunByCase, matchFilter, query])
@@ -458,7 +454,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
   function openCreator() {
     setEditingCase(null)
     form.resetFields()
-    form.setFieldsValue({ expectedConclusion: 'confirm' })
+    form.setFieldsValue({ expectedConclusion: 'pass' })
     setEditorOpen(true)
   }
 
@@ -560,7 +556,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
     setRunningIds((ids) => [...ids, record.caseId])
     let regressionSubmitted = false
     try {
-      const response = await runRegression({ exampleIds: [record.caseId], skipStageValidation: true })
+      const response = await runRegression({ exampleIds: [record.caseId] })
       regressionSubmitted = true
       window.localStorage.setItem(REGRESSION_TASK_STORAGE_KEY, response.taskId)
       setRegressionTaskId(response.taskId)
@@ -606,7 +602,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
     setRunningIds(ids)
     let regressionSubmitted = false
     try {
-      const response = await runRegression({ exampleIds: ids, skipStageValidation: true })
+      const response = await runRegression({ exampleIds: ids })
       regressionSubmitted = true
       window.localStorage.setItem(REGRESSION_TASK_STORAGE_KEY, response.taskId)
       setRegressionTaskId(response.taskId)
@@ -750,7 +746,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
         <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="案例总数" value={stats.total} /></Card></Col>
         <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="最近通过" value={stats.passed} /></Card></Col>
         <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="最近失败" value={stats.failed} /></Card></Col>
-        <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="待确认项" value={stats.confirm} /></Card></Col>
+        <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="无法评审" value={stats.unreviewable} /></Card></Col>
         <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="一致率" value={stats.agreementRate ?? '暂无'} suffix={stats.agreementRate == null ? undefined : '%'} precision={1} /></Card></Col>
         <Col xs={24} sm={12} xl={4}><Card className="compact-card"><CompactDateStat title="最近执行时间" value={stats.recent} /></Card></Col>
       </Row>
@@ -826,7 +822,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
                     title: '实际结论',
                     dataIndex: 'verdict',
                     width: 110,
-                    render: (value?: string) => value && value !== 'idle' ? conclusionLabel(value) : '-',
+                    render: (value?: string) => value ? conclusionLabel(value) : '-',
                   },
                   {
                     title: '期望匹配',
@@ -881,10 +877,9 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
             onChange={setConclusionFilter}
             options={[
               { label: '全部期望结论', value: ALL_VALUE },
-              { label: '通过项', value: 'pass' },
-              { label: '不符合项', value: 'fail' },
-              { label: '待确认项', value: 'confirm' },
-              { label: '建议项', value: 'suggestion' },
+              { label: '通过', value: 'pass' },
+              { label: '不通过', value: 'fail' },
+              { label: '无法评审', value: 'unreviewable' },
             ]}
           />
           <Select
@@ -895,7 +890,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
               { label: '全部一致性', value: ALL_VALUE },
               { label: '一致', value: 'matched' },
               { label: '不一致', value: 'mismatched' },
-              { label: '待确认项', value: 'confirm' },
+              { label: '无法评审', value: 'unreviewable' },
               { label: '未执行', value: 'unrun' },
             ]}
           />
@@ -1004,10 +999,9 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
           <Form.Item name="expectedConclusion" label="期望结论">
             <Select
               options={[
-                { label: '通过项', value: 'pass' },
-                { label: '不符合项', value: 'fail' },
-                { label: '待确认项', value: 'confirm' },
-                { label: '建议项', value: 'suggestion' },
+                { label: '通过', value: 'pass' },
+                { label: '不通过', value: 'fail' },
+                { label: '无法评审', value: 'unreviewable' },
               ]}
             />
           </Form.Item>
@@ -1107,7 +1101,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
             <Descriptions bordered column={1} size="small">
               <Descriptions.Item label="案例 ID">{activeRegressionItem.id || '-'}</Descriptions.Item>
               <Descriptions.Item label="期望结论">{activeRegressionItem.expected || '-'}</Descriptions.Item>
-              <Descriptions.Item label="实际结论">{activeRegressionItem.verdict && activeRegressionItem.verdict !== 'idle' ? conclusionLabel(activeRegressionItem.verdict) : '-'}</Descriptions.Item>
+              <Descriptions.Item label="实际结论">{activeRegressionItem.verdict ? conclusionLabel(activeRegressionItem.verdict) : '-'}</Descriptions.Item>
               <Descriptions.Item label="标准文件">{activeRegressionItem.standardFileId || '-'}</Descriptions.Item>
               <Descriptions.Item label="报告文件">{activeRegressionItem.reviewFileId || '-'}</Descriptions.Item>
             </Descriptions>

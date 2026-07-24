@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 from .paths import (
-    CORE_RULES_PROMPT_PATH,
-    PHASE1_CORE_RULES_PROMPT_PATH,
     PHASE1_PROMPT_PATH,
     PHASE1_SKILL_PATH,
-    PHASE2_CORE_RULES_PROMPT_PATH,
     PHASE2_PROMPT_PATH,
     DIRECT_REVIEW_PROMPT_PATH,
     PHASE2_SKILL_PATH,
@@ -25,11 +22,10 @@ def render_template(template: str, values: dict[str, str]) -> str:
     return rendered
 
 
-def skill_path_values(core_rules_path=CORE_RULES_PROMPT_PATH) -> dict[str, str]:
+def skill_path_values() -> dict[str, str]:
     return {
         "PHASE1_SKILL_PATH": rel(PHASE1_SKILL_PATH),
         "PHASE2_SKILL_PATH": rel(PHASE2_SKILL_PATH),
-        "CORE_RULES": read_text(core_rules_path),
     }
 
 
@@ -42,7 +38,7 @@ def build_phase1_prompt(
     return render_template(
         read_text(PHASE1_PROMPT_PATH),
         {
-            **skill_path_values(PHASE1_CORE_RULES_PROMPT_PATH),
+            **skill_path_values(),
             "REQUIREMENT": requirement,
             "API_NAMES": api_block,
         },
@@ -51,16 +47,16 @@ def build_phase1_prompt(
 
 def build_phase2_prompt(
     *,
-    standard_summary_json: str,
+    standard_text: str,
+    requirement: str,
     draft: str,
-    standard_validation_status: str,
 ) -> str:
     return render_template(
         read_text(PHASE2_PROMPT_PATH),
         {
-            **skill_path_values(PHASE2_CORE_RULES_PROMPT_PATH),
-            "STANDARD_SUMMARY_JSON": standard_summary_json,
-            "STANDARD_VALIDATION_STATUS": standard_validation_status,
+            **skill_path_values(),
+            "STANDARD_TEXT": standard_text,
+            "REQUIREMENT": requirement,
             "DRAFT": draft,
         },
     )

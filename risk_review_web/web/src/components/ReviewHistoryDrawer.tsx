@@ -7,19 +7,17 @@ import { formatDateTimeValue } from '../utils/reviewTransform'
 import { MarkdownViewer, isMarkdownContent } from './MarkdownViewer'
 import { StatusBadge } from './StatusBadge'
 
-type ArtifactKind = keyof ArtifactGroup
+type ArtifactKind = 'md' | 'json'
 type DocumentType = 'standard' | 'review'
 
 const DOCUMENT_LABELS: Record<DocumentType, string> = {
-  standard: '准出文档',
+  standard: '标准加工规范',
   review: '评审结果文档',
 }
 
 const KIND_LABELS: Record<ArtifactKind, string> = {
   md: 'Markdown',
-  json: 'JSON',
-  raw: 'Raw',
-  validation: 'Validation',
+  json: '元数据',
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -30,7 +28,7 @@ const SOURCE_LABELS: Record<string, string> = {
 }
 
 const MODE_LABELS: Record<string, string> = {
-  phase1_only: '仅生成准出标准',
+  phase1_only: '仅生成标准加工规范',
   phase2_only: '仅评审结果',
   one_click: '一键评审',
   phase1_phase2: '一键评审',
@@ -78,7 +76,7 @@ function defaultDocument(record?: ReviewHistoryRecord | null): DocumentType {
 }
 
 function defaultKind(group?: ArtifactGroup): ArtifactKind {
-  return group?.md ? 'md' : group?.json ? 'json' : group?.raw ? 'raw' : group?.validation ? 'validation' : 'md'
+  return group?.md ? 'md' : group?.json ? 'json' : 'md'
 }
 
 function JsonBlock({ content }: { content: string }) {
@@ -103,28 +101,6 @@ function JsonBlock({ content }: { content: string }) {
   )
 }
 
-function RawBlock({ content }: { content: string }) {
-  return (
-    <pre
-      style={{
-        margin: 0,
-        maxHeight: 'calc(100vh - 330px)',
-        overflow: 'auto',
-        padding: 16,
-        borderRadius: 8,
-        background: '#111827',
-        color: '#f9fafb',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        fontSize: 13,
-        lineHeight: 1.65,
-      }}
-    >
-      {content || '暂无内容'}
-    </pre>
-  )
-}
-
 function MissingArtifact({ label }: { label: string }) {
   return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`${label}不存在`} />
 }
@@ -138,15 +114,20 @@ function ArtifactContent(props: {
   const { filename, kind, content, loading } = props
   if (!filename) return <MissingArtifact label={KIND_LABELS[kind]} />
   if (loading) return <Spin />
-  if (kind === 'md' || (kind === 'validation' && isMarkdownContent(content, filename))) {
+  if (kind === 'md' || isMarkdownContent(content, filename)) {
     return <MarkdownViewer content={content || ''} fileName={filename} />
   }
-  if (kind === 'raw') return <RawBlock content={content || ''} />
   return <JsonBlock content={content || ''} />
 }
 
-function artifactKindItems(group: ArtifactGroup | undefined, contentCache: Record<string, string>, loadingFile?: string) {
-  return (Object.keys(KIND_LABELS) as ArtifactKind[]).map((kind) => {
+function artifactKindItems(
+  document: DocumentType,
+  group: ArtifactGroup | undefined,
+  contentCache: Record<string, string>,
+  loadingFile?: string,
+) {
+  const kinds: ArtifactKind[] = document === 'standard' ? ['md', 'json'] : ['md']
+  return kinds.map((kind) => {
     const filename = group?.[kind]
     return {
       key: kind,
@@ -166,14 +147,9 @@ function artifactKindItems(group: ArtifactGroup | undefined, contentCache: Recor
 
 function DocumentDownloads({ record }: { record: ReviewHistoryRecord }) {
   const files = [
-    { label: '准出 MD', filename: record.standardArtifacts?.md },
-    { label: '准出 JSON', filename: record.standardArtifacts?.json },
-    { label: '准出 Raw', filename: record.standardArtifacts?.raw },
-    { label: '准出 Validation', filename: record.standardArtifacts?.validation },
+    { label: '标准 Markdown', filename: record.standardArtifacts?.md },
+    { label: '标准元数据', filename: record.standardArtifacts?.json },
     { label: '评审 MD', filename: record.reviewArtifacts?.md },
-    { label: '评审 JSON', filename: record.reviewArtifacts?.json },
-    { label: '评审 Raw', filename: record.reviewArtifacts?.raw },
-    { label: '评审 Validation', filename: record.reviewArtifacts?.validation },
   ]
 
   return (
@@ -244,7 +220,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
           <div className="detail-summary-strip">
             <div className="detail-summary-item">
               <span>Conclusion</span>
-              <StatusBadge value={record.conclusion || 'confirm'} />
+              <StatusBadge value={record.conclusion || 'unreviewable'} />
             </div>
             <div className="detail-summary-item">
               <span>Risk Count</span>
@@ -264,7 +240,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
             <Descriptions.Item label="创建时间">{formatDateTimeValue(record.createdAt)}</Descriptions.Item>
             <Descriptions.Item label="来源">{sourceLabel(record.source)}</Descriptions.Item>
             <Descriptions.Item label="执行模式">{modeLabel(record.mode)}</Descriptions.Item>
-            <Descriptions.Item label="最终结论"><StatusBadge value={record.conclusion || 'confirm'} /></Descriptions.Item>
+            <Descriptions.Item label="最终结论"><StatusBadge value={record.conclusion || 'unreviewable'} /></Descriptions.Item>
             <Descriptions.Item label="风险数量">{record.riskCount ?? 0}</Descriptions.Item>
           </Descriptions>
 
@@ -285,7 +261,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
                     <Tabs
                       activeKey={activeKind}
                       onChange={(value) => setActiveKind(value as ArtifactKind)}
-                      items={artifactKindItems(record.standardArtifacts, contentCache, loadingFile)}
+                      items={artifactKindItems('standard', record.standardArtifacts, contentCache, loadingFile)}
                     />
                   </Card>
                 ),
@@ -303,7 +279,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
                     <Tabs
                       activeKey={activeKind}
                       onChange={(value) => setActiveKind(value as ArtifactKind)}
-                      items={artifactKindItems(record.reviewArtifacts, contentCache, loadingFile)}
+                      items={artifactKindItems('review', record.reviewArtifacts, contentCache, loadingFile)}
                     />
                   </Card>
                 ),

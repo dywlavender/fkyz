@@ -76,12 +76,12 @@ const items: MenuProps['items'] = [
 
 const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
   workbench: { title: '工作台', subtitle: '评审队列、风险资产与操作入口总览' },
-  'single-review': { title: '单因子评审', subtitle: 'Phase 1 标准生成与 Phase 2 准出评审' },
+  'single-review': { title: '单因子评审', subtitle: 'Phase 1 标准生成与 Phase 2 加工逻辑评审' },
   'batch-review': { title: '批量评审', subtitle: '批量导入、并发执行与结果回收' },
   'scheduled-tasks': { title: '定时任务', subtitle: '周期任务、运行状态与执行记录' },
   'validation-set': { title: '验证集', subtitle: '回归案例、期望结论与质量验证' },
   'review-mode-experiment': { title: '评审模式对比实验', subtitle: '直接评审与两阶段评审的同案例基准对照' },
-  history: { title: '评审历史', subtitle: '准出标准、评审报告与产物下载' },
+  history: { title: '评审历史', subtitle: '标准加工规范、评审报告与产物下载' },
   'api-docs': { title: '接口文档库', subtitle: '评审可引用的数据接口资产' },
   settings: { title: '系统设置', subtitle: '运行模式、依赖状态与环境配置' },
   legacy: { title: '原有功能台', subtitle: '保留尚未迁移或仍需使用的页面、按钮与调试入口' },

@@ -66,16 +66,14 @@ function formatDate(value?: string | null) {
 function conclusionLabel(value?: string) {
   if (value === 'pass') return '通过'
   if (value === 'fail') return '不符合'
-  if (value === 'confirm') return '待确认'
-  if (value === 'suggestion') return '建议'
+  if (value === 'unreviewable') return '无法评审'
   return value || '-'
 }
 
 function conclusionColor(value?: string) {
   if (value === 'pass') return 'success'
   if (value === 'fail') return 'error'
-  if (value === 'confirm') return 'processing'
-  if (value === 'suggestion') return 'warning'
+  if (value === 'unreviewable') return 'warning'
   return 'default'
 }
 
@@ -193,7 +191,6 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
       const response = await createReviewModeExperiment({
         caseIds: selectedCaseIds.map(String),
         repetitions,
-        skipStageValidation: true,
       })
       const experiment = await fetchReviewModeExperiment(response.experimentId)
       setActiveExperiment(experiment)

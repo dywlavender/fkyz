@@ -542,9 +542,11 @@ def detect_review_conclusion(markdown: str) -> str:
     target = overall.group(1) if overall else source
     if re.search(r"❌|不通过|未通过|不符合", target):
         return "fail"
+    if re.search(r"⛔|无法评审", target):
+        return "unreviewable"
     if re.search(r"✅|(?<!不)通过|符合", target):
         return "pass"
-    return "unknown"
+    return "unreviewable"
 
 
 @dataclass
@@ -786,23 +788,23 @@ class ScheduledTaskService:
         output_root = self.outputs_dir.resolve()
         for raw_item in run.get("items") or []:
             item = dict(raw_item)
-            if item.get("reviewConclusion") in {"pass", "fail"}:
+            if item.get("reviewConclusion") in {"pass", "fail", "unreviewable"}:
                 enriched_items.append(item)
                 continue
             review_file = str(item.get("reviewFile") or "").strip()
             if not review_file or Path(review_file).name != review_file:
-                item["reviewConclusion"] = "unknown"
+                item["reviewConclusion"] = "unreviewable"
                 enriched_items.append(item)
                 continue
             candidate = (output_root / review_file).resolve()
             if candidate.parent != output_root or not candidate.is_file():
-                item["reviewConclusion"] = "unknown"
+                item["reviewConclusion"] = "unreviewable"
                 enriched_items.append(item)
                 continue
             try:
                 item["reviewConclusion"] = detect_review_conclusion(read_text(candidate))
             except OSError:
-                item["reviewConclusion"] = "unknown"
+                item["reviewConclusion"] = "unreviewable"
             enriched_items.append(item)
         return {**run, "items": enriched_items}
 
@@ -1118,7 +1120,6 @@ class ScheduledTaskService:
                 {
                     "mock": mock,
                     "retry": 0,
-                    "skipStageValidation": task.get("skipStageValidation") is True,
                 },
                 run_id,
                 index,
@@ -1139,7 +1140,6 @@ class ScheduledTaskService:
                 "requirement": requirement,
                 "apiNames": api_names,
                 "mock": mock,
-                "skipStageValidation": task.get("skipStageValidation") is True,
             }
             outcome = self.dependencies.run_phase1(payload, task_id)
             result = outcome.get("result") or {}
@@ -1157,11 +1157,9 @@ class ScheduledTaskService:
             payload = {
                 "factorName": factor_name,
                 "requirement": requirement,
-                "apiNames": api_names,
                 "draft": build_item_draft(item),
                 "standardFileId": standard_file,
                 "mock": mock,
-                "skipStageValidation": task.get("skipStageValidation") is True,
             }
             task_id = f"{run_id}-p2-{index + 1}"
             outcome = self.dependencies.run_phase2(payload, task_id)
@@ -1233,7 +1231,6 @@ class ScheduledTaskService:
             "runtimeMode": runtime_mode,
             "concurrency": concurrency,
             "failurePolicy": failure_policy,
-            "skipStageValidation": bool(payload.get("skipStageValidation", True)),
             "standardFile": standard_file,
             "items": normalized_items,
         }

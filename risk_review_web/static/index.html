@@ -72,7 +72,7 @@
               <div class="readiness-check" data-ready-key="factor"><span></span><b>因子名</b><em>待填写</em></div>
               <div class="readiness-check" data-ready-key="requirement"><span></span><b>需求内容</b><em>待填写</em></div>
               <div class="readiness-check" data-ready-key="apis"><span></span><b>接口文档</b><em>待选择</em></div>
-              <div class="readiness-check" data-ready-key="draft"><span></span><b>准出内容</b><em>待填写</em></div>
+              <div class="readiness-check" data-ready-key="draft"><span></span><b>待评审逻辑</b><em>待填写</em></div>
             </div>
           </section>
 
@@ -115,7 +115,7 @@
           <section class="section-card">
             <div class="section-head">
               <span class="section-icon amber">&lt;/&gt;</span>
-              <strong>待评审准出内容</strong>
+              <strong>待评审加工逻辑</strong>
               <span class="section-cue p2">Phase 2</span>
               <em>必填</em>
             </div>
@@ -140,14 +140,6 @@
           <div class="review-action-row">
             <button id="fullReviewBtn" class="run-btn full-review-btn" type="button">⚡ 一键评审（Phase 1 + Phase 2）</button>
             <button id="stopReviewBtn" class="run-btn stop-review-btn hidden" type="button">■ 停止评审</button>
-          </div>
-
-          <div class="validation-toggle-row">
-            <label class="debug-toggle">
-              <input id="skipStageValidationToggle" type="checkbox" checked>
-              <span>跳过严格完整性校验（Phase 1 / Phase 2）</span>
-            </label>
-            <span class="debug-toggle-hint">基础 Markdown、JSON 可解析性和 v4 Schema 校验始终执行。</span>
           </div>
 
           <details class="advanced-review-panel">
@@ -220,8 +212,8 @@
                     <div id="verdictBanner" class="verdict idle">等待评审...</div>
                     <div class="stat-grid">
                       <div class="stat"><b id="failCount">—</b><span>不符合</span></div>
-                      <div class="stat"><b id="pendingCount">—</b><span>待确认</span></div>
-                      <div class="stat"><b id="suggestCount">—</b><span>建议</span></div>
+                      <div class="stat"><b id="pendingCount">—</b><span>无法评审</span></div>
+                      <div class="stat"><b id="suggestCount">—</b><span>问题总数</span></div>
                     </div>
                   </div>
                 </section>
@@ -416,7 +408,6 @@
                     <option value="business_mandatory">业务口径强制规则</option>
                     <option value="exception_fallback">异常兜底语义规则</option>
                     <option value="default_assumption">默认假设规则</option>
-                    <option value="confirmation">待确认/低优先级补充</option>
                   </select>
                 </label>
                 <label class="field"><span>规则说明</span><textarea id="businessRuleText" rows="8" placeholder="例如：金额类因子默认单位为元，除非需求或接口文档明确要求万元。"></textarea></label>
@@ -476,8 +467,8 @@
                   <div id="modalVerdict" class="verdict idle" style="margin-bottom:8px;padding:7px 10px;border-radius:var(--border-radius-md);font-size:11px;font-weight:500"></div>
                   <div class="stat-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px">
                     <div class="stat"><b id="modalFail">—</b><span>不符合</span></div>
-                    <div class="stat"><b id="modalPending">—</b><span>待确认</span></div>
-                    <div class="stat"><b id="modalSuggest">—</b><span>建议</span></div>
+                    <div class="stat"><b id="modalPending">—</b><span>无法评审</span></div>
+                    <div class="stat"><b id="modalSuggest">—</b><span>问题总数</span></div>
                   </div>
                 </div>
               </div>

@@ -64,7 +64,6 @@ interface TaskFormValues {
   mode: CreateScheduledTaskRequest['mode']
   runtimeMode: CreateScheduledTaskRequest['runtimeMode']
   failurePolicy: CreateScheduledTaskRequest['failurePolicy']
-  skipStageValidation: boolean
   scheduleType: CreateScheduledTaskRequest['scheduleType']
   runDate?: dayjs.Dayjs
   runTime?: dayjs.Dayjs
@@ -82,7 +81,6 @@ const DEFAULT_FORM_VALUES: TaskFormValues = {
   mode: 'phase1_phase2',
   runtimeMode: 'mock',
   failurePolicy: 'continue',
-  skipStageValidation: true,
   scheduleType: 'daily',
   runTime: dayjs('02:00', 'HH:mm'),
   weekday: '1',
@@ -365,7 +363,6 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
         mode: task.mode,
         runtimeMode: task.runtimeMode,
         failurePolicy: task.failurePolicy,
-        skipStageValidation: task.skipStageValidation ?? true,
         scheduleType: task.scheduleType,
         runDate: task.runDate ? dayjs(task.runDate, 'YYYY-MM-DD') : undefined,
         runTime: task.runTime ? dayjs(task.runTime, 'HH:mm') : undefined,
@@ -476,7 +473,6 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
         runtimeMode: values.runtimeMode,
         concurrency: values.concurrency,
         failurePolicy: values.failurePolicy,
-        skipStageValidation: values.skipStageValidation,
         standardFile: values.standardFile,
         items: preview.items,
       }
@@ -691,7 +687,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
             {creatorStep === 2 ? (
               <Card className="compact-card" title="Step 3：配置执行计划">
                 <Form.Item name="taskName" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}>
-                  <Input placeholder="例如：每日准出评审" />
+                  <Input placeholder="例如：每日加工逻辑评审" />
                 </Form.Item>
                 <Form.Item name="enabled" label="创建后启用" valuePropName="checked">
                   <Switch />
@@ -725,9 +721,6 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
                       { value: 'stop', label: '失败停止' },
                     ]}
                   />
-                </Form.Item>
-                <Form.Item name="skipStageValidation" label="跳过严格完整性校验" valuePropName="checked">
-                  <Switch />
                 </Form.Item>
                 <Form.Item name="concurrency" label="并发数">
                   <InputNumber min={1} max={5} style={{ width: '100%' }} />

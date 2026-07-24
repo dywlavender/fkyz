@@ -1,4 +1,4 @@
-export type ReviewConclusion = 'pass' | 'fail' | 'confirm' | 'suggestion' | string
+export type ReviewConclusion = 'pass' | 'fail' | 'unreviewable' | string
 
 export interface TaskErrorMetadata {
   errorCode?: string
@@ -9,8 +9,7 @@ export interface TaskErrorMetadata {
 export type ReviewVerdict =
   | 'pass'
   | 'fail'
-  | 'confirm'
-  | 'suggestion'
+  | 'unreviewable'
   | string
 
 export interface ApiDocItem {
@@ -79,7 +78,6 @@ export interface Phase1Request {
   requirement: string
   apiNames: string[]
   debugClaude?: boolean
-  skipStageValidation?: boolean
   clientId?: string
   forceRefresh?: boolean
 }
@@ -91,25 +89,32 @@ export interface Phase1Response {
   checksum?: string
   cacheHit?: boolean
   standardFileId?: string
-  standardJsonFileId?: string
-  standardSummaryFileId?: string
+  standardMetadataFileId?: string
   standardRawFileId?: string
-  standardValidationFileId?: string
-  standardJsonChecksum?: string
   success?: boolean
-  blocking?: boolean
-  validationSummary?: ValidationSummary
-  validationItems?: ValidationItem[]
+}
+
+export interface StandardMetadataV5 {
+  schema_version: 'risk_review_standard_metadata_v5'
+  standard_schema_version: 'risk_review_standard_v5'
+  standard_file: string
+  display_metadata?: {
+    factor_name?: string
+    factor_slug?: string
+  }
+  source_inputs?: {
+    requirement?: string
+    api_docs?: string[]
+  }
+  logic_types?: string[]
 }
 
 export interface Phase2Request {
   factorName: string
   requirement: string
-  apiNames: string[]
   draft: string
   standardFileId: string
   debugClaude?: boolean
-  skipStageValidation?: boolean
   clientId?: string
 }
 
@@ -118,168 +123,17 @@ export interface Phase2Response {
   stdout?: string
   stderr?: string
   reviewFileId?: string
-  reviewJsonFileId?: string
   reviewRawFileId?: string
-  reviewValidationFileId?: string
   reviewChecksum?: string
   success?: boolean
-  blocking?: boolean
-  degraded?: boolean
-  validationSummary?: ValidationSummary
-  validationItems?: ValidationItem[]
-}
-
-export interface ValidationSummary {
-  blocking?: boolean
-  errorCount?: number
-  warningCount?: number
-  autoFixCount?: number
-  totalCount?: number
-}
-
-export interface ValidationItem {
-  field?: string
-  message?: string
-  severity?: 'error' | 'warning' | 'autoFix' | string
-  blocking?: boolean
-  autoFixed?: boolean
-  before?: unknown
-  after?: unknown
-}
-
-export interface RuleCheck {
-  id?: string
-  name?: string
-  rule?: string
-  conclusion?: ReviewConclusion
-  evidence?: string
-  risk?: string
-  suggestion?: string
-  ruleId?: string
-  verdict?: ReviewVerdict
-  standard?: string
-  standardEvidence?: string[]
-  actualEvidence?: string[]
-  reason?: string
-}
-
-export interface StepCheck {
-  id?: string
-  name?: string
-  step?: string
-  conclusion?: ReviewConclusion
-  evidence?: string
-  risk?: string
-  suggestion?: string
-  stepNo?: number
-  stepType?: string
-  verdict?: ReviewVerdict
-  standardStep?: string
-  actualEvidence?: string[]
-  reason?: string
-  relatedRuleIds?: string[]
-}
-
-export interface ReviewIssue {
-  id?: string
-  dimension?: string
-  level?: string
-  ruleId?: string
-  relatedRuleIds?: string[]
-  standard?: string
-  actual?: string
-  message?: string
-  impact?: string
-  suggestion?: string
-  stepNo?: number
-  stepType?: string
 }
 
 export interface ReviewResult {
   conclusion?: ReviewConclusion
   riskLevel?: string
   summary?: string
-  ruleChecks?: RuleCheck[]
-  stepChecks?: StepCheck[]
   rawMarkdown?: string
   rawText?: string
-  issues?: ReviewIssue[]
-  checks?: Record<string, string>
-  majorRisks?: string[]
-  suggestions?: string[]
-}
-
-export interface ReviewSummaryPayload {
-  overall?: string
-  majorRisks?: string[]
-  suggestions?: string[]
-}
-
-export interface ReviewJsonPayload {
-  schemaVersion?: string
-  phase?: string
-  factorName?: string
-  conclusion?: ReviewVerdict
-  conclusionBySystem?: ReviewVerdict
-  finalConclusion?: ReviewVerdict
-  summary?: ReviewSummaryPayload
-  ruleChecks?: RuleCheck[]
-  stepChecks?: StepCheck[]
-  issues?: ReviewIssue[]
-  checks?: Record<string, string>
-}
-
-export interface StandardSource {
-  requirementSummary?: string
-  apiDocs?: Array<{ name?: string; path?: string }>
-  businessRuleIds?: string[]
-}
-
-export interface StandardStep {
-  stepNo?: number
-  type?: string
-  description?: string
-  inputFields?: string[]
-  outputField?: string
-  basisRuleIds?: string[]
-}
-
-export interface StandardRule {
-  ruleId?: string
-  dimension?: string
-  basisType?: string
-  content?: string
-  evidence?: string[]
-}
-
-export interface Phase1Standard {
-  schemaVersion?: string
-  standardVersion?: string
-  revisionReason?: string
-  phase?: string
-  factorName?: string
-  source?: StandardSource
-  summary?: {
-    objective?: string
-    processingOverview?: string
-    riskNotes?: string[]
-  }
-  processingLogic?: {
-    object?: string
-    logicType?: string
-    steps?: StandardStep[]
-  }
-  inputs?: Array<{
-    fieldPath?: string
-    fieldName?: string
-    sourceApi?: string
-    role?: string
-    evidence?: string[]
-  }>
-  coverageChecks?: Record<string, string>
-  arrayProcessingSpec?: Array<Record<string, unknown>>
-  outputContract?: Record<string, unknown>
-  rules?: StandardRule[]
 }
 
 export interface HistoryItem {
@@ -335,7 +189,7 @@ export interface ExampleItem {
   updatedAt?: number
 }
 
-export type ExpectedConclusion = 'pass' | 'fail' | 'confirm' | 'suggestion' | string
+export type ExpectedConclusion = 'pass' | 'fail' | 'unreviewable' | string
 
 export interface ValidationCase {
   caseId: string
@@ -418,9 +272,8 @@ export interface ValidationRun extends TaskErrorMetadata {
   }
   matched?: boolean
   standardFile?: string
-  standardJsonFile?: string
+  standardMetadataFile?: string
   reviewFile?: string
-  reviewJsonFile?: string
   startedAt?: string
   finishedAt?: string
   error?: string
@@ -442,7 +295,7 @@ export interface BatchValidationRun {
   total: number
   success: number
   failed: number
-  confirm: number
+  unreviewable: number
   mismatched: number
   items: Array<{
     id: string
@@ -466,7 +319,7 @@ export interface ReviewModeResult {
   }
   durationMs?: number
   standardFile?: string
-  standardJsonFile?: string
+  standardMetadataFile?: string
   reviewFile?: string
   error?: string
 }
@@ -532,7 +385,7 @@ export interface RegressionTaskItem extends TaskErrorMetadata {
   raw?: string
   standardText?: string
   standardFileId?: string | null
-  standardSummaryFileId?: string | null
+  standardMetadataFileId?: string | null
   reviewFileId?: string | null
   cacheHit?: boolean
   reportPreview?: string
@@ -587,7 +440,7 @@ export interface BatchResultItem extends TaskErrorMetadata {
   raw?: string
   standardText?: string
   standardFileId?: string | null
-  standardSummaryFileId?: string | null
+  standardMetadataFileId?: string | null
   reviewFileId?: string | null
   cacheHit?: boolean
   skipReason?: string
@@ -665,7 +518,6 @@ export interface ScheduledTask {
   runtimeMode: 'mock' | 'claude'
   concurrency: number
   failurePolicy: 'continue' | 'stop'
-  skipStageValidation: boolean
   standardFile?: string
   items: ScheduledTaskItem[]
   createdAt: string
@@ -682,7 +534,7 @@ export interface ScheduledRunItem extends TaskErrorMetadata {
   status: string
   standardFile?: string
   reviewFile?: string
-  reviewConclusion?: 'pass' | 'fail' | 'unknown' | string
+  reviewConclusion?: 'pass' | 'fail' | 'unreviewable' | string
   error?: string
 }
 
@@ -730,7 +582,6 @@ export interface CreateScheduledTaskRequest {
   runtimeMode: 'mock' | 'claude'
   concurrency: number
   failurePolicy: 'continue' | 'stop'
-  skipStageValidation: boolean
   standardFile?: string
   items: ScheduledTaskItem[]
 }

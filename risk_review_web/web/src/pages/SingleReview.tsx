@@ -40,17 +40,15 @@ import type {
   AppNotice,
   ExampleItem,
   Phase1Response,
-  Phase1Standard,
   Phase2Response,
   ReviewHistoryRecord,
-  ReviewJsonPayload,
   ReviewResult,
+  StandardMetadataV5,
   TaskLog,
   TaskRecord,
   ValidationCase,
-  ValidationItem,
 } from '../types/review'
-import { buildDraftFromSections, formatDateTimeValue, parseDraftSections, parseReviewResult, parseStandardFromJson, taskFailureMessage } from '../utils/reviewTransform'
+import { buildDraftFromSections, formatDateTimeValue, parseDraftSections, parseReviewResult, taskFailureMessage } from '../utils/reviewTransform'
 import { StatusBadge } from '../components/StatusBadge'
 
 const RUN_INVALIDATED = 'RUN_INVALIDATED'
@@ -95,70 +93,9 @@ const surfaceStyle: CSSProperties = {
   boxShadow: '0 1px 2px rgba(16, 30, 54, 0.03), 0 10px 24px rgba(31, 52, 79, 0.035)',
 }
 
-function validationTotal(response?: Pick<Phase1Response | Phase2Response, 'validationSummary' | 'validationItems'> | null) {
-  return response?.validationSummary?.totalCount ?? response?.validationItems?.length ?? 0
-}
-
-function validationSeverityTag(item: ValidationItem) {
-  const severity = item.severity || 'warning'
-  if (severity === 'error') return <Tag color="red">严重问题</Tag>
-  if (severity === 'autoFix') return <Tag color="blue">自动修复</Tag>
-  return <Tag color="gold">警告</Tag>
-}
-
-function ValidationIssuesButton({ phase1, phase2 }: { phase1?: Phase1Response | null; phase2?: Phase2Response | null }) {
-  const pageActive = usePageActive()
-  const [open, setOpen] = useState(false)
-  const items = [
-    ...(phase1?.validationItems || []).map((item) => ({ ...item, phase: 'Phase 1' })),
-    ...(phase2?.validationItems || []).map((item) => ({ ...item, phase: 'Phase 2' })),
-  ]
-  return (
-    <>
-      <Button block onClick={() => setOpen(true)}>
-        查看校验问题（{items.length}）
-      </Button>
-      <Modal
-        title="校验问题"
-        open={pageActive && open}
-        maskClosable={false}
-        width="min(920px, 90vw)"
-        footer={null}
-        onCancel={() => setOpen(false)}
-      >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Alert
-            showIcon
-            type={items.length ? 'warning' : 'success'}
-            message={items.length ? '当前配置为非阻断模式，校验问题不会中断流程' : '暂无校验问题'}
-            description={items.length ? '请结合校验问题人工确认结果可信度。' : '当前 Phase 1 / Phase 2 未返回校验问题。'}
-          />
-          {items.length ? (
-            <Table
-              size="small"
-              rowKey={(_, index) => `validation-${index}`}
-              pagination={false}
-              dataSource={items}
-              columns={[
-                { title: '阶段', dataIndex: 'phase', width: 90 },
-                { title: '级别', width: 100, render: (_, record) => validationSeverityTag(record) },
-                { title: '字段', dataIndex: 'field', width: 180, render: (value) => value || '-' },
-                { title: '问题', dataIndex: 'message', render: (value) => value || '-' },
-              ]}
-              scroll={{ x: 720 }}
-            />
-          ) : (
-            <EmptyState title="暂无校验问题。" />
-          )}
-        </Space>
-      </Modal>
-    </>
-  )
-}
-
 function ArtifactDocumentButton(props: {
   fileId?: string
-  title: '准出文档' | '评审文档'
+  title: '标准加工规范' | '评审文档'
   onNotice: (notice: AppNotice) => void
 }) {
   const pageActive = usePageActive()
@@ -244,8 +181,7 @@ function ResultArtifactBar(props: {
   return (
     <Card className="compact-card result-artifact-card" title="评审产物" style={surfaceStyle}>
       <div className="result-artifact-actions">
-        <ValidationIssuesButton phase1={phase1} phase2={phase2} />
-        <ArtifactDocumentButton fileId={standardFileId} title="准出文档" onNotice={onNotice} />
+        <ArtifactDocumentButton fileId={standardFileId} title="标准加工规范" onNotice={onNotice} />
         <ArtifactDocumentButton fileId={reviewFileId} title="评审文档" onNotice={onNotice} />
       </div>
     </Card>
@@ -262,7 +198,6 @@ export function SingleReview(props: SingleReviewProps) {
   const [phase2, setPhase2] = useState<Phase2Response | null>(null)
   const [phase1TaskId, setPhase1TaskId] = useState<string>()
   const [phase2TaskId, setPhase2TaskId] = useState<string>()
-  const [standard, setStandard] = useState<Phase1Standard | null>(null)
   const [result, setResult] = useState<ReviewResult | null>(null)
   const [selectedCaseId, setSelectedCaseId] = useState<string>()
   const [currentCase, setCurrentCase] = useState<ExampleItem | ValidationCase | null>(null)
@@ -273,7 +208,6 @@ export function SingleReview(props: SingleReviewProps) {
   const [activeStep, setActiveStep] = useState(0)
   const [oneClickRunning, setOneClickRunning] = useState(false)
   const [oneClickPhase, setOneClickPhase] = useState<'phase1' | 'phase2' | null>(null)
-  const [skipStageValidation, setSkipStageValidation] = useState(true)
   const [showExecutionLog, setShowExecutionLog] = useState(false)
   const [executionLogOpen, setExecutionLogOpen] = useState(false)
   const [executionLogs, setExecutionLogs] = useState<ExecutionLogItem[]>([])
@@ -320,7 +254,6 @@ export function SingleReview(props: SingleReviewProps) {
       || (values.defaultValues && values.defaultValues !== DEFAULT_VALUE_SEMANTICS)
       || phase1
       || phase2
-      || standard
       || result
       || error
       || executionLogs.length
@@ -491,7 +424,6 @@ export function SingleReview(props: SingleReviewProps) {
     setPhase2(null)
     setPhase1TaskId(undefined)
     setPhase2TaskId(undefined)
-    setStandard(null)
     setResult(null)
     setError(undefined)
     setActiveStep(0)
@@ -606,38 +538,35 @@ export function SingleReview(props: SingleReviewProps) {
   }
 
   async function applyHistoryStandard(record: ReviewHistoryRecord) {
-    const standardJsonFile = record.standardArtifacts?.json
-    if (!standardJsonFile) {
-      onNotice({ type: 'warning', message: '该历史记录没有可复用的标准 JSON。' })
+    const standardMetadataFile = record.standardArtifacts?.json
+    const standardFile = record.standardArtifacts?.md
+    if (!standardMetadataFile || !standardFile) {
+      onNotice({ type: 'warning', message: '该历史记录没有可复用的 v5 标准及元数据。' })
       return
     }
     try {
-      const standardJson = await fetchOutputJson<Phase1Standard>(standardJsonFile)
-      const parsedStandard = parseStandardFromJson(standardJson)
-      const apiNames = parsedStandard?.source?.apiDocs
-        ?.map((item) => item.name || '')
-        .filter(Boolean) || []
+      const metadata = await fetchOutputJson<StandardMetadataV5>(standardMetadataFile)
+      if (metadata.schema_version !== 'risk_review_standard_metadata_v5') {
+        throw new Error('该历史标准不是 v5，请重新执行 Phase 1。')
+      }
       form.setFieldsValue({
-        factorName: parsedStandard?.factorName || record.factorName || '',
-        requirement: parsedStandard?.source?.requirementSummary || '',
-        apiNames,
+        factorName: metadata.display_metadata?.factor_name || record.factorName || '',
+        requirement: metadata.source_inputs?.requirement || '',
+        apiNames: metadata.source_inputs?.api_docs || [],
         paramFields: '',
         procLogic: '',
         defaultValues: DEFAULT_VALUE_SEMANTICS,
       })
       resetExecutionState()
       setPhase1({
-        standardFileId: record.standardArtifacts?.md,
-        standardJsonFileId: record.standardArtifacts?.json,
-        standardRawFileId: record.standardArtifacts?.raw,
-        standardValidationFileId: record.standardArtifacts?.validation,
+        standardFileId: standardFile,
+        standardMetadataFileId: standardMetadataFile,
       })
-      setStandard(parsedStandard)
       setActiveStep(2)
       setDrawerTitle('原始输出')
       setDrawerContent('')
       setDrawerOpen(false)
-      onNotice({ type: 'success', message: `已复用标准：${record.factorName || standardJsonFile}` })
+      onNotice({ type: 'success', message: `已复用标准：${record.factorName || standardFile}` })
     } catch (caught) {
       const messageText = caught instanceof Error ? caught.message : '复用标准失败'
       onNotice({ type: 'error', message: messageText })
@@ -741,13 +670,11 @@ export function SingleReview(props: SingleReviewProps) {
   async function executePhase1(values: Pick<ReviewFormValues, 'factorName' | 'requirement' | 'apiNames'>, runToken: number) {
     openExecutionProcessIfEnabled()
     // appendExecutionLog('phase1', 'info', 'Phase 1 任务提交中')
-    if (skipStageValidation) appendExecutionLog('phase1', 'info', '严格完整性校验已跳过，基础产物校验仍会执行')
     const response = await runPhase1({
       factorName: values.factorName,
       requirement: values.requirement,
       apiNames: values.apiNames,
       debugClaude: showExecutionLog,
-      skipStageValidation,
     })
     if (runTokenRef.current !== runToken) {
       void cancelTask(response.taskId)
@@ -767,35 +694,17 @@ export function SingleReview(props: SingleReviewProps) {
     }
     const taskResult = (task.result || {}) as Phase1Response
 
-    if (String(task.status).toLowerCase() !== 'done' || taskResult.success === false || taskResult.blocking) {
+    if (String(task.status).toLowerCase() !== 'done' || taskResult.success === false) {
       throw new Error(taskFailureMessage(taskResult, 'Phase 1 执行失败'))
     }
 
-    const validationCount = validationTotal(taskResult)
     appendExecutionLog(
       'phase1',
-      validationCount ? 'warning' : 'success',
-      validationCount ? `生成完成，存在 ${validationCount} 个校验问题` : 'Phase 1 执行完成',
+      'success',
+      'Phase 1 执行完成',
       taskResult.cacheHit ? '命中缓存标准' : undefined
     )
     setPhase1(taskResult)
-
-    const standardJsonFileId = taskResult.standardJsonFileId || taskResult.standardSummaryFileId
-    if (standardJsonFileId) {
-      try {
-        const standardJson = await fetchOutputJson<Phase1Standard>(standardJsonFileId)
-        ensureRunCurrent(runToken)
-        const parsedStandard = parseStandardFromJson(standardJson)
-        setStandard(parsedStandard)
-        appendExecutionLog('phase1', 'success', 'Phase 1 标准 JSON 读取完成', standardJsonFileId)
-      } catch (caught) {
-        const messageText = caught instanceof Error ? caught.message : '读取产物失败'
-        appendExecutionLog('phase1', 'error', '读取产物失败', messageText)
-        throw caught
-      }
-    } else {
-      appendExecutionLog('phase1', 'warning', 'Phase 1 未返回标准 JSON 文件', '页面将仅展示 Markdown 产物。')
-    }
 
     return taskResult
   }
@@ -803,15 +712,12 @@ export function SingleReview(props: SingleReviewProps) {
   async function executePhase2(values: ReviewFormValues, standardFileId: string, draft: string, runToken: number) {
     openExecutionProcessIfEnabled()
     appendExecutionLog('phase2', 'info', 'Phase 2 任务提交中')
-    if (skipStageValidation) appendExecutionLog('phase2', 'info', '严格完整性校验已跳过，基础摘要和报告校验仍会执行')
     const response = await runPhase2({
       factorName: values.factorName,
       requirement: values.requirement,
-      apiNames: values.apiNames,
       draft,
       standardFileId,
       debugClaude: showExecutionLog,
-      skipStageValidation,
     })
     if (runTokenRef.current !== runToken) {
       void cancelTask(response.taskId)
@@ -831,16 +737,14 @@ export function SingleReview(props: SingleReviewProps) {
     }
     const taskResult = (task.result || {}) as Phase2Response
 
-    if (String(task.status).toLowerCase() !== 'done' || taskResult.success === false || taskResult.blocking) {
+    if (String(task.status).toLowerCase() !== 'done' || taskResult.success === false) {
       throw new Error(taskFailureMessage(taskResult, 'Phase 2 执行失败'))
     }
 
-    const validationCount = validationTotal(taskResult)
     appendExecutionLog(
       'phase2',
-      validationCount ? 'warning' : 'success',
-      validationCount ? `评审完成，存在 ${validationCount} 个校验问题` : 'Phase 2 执行完成',
-      taskResult.degraded ? 'Phase 2 已跳过或降级执行，因为标准 JSON 不可用' : undefined
+      'success',
+      'Phase 2 执行完成'
     )
     setPhase2(taskResult)
 
@@ -857,21 +761,8 @@ export function SingleReview(props: SingleReviewProps) {
         }
       }
 
-      let reviewJson: ReviewJsonPayload | null = null
-      if (taskResult.reviewJsonFileId) {
-        try {
-          reviewJson = await fetchOutputJson<ReviewJsonPayload>(taskResult.reviewJsonFileId)
-          ensureRunCurrent(runToken)
-          appendExecutionLog('phase2', 'success', 'Phase 2 review JSON 读取完成', taskResult.reviewJsonFileId)
-        } catch (caught) {
-          const messageText = caught instanceof Error ? caught.message : '读取 review JSON 失败'
-          appendExecutionLog('phase2', 'warning', '读取 review JSON 失败', `${messageText}；不影响评审 Markdown 展示。`)
-        }
-      } else {
-        appendExecutionLog('phase2', 'info', 'Phase 2 未返回 review JSON 文件', '页面直接展示评审 Markdown。')
-      }
       ensureRunCurrent(runToken)
-      setResult(parseReviewResult(reviewJson, reviewMarkdown))
+      setResult(parseReviewResult(reviewMarkdown))
     } catch (caught) {
       const messageText = caught instanceof Error ? caught.message : '读取产物失败'
       appendExecutionLog('phase2', 'error', '读取产物失败', messageText)
@@ -890,17 +781,15 @@ export function SingleReview(props: SingleReviewProps) {
     setPhase2(null)
     setPhase1TaskId(undefined)
     setPhase2TaskId(undefined)
-    setStandard(null)
     setResult(null)
     setActiveStep(1)
-    appendExecutionLog('system', 'info', '开始生成准出标准')
+    appendExecutionLog('system', 'info', '开始生成标准加工规范')
 
     try {
       const taskResult = await executePhase1(values, runToken)
       ensureRunCurrent(runToken)
       setActiveStep(2)
-      const count = validationTotal(taskResult)
-      onNotice({ type: count ? 'warning' : 'success', message: count ? `生成完成，存在 ${count} 个校验问题` : taskResult.cacheHit ? 'Phase 1 命中缓存' : 'Phase 1 已完成' })
+      onNotice({ type: 'success', message: taskResult.cacheHit ? 'Phase 1 命中缓存' : 'Phase 1 已完成' })
     } catch (caught) {
       if (isRunInvalidated(caught)) return
       const messageText = caught instanceof Error ? caught.message : 'Phase 1 执行失败'
@@ -924,7 +813,7 @@ export function SingleReview(props: SingleReviewProps) {
 
     const draft = buildDraftFromSections(values.paramFields || '', values.procLogic || '', values.defaultValues || '')
     if (!draft.trim()) {
-      setError('请填写待评审准出内容。')
+      setError('请填写待评审加工逻辑。')
       return
     }
 
@@ -935,14 +824,13 @@ export function SingleReview(props: SingleReviewProps) {
     setPhase2TaskId(undefined)
     setResult(null)
     setActiveStep(3)
-    appendExecutionLog('system', 'info', '开始执行准出评审')
+    appendExecutionLog('system', 'info', '开始执行加工逻辑评审')
 
     try {
       const taskResult = await executePhase2(values, phase1.standardFileId, draft, runToken)
       ensureRunCurrent(runToken)
       setActiveStep(4)
-      const count = validationTotal(taskResult)
-      onNotice({ type: count ? 'warning' : 'success', message: count ? `评审完成，存在 ${count} 个校验问题` : 'Phase 2 已完成' })
+      onNotice({ type: 'success', message: 'Phase 2 已完成' })
     } catch (caught) {
       if (isRunInvalidated(caught)) return
       const messageText = caught instanceof Error ? caught.message : 'Phase 2 执行失败'
@@ -961,8 +849,8 @@ export function SingleReview(props: SingleReviewProps) {
     const values = await form.validateFields()
     const draft = buildDraftFromSections(values.paramFields || '', values.procLogic || '', values.defaultValues || '')
     if (!draft.trim()) {
-      setError('请填写待评审准出内容。')
-      appendExecutionLog('system', 'warning', '请填写待评审准出内容。')
+      setError('请填写待评审加工逻辑。')
+      appendExecutionLog('system', 'warning', '请填写待评审加工逻辑。')
       return
     }
 
@@ -975,7 +863,6 @@ export function SingleReview(props: SingleReviewProps) {
     setPhase2(null)
     setPhase1TaskId(undefined)
     setPhase2TaskId(undefined)
-    setStandard(null)
     setResult(null)
     setActiveStep(1)
     appendExecutionLog('system', 'info', '开始一键评审')
@@ -985,7 +872,7 @@ export function SingleReview(props: SingleReviewProps) {
       const phase1Result = await executePhase1(values, runToken)
       ensureRunCurrent(runToken)
       if (!phase1Result.standardFileId) {
-        throw new Error('Phase 1 未返回准出标准文件，无法继续 Phase 2。')
+        throw new Error('Phase 1 未返回标准加工规范文件，无法继续 Phase 2。')
       }
       setActiveStep(2)
 
@@ -997,15 +884,14 @@ export function SingleReview(props: SingleReviewProps) {
       const phase2Result = await executePhase2(values, phase1Result.standardFileId, draft, runToken)
       ensureRunCurrent(runToken)
       setActiveStep(4)
-      const totalValidationCount = validationTotal(phase1Result) + validationTotal(phase2Result)
       appendExecutionLog(
         'system',
-        totalValidationCount ? 'warning' : 'success',
-        totalValidationCount ? `一键评审完成，存在 ${totalValidationCount} 个校验问题` : '一键评审完成'
+        'success',
+        '一键评审完成'
       )
       onNotice({
-        type: totalValidationCount ? 'warning' : 'success',
-        message: totalValidationCount ? `一键评审完成，存在 ${totalValidationCount} 个校验问题` : '一键评审已完成',
+        type: 'success',
+        message: '一键评审已完成',
       })
     } catch (caught) {
       if (isRunInvalidated(caught)) return
@@ -1028,23 +914,21 @@ export function SingleReview(props: SingleReviewProps) {
   const executionDisabled = loading || stoppingExecution
   const oneClickButtonText = oneClickRunning
     ? oneClickPhase === 'phase2'
-      ? '准出评审中...'
+      ? '加工逻辑评审中...'
       : oneClickPhase === 'phase1'
         ? '生成标准中...'
         : '一键评审中...'
     : '一键评审'
   const flowStepTitles = ['填写信息', '生成标准', '标准完成', '执行评审', '评审完成']
-  const phase1ValidationCount = validationTotal(phase1)
-  const phase2ValidationCount = validationTotal(phase2)
   const phase1StatusText = stoppedPhase === 'phase1'
     ? '已停止'
     : phase1?.standardFileId
-      ? phase1ValidationCount ? `生成完成，存在 ${phase1ValidationCount} 个校验问题` : '已完成'
+      ? '已完成'
       : loadingPhase1 ? '运行中' : '待执行'
   const phase2StatusText = stoppedPhase === 'phase2'
     ? '已停止'
     : phase2?.reviewFileId
-      ? phase2ValidationCount ? `评审完成，存在 ${phase2ValidationCount} 个校验问题` : '已完成'
+      ? '已完成'
       : loadingPhase2 ? '运行中' : phase1?.standardFileId ? '待执行' : '等待标准'
   const currentTaskPhaseText = stoppedPhase
     ? '已停止'
@@ -1200,7 +1084,7 @@ export function SingleReview(props: SingleReviewProps) {
                           </Col>
                           <Col xs={24}>
                             <Form.Item name="procLogic" label="加工逻辑" rules={[{ required: true, message: '请输入加工逻辑' }]}>
-                              <Input.TextArea rows={4} placeholder="逐步填写准出加工逻辑" />
+                              <Input.TextArea rows={4} placeholder="逐步填写待评审加工逻辑" />
                             </Form.Item>
                           </Col>
                         </Row>
@@ -1214,13 +1098,6 @@ export function SingleReview(props: SingleReviewProps) {
 	                      <span>主路径优先一键串联，分步操作用于调试和复用标准。</span>
 	                    </Typography.Text>
 	                    <Space size={12} wrap>
-	                      <Checkbox
-	                        checked={skipStageValidation}
-	                        disabled={executionDisabled}
-	                        onChange={(event) => setSkipStageValidation(event.target.checked)}
-	                      >
-	                        跳过严格完整性校验
-	                      </Checkbox>
 	                      <Checkbox
 	                        checked={showExecutionLog}
 	                        disabled={executionDisabled}
@@ -1247,7 +1124,7 @@ export function SingleReview(props: SingleReviewProps) {
                         value={undefined}
                         options={[
                           { label: '仅生成标准', value: 'phase1', disabled: executionDisabled },
-                          { label: '执行准出评审', value: 'phase2', disabled: executionDisabled || !phase1?.standardFileId },
+                          { label: '执行加工逻辑评审', value: 'phase2', disabled: executionDisabled || !phase1?.standardFileId },
                         ]}
                         onSelect={(value) => {
                           if (value === 'phase1') void handlePhase1()
@@ -1317,7 +1194,6 @@ export function SingleReview(props: SingleReviewProps) {
         ) : result ? (
           <ReviewResultPanel
             result={result}
-            standard={standard}
             phase1={phase1}
             phase2={phase2}
             onOpenArtifact={handleOpenArtifact}

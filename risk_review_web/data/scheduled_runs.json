@@ -1,33 +1,214 @@
 [
   {
-    "runId": "run-20260720-203007-dd05",
-    "taskId": "task-20260720-202950-890d",
-    "taskName": "测试1",
+    "runId": "run-20260725-010911-ddf3",
+    "taskId": "task-20260725-010522-2a81",
+    "taskName": "测试",
     "trigger": "manual",
-    "status": "partial_success",
-    "startedAt": "2026-07-20T20:30:07+08:00",
-    "finishedAt": "2026-07-20T21:23:50+08:00",
+    "status": "success",
+    "startedAt": "2026-07-25T01:09:11+08:00",
+    "finishedAt": "2026-07-25T01:18:08+08:00",
     "total": 18,
-    "success": 6,
-    "failed": 12,
+    "success": 18,
+    "failed": 0,
     "unknown": 0,
-    "durationMs": 3223090,
+    "durationMs": 537655,
     "items": [
       {
         "index": 1,
         "factorName": "近12个月医药采购金额",
-        "status": "failed",
-        "standardFile": "",
-        "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201233363419013998268d9d6bdCOYdO4). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-50b3ea27-7accd95c.md",
+        "reviewFile": "review-12-2026-07-25-run20260-98b90640.md",
+        "reviewConclusion": "fail",
+        "error": ""
       },
       {
         "index": 2,
         "factorName": "近12个月医药采购金额",
-        "status": "failed",
-        "standardFile": "",
-        "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201239409529437638268d9d6u2kNg4ON). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-516159ab-fcb37baa.md",
+        "reviewFile": "review-12-2026-07-25-run20260-9f22e62c.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 3,
+        "factorName": "投资人最近一次变更距今月份数",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-25-64e47c46-f677dcf0.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-1d88838e.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 4,
+        "factorName": "投资人最近一次变更距今月份数",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-25-64e47c46-f314ddc1.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-fa7d957e.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 5,
+        "factorName": "提款金额检查",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-25-64e47c46-69b21ffc.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-efbe6438.md",
+        "reviewConclusion": "pass",
+        "error": ""
+      },
+      {
+        "index": 6,
+        "factorName": "提款金额检查",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-25-64e47c46-798d844f.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-c3708bb1.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 7,
+        "factorName": "近12个月医药采购金额",
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-50b3ea27-7accd95c.md",
+        "reviewFile": "review-12-2026-07-25-run20260-2ec982e3.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 8,
+        "factorName": "近12个月医药采购金额",
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-50b3ea27-7accd95c.md",
+        "reviewFile": "review-12-2026-07-25-run20260-b1e03577.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 9,
+        "factorName": "近6个月主账户成功入账金额",
+        "status": "success",
+        "standardFile": "standard-6-2026-07-25-64e47c46-dc670658.md",
+        "reviewFile": "review-6-2026-07-25-run20260-0c44fc78.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 10,
+        "factorName": "近6个月主账户成功入账金额",
+        "status": "success",
+        "standardFile": "standard-6-2026-07-25-64e47c46-dc670658.md",
+        "reviewFile": "review-6-2026-07-25-run20260-8122566e.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 11,
+        "factorName": "流动资金提款可用标志",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-25-ab9f680a-f9569704.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-54d99312.md",
+        "reviewConclusion": "pass",
+        "error": ""
+      },
+      {
+        "index": 12,
+        "factorName": "流动资金提款可用标志",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-25-ab9f680a-f9569704.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-3aefa7f7.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 13,
+        "factorName": "近12个月有效购方数量",
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-ab9f680a-fd42f039.md",
+        "reviewFile": "review-12-2026-07-25-run20260-2cde2da9.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 14,
+        "factorName": "近12个月有效购方数量",
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-ab9f680a-fd42f039.md",
+        "reviewFile": "review-12-2026-07-25-run20260-7c08b2e8.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 15,
+        "factorName": "严重逾期存续贷款余额",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-25-ab9f680a-bc65d870.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-e84c1c89.md",
+        "reviewConclusion": "pass",
+        "error": ""
+      },
+      {
+        "index": 16,
+        "factorName": "严重逾期存续贷款余额",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-25-ab9f680a-bc65d870.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-22495219.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 17,
+        "factorName": "未来30天临期可售库存量",
+        "status": "success",
+        "standardFile": "standard-30-2026-07-25-ab9f680a-2af03605.md",
+        "reviewFile": "review-30-2026-07-25-run20260-f7af9183.md",
+        "reviewConclusion": "pass",
+        "error": ""
+      },
+      {
+        "index": 18,
+        "factorName": "未来30天临期可售库存量",
+        "status": "success",
+        "standardFile": "standard-30-2026-07-25-ab9f680a-2af03605.md",
+        "reviewFile": "review-30-2026-07-25-run20260-e85a9a5d.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      }
+    ],
+    "createdAt": "2026-07-25T01:09:11+08:00"
+  },
+  {
+    "runId": "run-20260725-020134-964e",
+    "taskId": "task-20260725-010522-2a81",
+    "taskName": "测试",
+    "trigger": "scheduler",
+    "status": "partial_success",
+    "startedAt": "2026-07-25T02:01:34+08:00",
+    "finishedAt": "2026-07-25T03:03:49+08:00",
+    "total": 18,
+    "success": 12,
+    "failed": 6,
+    "unknown": 0,
+    "durationMs": 3735110,
+    "items": [
+      {
+        "index": 1,
+        "factorName": "近12个月医药采购金额",
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-afee4eb8-2c914606.md",
+        "reviewFile": "review-12-2026-07-25-run20260-3d51a885.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 2,
+        "factorName": "近12个月医药采购金额",
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-afee4eb8-12a99b5c.md",
+        "reviewFile": "review-12-2026-07-25-run20260-87577125.md",
+        "reviewConclusion": "fail",
+        "error": ""
       },
       {
         "index": 3,
@@ -35,7 +216,11 @@
         "status": "failed",
         "standardFile": "",
         "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201243129407943548268d9d6DmUBcUvz). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
       },
       {
         "index": 4,
@@ -43,22 +228,28 @@
         "status": "failed",
         "standardFile": "",
         "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201246443907594818268d9d68poYhNZC). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "reviewConclusion": "unreviewable",
+        "error": "Phase 2 评审报告缺少必要章节：总体结论、汇总问题清单",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
       },
       {
         "index": 5,
         "factorName": "提款金额检查",
         "status": "success",
-        "standardFile": "standard-factor-2026-07-20-debb4e2b-85f6576b.md",
-        "reviewFile": "review-factor-2026-07-20-run20260-d0df3939.md",
+        "standardFile": "standard-factor-2026-07-25-afee4eb8-a1202abe.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-341939ca.md",
+        "reviewConclusion": "pass",
         "error": ""
       },
       {
         "index": 6,
         "factorName": "提款金额检查",
         "status": "success",
-        "standardFile": "standard-factor-2026-07-20-50eb2035-b97b4c4a.md",
-        "reviewFile": "review-factor-2026-07-20-run20260-cf846016.md",
+        "standardFile": "standard-factor-2026-07-25-afee4eb8-ba8f3beb.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-e63c8430.md",
+        "reviewConclusion": "fail",
         "error": ""
       },
       {
@@ -67,23 +258,29 @@
         "status": "failed",
         "standardFile": "",
         "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 20260720125350632494348268d9d6toHG1dk4). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
       },
       {
         "index": 8,
         "factorName": "近12个月医药采购金额",
-        "status": "failed",
-        "standardFile": "",
-        "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201257345462793808268d9d6TXSF71tT). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-afee4eb8-2c914606.md",
+        "reviewFile": "review-12-2026-07-25-run20260-e0de2a15.md",
+        "reviewConclusion": "fail",
+        "error": ""
       },
       {
         "index": 9,
         "factorName": "近6个月主账户成功入账金额",
-        "status": "failed",
-        "standardFile": "",
-        "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201301029144373998268d9d6RUJBU0P5). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "status": "success",
+        "standardFile": "standard-6-2026-07-25-64e47c46-dc670658.md",
+        "reviewFile": "review-6-2026-07-25-run20260-cfebd7a2.md",
+        "reviewConclusion": "fail",
+        "error": ""
       },
       {
         "index": 10,
@@ -91,54 +288,67 @@
         "status": "failed",
         "standardFile": "",
         "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201304377161621968268d9d6uRXCVKJN). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Response stalled mid-stream. The response above may be incomplete.",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
       },
       {
         "index": 11,
         "factorName": "流动资金提款可用标志",
         "status": "success",
-        "standardFile": "standard-factor-2026-07-20-debb4e2b-b43a3ba5.md",
-        "reviewFile": "review-factor-2026-07-20-run20260-82710f47.md",
+        "standardFile": "standard-factor-2026-07-25-ab9f680a-f9569704.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-d46ddebf.md",
+        "reviewConclusion": "pass",
         "error": ""
       },
       {
         "index": 12,
         "factorName": "流动资金提款可用标志",
         "status": "success",
-        "standardFile": "standard-factor-2026-07-20-debb4e2b-b43a3ba5.md",
-        "reviewFile": "review-factor-2026-07-20-run20260-b48ab088.md",
+        "standardFile": "standard-factor-2026-07-25-ab9f680a-f9569704.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-c9bd89f5.md",
+        "reviewConclusion": "fail",
         "error": ""
       },
       {
         "index": 13,
         "factorName": "近12个月有效购方数量",
-        "status": "failed",
-        "standardFile": "",
-        "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201312215237888598268d9d6XjibpWqs). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-ab9f680a-fd42f039.md",
+        "reviewFile": "review-12-2026-07-25-run20260-551ae9be.md",
+        "reviewConclusion": "fail",
+        "error": ""
       },
       {
         "index": 14,
         "factorName": "近12个月有效购方数量",
-        "status": "failed",
-        "standardFile": "",
-        "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201315494307317188268d9d6BE7XwlcE). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "status": "success",
+        "standardFile": "standard-12-2026-07-25-ab9f680a-fd42f039.md",
+        "reviewFile": "review-12-2026-07-25-run20260-9a57f309.md",
+        "reviewConclusion": "fail",
+        "error": ""
       },
       {
         "index": 15,
         "factorName": "严重逾期存续贷款余额",
-        "status": "success",
-        "standardFile": "standard-factor-2026-07-20-debb4e2b-cd4de30e.md",
-        "reviewFile": "review-factor-2026-07-20-run20260-bfaa3df9.md",
-        "error": ""
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
       },
       {
         "index": 16,
         "factorName": "严重逾期存续贷款余额",
         "status": "success",
-        "standardFile": "standard-factor-2026-07-20-debb4e2b-cd4de30e.md",
-        "reviewFile": "review-factor-2026-07-20-run20260-07f062fb.md",
+        "standardFile": "standard-factor-2026-07-25-ab9f680a-bc65d870.md",
+        "reviewFile": "review-factor-2026-07-25-run20260-c7001926.md",
+        "reviewConclusion": "fail",
         "error": ""
       },
       {
@@ -147,32 +357,37 @@
         "status": "failed",
         "standardFile": "",
         "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201320067676965248268d9d60iGH5ejS). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
       },
       {
         "index": 18,
         "factorName": "未来30天临期可售库存量",
-        "status": "failed",
-        "standardFile": "",
-        "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201323491981407138268d9d6PqUTe9zc). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "status": "success",
+        "standardFile": "standard-30-2026-07-25-ab9f680a-2af03605.md",
+        "reviewFile": "review-30-2026-07-25-run20260-d61400db.md",
+        "reviewConclusion": "fail",
+        "error": ""
       }
     ],
-    "createdAt": "2026-07-20T20:30:07+08:00"
+    "createdAt": "2026-07-25T02:01:34+08:00"
   },
   {
-    "runId": "run-20260720-215739-6465",
-    "taskId": "task-20260720-202950-890d",
-    "taskName": "测试1",
-    "trigger": "manual",
-    "status": "failed",
-    "startedAt": "2026-07-20T21:57:39+08:00",
-    "finishedAt": "2026-07-20T22:11:51+08:00",
+    "runId": "run-20260726-021157-4fc9",
+    "taskId": "task-20260725-010522-2a81",
+    "taskName": "测试",
+    "trigger": "scheduler",
+    "status": "partial_success",
+    "startedAt": "2026-07-26T02:11:57+08:00",
+    "finishedAt": "2026-07-26T03:18:49+08:00",
     "total": 18,
-    "success": 0,
-    "failed": 0,
+    "success": 5,
+    "failed": 13,
     "unknown": 0,
-    "durationMs": 0,
+    "durationMs": 4012675,
     "items": [
       {
         "index": 1,
@@ -180,7 +395,11 @@
         "status": "failed",
         "standardFile": "",
         "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201401214143363068268d9d6F7lRbuj7). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
       },
       {
         "index": 2,
@@ -188,7 +407,11 @@
         "status": "failed",
         "standardFile": "",
         "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201405054353558688268d9d6ybWr5rbX). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
       },
       {
         "index": 3,
@@ -196,10 +419,178 @@
         "status": "failed",
         "standardFile": "",
         "reviewFile": "",
-        "error": "API Error: 500 sensitive_words_detected (request id: 202607201408398658561668268d9d666MturZx). This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721)."
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 4,
+        "factorName": "投资人最近一次变更距今月份数",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 5,
+        "factorName": "提款金额检查",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Claude 未输出完整 Phase 2 评审报告正文，stdout 必须以「# 评审报告」开头。",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 6,
+        "factorName": "提款金额检查",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Response stalled mid-stream. The response above may be incomplete.",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 7,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 8,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 9,
+        "factorName": "近6个月主账户成功入账金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 10,
+        "factorName": "近6个月主账户成功入账金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Response stalled mid-stream. The response above may be incomplete.",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 11,
+        "factorName": "流动资金提款可用标志",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-26-run20260-f3ed58d1.md",
+        "reviewFile": "review-factor-2026-07-26-run20260-3b705efb.md",
+        "reviewConclusion": "pass",
+        "error": ""
+      },
+      {
+        "index": 12,
+        "factorName": "流动资金提款可用标志",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-26-run20260-324cd225.md",
+        "reviewFile": "review-factor-2026-07-26-run20260-a08dddc2.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 13,
+        "factorName": "近12个月有效购方数量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 14,
+        "factorName": "近12个月有效购方数量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream idle timeout - no chunks received",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 15,
+        "factorName": "严重逾期存续贷款余额",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-26-run20260-8542f3ce.md",
+        "reviewFile": "review-factor-2026-07-26-run20260-1e67dfee.md",
+        "reviewConclusion": "pass",
+        "error": ""
+      },
+      {
+        "index": 16,
+        "factorName": "严重逾期存续贷款余额",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-26-run20260-0220d039.md",
+        "reviewFile": "review-factor-2026-07-26-run20260-16a4f274.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 17,
+        "factorName": "未来30天临期可售库存量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Claude 未输出完整 Phase 2 评审报告正文，stdout 必须以「# 评审报告」开头。",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 18,
+        "factorName": "未来30天临期可售库存量",
+        "status": "success",
+        "standardFile": "standard-30-2026-07-26-run20260-9f3d7e14.md",
+        "reviewFile": "review-30-2026-07-26-run20260-63b8266e.md",
+        "reviewConclusion": "fail",
+        "error": ""
       }
     ],
-    "createdAt": "2026-07-20T21:57:39+08:00",
-    "error": "服务重启，原执行上下文已丢失。"
+    "createdAt": "2026-07-26T02:11:57+08:00"
   }
 ]

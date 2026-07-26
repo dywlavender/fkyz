@@ -6,6 +6,7 @@ import type {
   CreateValidationCaseRequest,
   CreateScheduledTaskRequest,
   ExampleItem,
+  FactorProcessingSpecResponse,
   ImportPreviewResult,
   OutputArtifact,
   Phase1Request,
@@ -13,7 +14,10 @@ import type {
   Phase2Request,
   Phase2Response,
   ReviewHistoryRecord,
+  ReviewRecordPage,
+  ReviewRecordQuery,
   ReviewModeExperiment,
+  RuntimeSettings,
   ScheduledRun,
   ScheduledTask,
   SystemHealth,
@@ -149,6 +153,22 @@ export async function fetchReviewHistory(): Promise<ReviewHistoryRecord[]> {
   }
 }
 
+export async function fetchReviewRecords(query: ReviewRecordQuery = {}): Promise<ReviewRecordPage> {
+  const params = new URLSearchParams()
+  Object.entries(query).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+  })
+  return requestApiData<ReviewRecordPage>(`/api/review-records?${params.toString()}`)
+}
+
+export async function setReviewRecordArchived(recordId: string, archived: boolean): Promise<ReviewHistoryRecord> {
+  return requestApiData<ReviewHistoryRecord>(`/api/review-records/${encodeURIComponent(recordId)}/archive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ archived }),
+  })
+}
+
 export async function fetchApiDocs(): Promise<ApiDocItem[]> {
   const data = await requestJson<{ apis: ApiDocItem[] }>('/api/apis')
   return data.apis || []
@@ -169,6 +189,10 @@ export async function fetchBusinessRules(): Promise<Array<Record<string, unknown
   return data.rules || []
 }
 
+export async function fetchFactorProcessingSpec(): Promise<FactorProcessingSpecResponse> {
+  return requestApiData<FactorProcessingSpecResponse>('/api/factor-processing-spec')
+}
+
 export async function fetchHealth(): Promise<SystemHealth> {
   return requestJson<SystemHealth>('/api/self-check')
 }
@@ -181,6 +205,18 @@ export async function fetchTasks(): Promise<TaskRecord[]> {
 export async function fetchGlobalPoolStatus(): Promise<GlobalPoolStatus> {
   const data = await requestJson<{ pool: GlobalPoolStatus }>('/api/pool/status')
   return data.pool
+}
+
+export async function fetchRuntimeSettings(): Promise<RuntimeSettings> {
+  return requestApiData<RuntimeSettings>('/api/runtime-settings')
+}
+
+export async function updateRuntimeSettings(payload: RuntimeSettings): Promise<RuntimeSettings> {
+  return requestApiData<RuntimeSettings>('/api/runtime-settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function fetchOutputText(fileId: string): Promise<string> {
@@ -214,7 +250,6 @@ export async function parseExcel(name: string, dataBase64: string): Promise<{ ro
 
 export async function runBatchReview(payload: {
   rows: BatchRow[]
-  concurrency?: number
   mock?: boolean
   retry?: number
   resume?: boolean
@@ -299,6 +334,26 @@ export async function batchRunValidationCases(caseIds: string[]): Promise<BatchV
 export async function fetchValidationRuns(caseId?: string): Promise<ValidationRun[]> {
   const suffix = caseId ? `?caseId=${encodeURIComponent(caseId)}` : ''
   return requestApiData<ValidationRun[]>(`/api/validation-runs${suffix}`)
+}
+
+export async function fetchValidationRunGroups(page = 1, pageSize = 20): Promise<{
+  items: Array<{
+    groupId: string
+    runs: ValidationRun[]
+    startedAt?: string
+    finishedAt?: string
+    total: number
+    matched: number
+    mismatched: number
+    failed: number
+    status: string
+    agreementRate: number
+  }>
+  page: number
+  pageSize: number
+  total: number
+}> {
+  return requestApiData(`/api/validation-run-groups?page=${page}&pageSize=${pageSize}`)
 }
 
 export async function fetchValidationRun(runId: string): Promise<ValidationRun> {

@@ -174,15 +174,23 @@
       "授信申请接口",
       "企业账户交易流水查询接口"
     ],
-    "requirement": "以授信申请接口.applyTime为基准，遍历企业账户交易流水查询接口.primaryAccount.transactions[]，筛选交易日期大于等于进件时点减6个月且小于等于进件时点、收支方向为CREDIT、交易状态为SUCCESS的主账户流水，对amount求和。不得纳入relatedAccounts[]中的关联账户流水；无符合记录时结果为0。",
+    "requirement": "以授信申请接口.applyTime为基准，遍历企业账户交易流水查询接口.primaryAccount.transactions[]，筛选交易日期大于等于进件时点（转为年月日）减6个月且小于等于进件时点（转为年月日）、收支方向为CREDIT、交易状态为SUCCESS的主账户流水，对amount求和。不得纳入relatedAccounts[]中的关联账户流水；无符合记录时结果为0。",
     "paramFields": "授信申请接口.applyTime\n企业账户交易流水查询接口.primaryAccount.transactions[].transactionDate\n企业账户交易流水查询接口.primaryAccount.transactions[].direction\n企业账户交易流水查询接口.primaryAccount.transactions[].status\n企业账户交易流水查询接口.primaryAccount.transactions[].amount",
     "procLogic": "1. 取 applyTime 作为统计终点，窗口起点为 applyTime 减6个月，起点和终点均包含。\n2. 仅遍历 primaryAccount.transactions[]。\n3. 筛选 direction = CREDIT 且 status = SUCCESS 的窗口内流水。\n4. 对保留流水的 amount 求和；无符合记录时返回0。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
-    "draft": "【因子加工输入字段】\n授信申请接口.applyTime\n企业账户交易流水查询接口.primaryAccount.transactions[].transactionDate\n企业账户交易流水查询接口.primaryAccount.transactions[].direction\n企业账户交易流水查询接口.primaryAccount.transactions[].status\n企业账户交易流水查询接口.primaryAccount.transactions[].amount\n\n【加工逻辑】\n1. 取 applyTime 作为统计终点，窗口起点为 applyTime 减6个月，起点和终点均包含。\n2. 仅遍历 primaryAccount.transactions[]。\n3. 筛选 direction = CREDIT 且 status = SUCCESS 的窗口内流水。\n4. 对保留流水的 amount 求和；无符合记录时返回0。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`✅ 通过`（加工对象限定为主账户交易数组，关联账户交易不参与计算）",
+    "draft": "【因子加工输入字段】\n授信申请接口.applyTime\n企业账户交易流水查询接口.primaryAccount.transactions[].transactionDate\n企业账户交易流水查询接口.primaryAccount.transactions[].direction\n企业账户交易流水查询接口.primaryAccount.transactions[].status\n企业账户交易流水查询接口.primaryAccount.transactions[].amount\n\n【加工逻辑】\n1. 现将applyTime转为年月日作为统计终点，窗口起点为 applyTime（转为年月日） -6个月，起点和终点均包含。\n2. 仅遍历 primaryAccount.transactions[]。\n3. 筛选 direction = CREDIT 且 status = SUCCESS 的窗口内流水。\n4. 对保留流水的 amount 求和；无符合记录时返回0。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
+    "expected": "pass",
+    "expectedIssuePatterns": [],
+    "forbiddenIssuePatterns": [],
     "maxIssueCount": 0,
-    "version": "c090a84e2f11",
-    "updatedAt": 1784474201
+    "version": "0542a40fc796",
+    "updatedAt": 1784912063,
+    "businessRuleIds": [],
+    "tags": [
+      "正向"
+    ],
+    "remark": "",
+    "createdAt": 1784912063
   },
   {
     "id": "case-10",

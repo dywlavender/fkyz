@@ -33,6 +33,7 @@ from risk_review_web.artifacts import (
     compute_phase1_checksum,
     compute_review_checksum,
     find_cached_phase1_standard,
+    load_factor_processing_spec,
     normalize_phase1_output,
     normalize_review_output,
     read_phase1_standard,
@@ -51,11 +52,13 @@ from risk_review_web.business_rules import (
 from risk_review_web.paths import (
     BUSINESS_RULES_PATH,
     FACTOR_PROCESSING_SPEC_PATH,
+    FACTOR_PROCESSING_SPEC_DOC_PATH,
     EXAMPLES_DIR,
     EXAMPLES_PATH,
     VALIDATION_RUNS_PATH,
     REVIEW_RECORDS_PATH,
     REVIEW_MODE_EXPERIMENTS_PATH,
+    SCHEDULED_RUNS_PATH,
     OUTPUTS_DIR,
     PHASE1_SKILL_PATH,
     PHASE2_SKILL_PATH,
@@ -72,6 +75,7 @@ from risk_review_web.prompt_builder import (
     build_direct_review_prompt,
 )
 from risk_review_web.scheduled_tasks import ScheduledTaskError, build_service as build_scheduled_task_service
+from risk_review_web.runtime_settings import get_runtime_settings, update_runtime_settings
 from risk_review_web.task_pool import GLOBAL_TASK_POOL
 from risk_review_web.utils import atomic_write_text, parse_frontmatter, read_text
 from risk_review_web.error_classification import attach_error_metadata, classify_task_error
@@ -235,6 +239,7 @@ def normalize_batch_rows_from_table(rows: list[list[str]]) -> list[dict]:
     if not rows:
         return []
     aliases = {
+        "caseName": ["案例名称", "案例名", "caseName", "case_name", "title"],
         "factorName": ["因子名", "因子中文名", "factorName", "factor_name"],
         "requirement": ["需求内容", "需求", "requirement"],
         "apiDocs": ["接口文档", "接口", "接口文档ID", "apiDocs", "apiDocIds", "api_names"],
@@ -347,7 +352,7 @@ def parse_review_history_artifact(name: str) -> dict | None:
     }
 
 
-def review_history_records() -> list[dict]:
+def artifact_review_history_records() -> list[dict]:
     grouped: dict[str, dict] = {}
     created_at_numbers: dict[str, int] = {}
     for output in list_outputs():
@@ -405,19 +410,454 @@ def review_history_records() -> list[dict]:
     return sorted(grouped.values(), key=lambda item: str(item.get("createdAt") or ""), reverse=True)
 
 
+def parse_review_records() -> list[dict]:
+    if not REVIEW_RECORDS_PATH.exists():
+        return []
+    try:
+        data = json.loads(read_text(REVIEW_RECORDS_PATH))
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def save_review_records(records: list[dict]) -> None:
+    REVIEW_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        REVIEW_RECORDS_PATH,
+        json.dumps(records[-5000:], ensure_ascii=False, indent=2),
+    )
+
+
+def _review_record_artifact_names(record: dict) -> set[str]:
+    names = set()
+    for group_name in ("standardArtifacts", "reviewArtifacts"):
+        for file_name in (record.get(group_name) or {}).values():
+            if file_name:
+                names.add(str(file_name))
+    for item in record.get("items") or []:
+        for key in ("standardFileId", "standardMetadataFileId", "reviewFileId"):
+            if item.get(key):
+                names.add(str(item[key]))
+    return names
+
+
+def _task_record_title(task: dict) -> str:
+    context = task.get("context") or {}
+    task_type = str(task.get("taskType") or "")
+    if context.get("taskName"):
+        return str(context["taskName"])
+    if context.get("factorName"):
+        return str(context["factorName"])
+    labels = {
+        "batch": "批量评审",
+        "regression": "质量验证",
+        "review-mode-experiment": "模式对比实验",
+        "phase1": "标准生成",
+        "phase2": "单因子评审",
+    }
+    return f"{labels.get(task_type, '评审任务')} · {str(task.get('id') or '')[:8]}"
+
+
+def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict | None:
+    status = str(task.get("status") or "")
+    if not include_active and not _is_terminal_status(status):
+        return None
+    task_type = str(task.get("taskType") or "")
+    if task_type in {"child", "scheduled-phase1", "scheduled-phase2"}:
+        return None
+    result = task.get("result") or {}
+    context = task.get("context") or {}
+    items = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(items, list):
+        items = []
+    standard_file = result.get("standardFileId") or context.get("standardFileId")
+    standard_metadata = result.get("standardMetadataFileId")
+    if standard_file and not standard_metadata:
+        standard_stem = Path(str(standard_file)).stem
+        for metadata_candidate in (
+            f"{standard_stem}.metadata.json",
+            f"{standard_stem}.summary.json",
+        ):
+            if (OUTPUTS_DIR / metadata_candidate).is_file():
+                standard_metadata = metadata_candidate
+                break
+    review_file = result.get("reviewFileId")
+    conclusion = "unreviewable"
+    risk_count = 0
+    if review_file:
+        try:
+            review_text = read_text(OUTPUTS_DIR / Path(str(review_file)).name)
+            conclusion = detect_verdict_text(review_text)
+            risk_count = int(collect_review_stats(review_text).get("fail") or 0)
+        except OSError:
+            pass
+    done_items = [item for item in items if item.get("status") in {"done", "pass", "fail"}]
+    failed_items = [item for item in items if item.get("status") in {"error", "skip"}]
+    if items:
+        conclusions = [
+            detect_verdict_text(str(item.get("raw") or ""))
+            for item in done_items
+            if item.get("raw")
+        ]
+        if conclusions and all(value == "pass" for value in conclusions):
+            conclusion = "pass"
+        elif any(value == "fail" for value in conclusions):
+            conclusion = "fail"
+        elif failed_items:
+            conclusion = "unreviewable"
+        risk_count = sum(
+            int((item.get("summary") or {}).get("fail") or 0)
+            for item in items
+        )
+    source = {
+        "batch": "batch",
+        "regression": "validation",
+        "review-mode-experiment": "experiment",
+        "phase1": "single",
+        "phase2": "single",
+    }.get(task_type, task_type or "single")
+    created = float(task.get("created") or time.time())
+    updated = float(task.get("updated") or created)
+    return {
+        "recordId": f"task-{task.get('id')}",
+        "taskId": task.get("id"),
+        "title": _task_record_title(task),
+        "factorName": context.get("factorName") or _task_record_title(task),
+        "source": source,
+        "taskStatus": status,
+        "conclusion": conclusion,
+        "riskCount": risk_count,
+        "createdAt": datetime.fromtimestamp(created, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "updatedAt": datetime.fromtimestamp(updated, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "archived": False,
+        "summary": {
+            "total": len(items) if items else 1,
+            "completed": len(done_items) if items else int(task.get("status") == "done"),
+            "failed": len(failed_items) if items else int(task.get("status") == "error"),
+        },
+        "standardArtifacts": {
+            **({"md": standard_file} if standard_file else {}),
+            **({"json": standard_metadata} if standard_metadata else {}),
+        },
+        "reviewArtifacts": {"md": review_file} if review_file else {},
+        "items": items,
+    }
+
+
+def _artifact_conclusion(file_name: str | None) -> tuple[str, int]:
+    if not file_name:
+        return "unreviewable", 0
+    try:
+        text = read_text(OUTPUTS_DIR / Path(str(file_name)).name)
+    except OSError:
+        return "unreviewable", 0
+    return detect_verdict_text(text), int(collect_review_stats(text).get("fail") or 0)
+
+
+def _load_json_list(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(read_text(path))
+    except Exception:
+        return []
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def _external_review_records() -> list[dict]:
+    records: list[dict] = []
+    for run in _load_json_list(SCHEDULED_RUNS_PATH):
+        status = str(run.get("status") or "")
+        if status in {"queued", "running", "cancelling"}:
+            continue
+        items = []
+        conclusions = []
+        risk_count = 0
+        for item in run.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            review_file = item.get("reviewFile")
+            conclusion, item_risk = _artifact_conclusion(review_file)
+            if review_file:
+                conclusions.append(conclusion)
+            risk_count += item_risk
+            items.append({
+                **item,
+                "standardFileId": item.get("standardFile"),
+                "reviewFileId": review_file,
+                "conclusion": conclusion,
+                "riskCount": item_risk,
+            })
+        conclusion = (
+            "fail" if "fail" in conclusions
+            else "pass" if conclusions and all(value == "pass" for value in conclusions)
+            else "unreviewable"
+        )
+        task_status = (
+            "cancelled" if status == "cancelled"
+            else "error" if status == "failed"
+            else "done"
+        )
+        records.append({
+            "recordId": f"scheduled-{run.get('runId')}",
+            "taskId": run.get("runId"),
+            "title": run.get("taskName") or "定时评审",
+            "factorName": run.get("taskName") or "定时评审",
+            "source": "scheduled",
+            "taskStatus": task_status,
+            "conclusion": conclusion,
+            "riskCount": risk_count,
+            "createdAt": run.get("createdAt") or run.get("startedAt") or _iso_time(),
+            "updatedAt": run.get("finishedAt") or run.get("startedAt") or _iso_time(),
+            "archived": False,
+            "summary": {
+                "total": int(run.get("total") or len(items)),
+                "completed": int(run.get("success") or 0),
+                "failed": int(run.get("failed") or 0),
+            },
+            "standardArtifacts": {},
+            "reviewArtifacts": {},
+            "items": items,
+        })
+
+    validation_groups: dict[str, list[dict]] = {}
+    for run in _load_json_list(VALIDATION_RUNS_PATH):
+        status = str(run.get("status") or "")
+        if status in {"pending", "queued", "running", "cancelling"}:
+            continue
+        validation_groups.setdefault(str(run.get("groupId") or run.get("runId")), []).append(run)
+    for group_id, runs in validation_groups.items():
+        items = []
+        conclusions = []
+        risk_count = 0
+        for run in runs:
+            review_file = run.get("reviewFile")
+            conclusion = str(run.get("actualConclusion") or "")
+            item_risk = 0
+            if review_file:
+                detected, item_risk = _artifact_conclusion(review_file)
+                conclusion = conclusion or detected
+            if conclusion:
+                conclusions.append(conclusion)
+            risk_count += item_risk
+            items.append({
+                **run,
+                "factorName": run.get("caseName"),
+                "standardFileId": run.get("standardFile"),
+                "standardMetadataFileId": run.get("standardMetadataFile"),
+                "reviewFileId": review_file,
+                "conclusion": conclusion or "unreviewable",
+                "riskCount": item_risk,
+            })
+        failed = sum(1 for item in runs if item.get("status") in {"failed", "cancelled"})
+        conclusion = (
+            "fail" if "fail" in conclusions
+            else "pass" if conclusions and all(value == "pass" for value in conclusions)
+            else "unreviewable"
+        )
+        created_at = min((str(item.get("startedAt") or item.get("createdAt") or "") for item in runs), default="")
+        updated_at = max((str(item.get("finishedAt") or item.get("startedAt") or "") for item in runs), default="")
+        records.append({
+            "recordId": f"validation-{group_id}",
+            "taskId": group_id,
+            "title": f"质量验证 · {group_id[:12]}",
+            "factorName": "质量验证",
+            "source": "validation",
+            "taskStatus": "error" if failed == len(runs) else "done",
+            "conclusion": conclusion,
+            "riskCount": risk_count,
+            "createdAt": created_at or _iso_time(),
+            "updatedAt": updated_at or created_at or _iso_time(),
+            "archived": False,
+            "summary": {
+                "total": len(runs),
+                "completed": len(runs) - failed,
+                "failed": failed,
+            },
+            "standardArtifacts": {},
+            "reviewArtifacts": {},
+            "items": items,
+        })
+    return records
+
+
+def sync_terminal_tasks_to_review_records() -> None:
+    with TASK_LOCK:
+        snapshots = [dict(task) for task in TASKS.values()]
+    generated = [
+        record
+        for task in snapshots
+        if (record := _task_to_review_record(task)) is not None
+    ]
+    generated.extend(_external_review_records())
+    if not generated:
+        return
+    with REVIEW_RECORDS_LOCK:
+        records = parse_review_records()
+        by_id = {str(item.get("recordId") or ""): index for index, item in enumerate(records)}
+        changed = False
+        for record in generated:
+            record_id = str(record["recordId"])
+            if record_id in by_id:
+                existing = records[by_id[record_id]]
+                if existing.get("deleted"):
+                    continue
+                record["archived"] = bool(existing.get("archived"))
+                if existing != record:
+                    records[by_id[record_id]] = record
+                    changed = True
+            else:
+                by_id[record_id] = len(records)
+                records.append(record)
+                changed = True
+        if changed:
+            save_review_records(records)
+
+
+def review_history_records(include_archived: bool = False) -> list[dict]:
+    sync_terminal_tasks_to_review_records()
+    with TASK_LOCK:
+        active_tasks = [
+            dict(task)
+            for task in TASKS.values()
+            if not _is_terminal_status(str(task.get("status") or ""))
+        ]
+    active_records = [
+        record
+        for task in active_tasks
+        if (record := _task_to_review_record(task, include_active=True)) is not None
+    ]
+    with REVIEW_RECORDS_LOCK:
+        stored_records = parse_review_records()
+    deleted_ids = {
+        str(record.get("recordId") or "")
+        for record in stored_records
+        if record.get("deleted")
+    }
+    persisted = [
+        record
+        for record in stored_records
+        if not record.get("deleted")
+    ]
+    referenced_files = {
+        file_name
+        for record in persisted
+        for file_name in _review_record_artifact_names(record)
+    }
+    historical = [
+        record
+        for record in artifact_review_history_records()
+        if record.get("recordId") not in deleted_ids
+        and not (_review_record_artifact_names(record) & referenced_files)
+    ]
+    persisted_ids = {str(record.get("recordId") or "") for record in persisted}
+    live = [
+        record
+        for record in active_records
+        if str(record.get("recordId") or "") not in deleted_ids
+        and str(record.get("recordId") or "") not in persisted_ids
+    ]
+    records = [*live, *persisted, *historical]
+    if not include_archived:
+        records = [record for record in records if not record.get("archived")]
+    return sorted(
+        records,
+        key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""),
+        reverse=True,
+    )
+
+
+def query_review_records(query: dict[str, list[str]]) -> dict:
+    archived_only = (query.get("archived") or ["false"])[0].lower() == "true"
+    records = review_history_records(include_archived=True)
+    records = [item for item in records if bool(item.get("archived")) == archived_only]
+    keyword = (query.get("keyword") or [""])[0].strip().lower()
+    source = (query.get("source") or [""])[0].strip()
+    task_status = (query.get("taskStatus") or [""])[0].strip()
+    conclusion = (query.get("conclusion") or [""])[0].strip()
+    date_from = (query.get("dateFrom") or [""])[0].strip()
+    date_to = (query.get("dateTo") or [""])[0].strip()
+    if keyword:
+        records = [
+            item for item in records
+            if keyword in " ".join([
+                str(item.get("title") or ""),
+                str(item.get("factorName") or ""),
+                str(item.get("recordId") or ""),
+                str(item.get("taskId") or ""),
+            ]).lower()
+        ]
+    if source:
+        records = [item for item in records if item.get("source") == source]
+    if task_status:
+        records = [item for item in records if item.get("taskStatus") == task_status]
+    if conclusion:
+        records = [item for item in records if item.get("conclusion") == conclusion]
+    if date_from:
+        records = [
+            item for item in records
+            if str(item.get("updatedAt") or item.get("createdAt") or "") >= date_from
+        ]
+    if date_to:
+        records = [
+            item for item in records
+            if str(item.get("updatedAt") or item.get("createdAt") or "") <= date_to
+        ]
+    try:
+        page = max(1, int((query.get("page") or ["1"])[0]))
+        page_size_limit = 5000 if (query.get("export") or ["false"])[0].lower() == "true" else 100
+        page_size = max(1, min(page_size_limit, int((query.get("pageSize") or ["20"])[0])))
+    except ValueError:
+        page, page_size = 1, 20
+    total = len(records)
+    start = (page - 1) * page_size
+    return {
+        "items": records[start:start + page_size],
+        "page": page,
+        "pageSize": page_size,
+        "total": total,
+    }
+
+
+def archive_review_record(record_id: str, archived: bool) -> dict:
+    sync_terminal_tasks_to_review_records()
+    with REVIEW_RECORDS_LOCK:
+        records = parse_review_records()
+        for index, record in enumerate(records):
+            if str(record.get("recordId") or "") != record_id:
+                continue
+            records[index] = {**record, "archived": bool(archived), "updatedAt": _iso_time()}
+            save_review_records(records)
+            return records[index]
+    historical = next(
+        (item for item in artifact_review_history_records() if item.get("recordId") == record_id),
+        None,
+    )
+    if historical:
+        historical["archived"] = bool(archived)
+        historical["updatedAt"] = _iso_time()
+        with REVIEW_RECORDS_LOCK:
+            records = parse_review_records()
+            records.append(historical)
+            save_review_records(records)
+        return historical
+    raise FileNotFoundError("评审记录不存在")
+
+
 def delete_review_history_record(record_id: str) -> dict:
     record = next(
-        (item for item in review_history_records() if item.get("recordId") == record_id),
+        (
+            item
+            for item in review_history_records(include_archived=True)
+            if item.get("recordId") == record_id
+        ),
         None,
     )
     if not record:
         raise FileNotFoundError("评审历史记录不存在")
-    file_names = {
-        str(file_name)
-        for group_name in ("standardArtifacts", "reviewArtifacts")
-        for file_name in (record.get(group_name) or {}).values()
-        if file_name
-    }
+    if str(record.get("taskStatus") or "") in {"queued", "running", "cancelling"}:
+        raise ValueError("执行中的评审记录不能删除，请先终止任务")
+    file_names = _review_record_artifact_names(record)
     deleted_files = []
     for file_name in sorted(file_names):
         safe_name = Path(file_name)
@@ -427,6 +867,18 @@ def delete_review_history_record(record_id: str) -> dict:
         if artifact_path.exists() and artifact_path.is_file():
             artifact_path.unlink()
             deleted_files.append(file_name)
+    with REVIEW_RECORDS_LOCK:
+        records = [
+            item
+            for item in parse_review_records()
+            if str(item.get("recordId") or "") != record_id
+        ]
+        records.append({
+            "recordId": record_id,
+            "deleted": True,
+            "deletedAt": _iso_time(),
+        })
+        save_review_records(records)
     return {"recordId": record_id, "deletedFiles": deleted_files}
 
 
@@ -599,6 +1051,60 @@ def parse_validation_runs() -> list[dict]:
         return data if isinstance(data, list) else []
     except (OSError, json.JSONDecodeError):
         return []
+
+
+def query_validation_run_groups(query: dict[str, list[str]]) -> dict:
+    with VALIDATION_RUNS_LOCK:
+        runs = parse_validation_runs()
+    grouped: dict[str, list[dict]] = {}
+    for run in runs:
+        grouped.setdefault(str(run.get("groupId") or run.get("runId")), []).append(run)
+    items = []
+    for group_id, group_runs in grouped.items():
+        terminal = [
+            item for item in group_runs
+            if str(item.get("status") or "") in {"success", "failed", "cancelled"}
+        ]
+        matched = sum(1 for item in terminal if item.get("matched") is True)
+        mismatched = sum(
+            1 for item in terminal
+            if item.get("status") == "success" and item.get("matched") is False
+        )
+        failed = sum(1 for item in terminal if item.get("status") in {"failed", "cancelled"})
+        running = any(
+            str(item.get("status") or "") in {"pending", "queued", "running"}
+            for item in group_runs
+        )
+        started_at = min((str(item.get("startedAt") or "") for item in group_runs), default="")
+        finished_at = max((str(item.get("finishedAt") or "") for item in group_runs), default="")
+        items.append({
+            "groupId": group_id,
+            "runs": group_runs,
+            "startedAt": started_at,
+            "finishedAt": finished_at,
+            "total": len(group_runs),
+            "matched": matched,
+            "mismatched": mismatched,
+            "failed": failed,
+            "status": "running" if running else "error" if failed == len(group_runs) else "done",
+            "agreementRate": round(matched / len(group_runs) * 100, 1) if group_runs else 0,
+        })
+    items.sort(
+        key=lambda item: str(item.get("finishedAt") or item.get("startedAt") or ""),
+        reverse=True,
+    )
+    try:
+        page = max(1, int((query.get("page") or ["1"])[0]))
+        page_size = max(1, min(100, int((query.get("pageSize") or ["20"])[0])))
+    except ValueError:
+        page, page_size = 1, 20
+    start = (page - 1) * page_size
+    return {
+        "items": items[start:start + page_size],
+        "page": page,
+        "pageSize": page_size,
+        "total": len(items),
+    }
 
 
 def save_validation_runs(runs: list[dict]):
@@ -966,6 +1472,7 @@ def decorate_task(task: dict) -> dict:
 
 
 def task_history():
+    sync_terminal_tasks_to_review_records()
     gc_tasks()
     with TASK_LOCK:
         tasks = [decorate_task(task) for task in TASKS.values()]
@@ -1166,6 +1673,7 @@ def api_docs_health() -> dict:
 
 
 def system_health() -> dict:
+    runtime_settings = get_runtime_settings()
     required = [
         PHASE1_SKILL_PATH,
         PHASE2_SKILL_PATH,
@@ -1200,6 +1708,7 @@ def system_health() -> dict:
         "outputs": outputs_health(),
         "api_docs": api_docs_health(),
         "task_pool": GLOBAL_TASK_POOL.snapshot(),
+        "runtime_settings": runtime_settings,
     }
 
 
@@ -1378,7 +1887,7 @@ def run_claude_prompt(
     with TASK_LOCK:
         debug_enabled = bool((TASKS.get(task_id) or {}).get("debug_claude"))
     if debug_enabled:
-        task_debug_log(task_id, "prompt", f"===== {phase_label} PROMPT =====\n{prompt}")
+        task_debug_log(task_id, "prompt", prompt)
     timeout_seconds = int(os.environ.get("RISK_REVIEW_CLAUDE_TIMEOUT", "600"))
     popen_kwargs = {}
     if os.name == "posix":
@@ -1576,10 +2085,13 @@ def run_claude_phase1(payload: dict, task_id: str):
 
 ## 标准加工逻辑
 
-| 步骤 | 逻辑类型 | 标准逻辑 | 形成方式 | 选择理由 |
-|---|---|---|---|---|
-| 1 | `time_filter` | 将 `授信申请接口.applyTime` 转换为月份，以该月份减12个月为起点、该月份为终点，筛选 `外部接口.content[].mockDate` 位于闭区间内的记录 | `direct` | - |
-| 2 | `aggregation` | 对筛选后记录的 `外部接口.content[].mockAmount` 求和 | `direct` | - |
+| 步骤 | 逻辑类型 | 标准逻辑 |
+|---|---|---|
+| 1 | `time_filter` | 将 `授信申请接口.applyTime` 转换为月份粒度，作为窗口终点 `endMonth` |
+| 2 | `time_filter` | 窗口起点 `startMonth = endMonth - 12个月` |
+| 3 | `iteration` | 遍历 `外部接口.content[]` 中的全部明细 |
+| 4 | `time_filter` | 保留满足 `startMonth ≤ mockDate ≤ endMonth` 的明细，起点和终点均包含 |
+| 5 | `aggregation` | 对保留明细的 `mockAmount` 求和 |
 
 ## 默认值兜底
 
@@ -1838,13 +2350,24 @@ def collect_review_stats(text: str) -> dict:
     return {"fail": len(issue_rows)}
 
 
+def normalize_issue_match_text(value: str | None) -> str:
+    """Ignore presentation-only whitespace when matching expected issue text."""
+    return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
 def evaluate_issue_expectations(example: dict, report: str) -> dict:
     expected_patterns = _string_list(example.get("expectedIssuePatterns"))
     forbidden_patterns = _string_list(example.get("forbiddenIssuePatterns"))
     max_issue_count = _optional_nonnegative_int(example.get("maxIssueCount"))
-    source = str(report or "").casefold()
-    missing_patterns = [pattern for pattern in expected_patterns if pattern.casefold() not in source]
-    forbidden_hits = [pattern for pattern in forbidden_patterns if pattern.casefold() in source]
+    source = normalize_issue_match_text(report)
+    missing_patterns = [
+        pattern for pattern in expected_patterns
+        if normalize_issue_match_text(pattern) not in source
+    ]
+    forbidden_hits = [
+        pattern for pattern in forbidden_patterns
+        if normalize_issue_match_text(pattern) in source
+    ]
     stats = collect_review_stats(report)
     issue_count = int(stats.get("fail") or 0)
     count_matched = max_issue_count is None or issue_count <= max_issue_count
@@ -2426,6 +2949,7 @@ def create_task_record(
     parent_task_id: str | None = None,
     client_id: str = "",
     group_concurrency: int | None = None,
+    context: dict | None = None,
 ):
     with TASK_LOCK:
         parent_cancelled = bool(
@@ -2438,6 +2962,7 @@ def create_task_record(
             "parentTaskId": parent_task_id,
             "clientId": client_id,
             "groupConcurrency": group_concurrency,
+            "context": dict(context or {}),
             "status": "cancelled" if parent_cancelled else "queued",
             "cancel_requested": parent_cancelled,
             "result": ({
@@ -2463,6 +2988,10 @@ def submit_regression_task(payload: dict, examples: list[dict]) -> tuple[str, di
         task_type="regression",
         client_id=str(payload.get("clientId") or ""),
         group_concurrency=1,
+        context={
+            "taskName": str(payload.get("taskName") or "").strip()
+            or f"质量验证 · {time.strftime('%Y-%m-%d %H:%M')}",
+        },
     )
     run_ids = prepare_validation_runs(task_id, examples)
     task_payload = dict(payload)
@@ -2496,6 +3025,10 @@ def submit_review_mode_experiment(payload: dict, examples: list[dict]) -> tuple[
         task_type="review-mode-experiment",
         client_id=str(payload.get("clientId") or ""),
         group_concurrency=1,
+        context={
+            "taskName": str(payload.get("taskName") or "").strip()
+            or f"模式对比实验 · {time.strftime('%Y-%m-%d %H:%M')}",
+        },
     )
     task_payload = {
         **payload,
@@ -2750,7 +3283,7 @@ def get_scheduled_task_service():
 
 def start_batch_review(payload: dict, task_id: str):
     rows = payload.get("rows") or []
-    concurrency = max(1, min(GLOBAL_TASK_POOL.max_workers, int(payload.get("concurrency") or 1)))
+    concurrency = get_runtime_settings()["batchConcurrency"]
     with TASK_LOCK:
         TASKS[task_id]["status"] = "running"
         TASKS[task_id]["updated"] = time.time()
@@ -2826,6 +3359,8 @@ class Handler(BaseHTTPRequestHandler):
             json_response(self, 200, {"outputs": list_outputs()})
         elif path == "/api/review-history":
             success_response(self, review_history_records())
+        elif path == "/api/review-records":
+            success_response(self, query_review_records(parse_qs(parsed.query)))
         elif path == "/api/validation-cases":
             success_response(self, validation_cases())
         elif path.startswith("/api/validation-cases/"):
@@ -2845,6 +3380,8 @@ class Handler(BaseHTTPRequestHandler):
                 runs = [item for item in runs if item.get("caseId") == case_id]
             runs.sort(key=lambda item: item.get("finishedAt") or item.get("startedAt") or "", reverse=True)
             success_response(self, runs)
+        elif path == "/api/validation-run-groups":
+            success_response(self, query_validation_run_groups(parse_qs(parsed.query)))
         elif path.startswith("/api/validation-runs/"):
             run_id = unquote(path.split("/")[-1])
             run = get_validation_run(run_id)
@@ -2868,10 +3405,19 @@ class Handler(BaseHTTPRequestHandler):
             json_response(self, 200, {"examples": parse_examples()})
         elif path == "/api/business-rules":
             json_response(self, 200, {"rules": parse_business_rules()})
+        elif path == "/api/factor-processing-spec":
+            success_response(self, {
+                "spec": load_factor_processing_spec(),
+                "markdown": read_text(FACTOR_PROCESSING_SPEC_DOC_PATH)
+                if FACTOR_PROCESSING_SPEC_DOC_PATH.exists()
+                else "",
+            })
         elif path == "/api/tasks":
             json_response(self, 200, {"tasks": task_history(), "pool": GLOBAL_TASK_POOL.snapshot()})
         elif path == "/api/pool/status":
             json_response(self, 200, {"pool": GLOBAL_TASK_POOL.snapshot()})
+        elif path == "/api/runtime-settings":
+            success_response(self, get_runtime_settings())
         elif path in ("/api/health", "/api/self-check"):
             json_response(self, 200, system_health())
         elif path == "/api/claude-test":
@@ -2903,11 +3449,24 @@ class Handler(BaseHTTPRequestHandler):
             json_response(self, 200, {"task": decorate_task(task), "pool": GLOBAL_TASK_POOL.snapshot()})
         elif path.startswith("/outputs/"):
             self.serve_output(path[len("/outputs/") :])
+        elif any(path.startswith(prefix) for prefix in ("/review/", "/quality/", "/records", "/system/")):
+            react_index = STATIC_DIR / "dist" / "index.html"
+            self.serve_static("dist/index.html" if react_index.exists() else "index.html")
         else:
             self.serve_static(path.lstrip("/"))
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/review-records/") and parsed.path.endswith("/archive"):
+            record_id = unquote(parsed.path.split("/")[-2])
+            try:
+                payload = self.read_json_body()
+                success_response(self, archive_review_record(record_id, bool(payload.get("archived", True))))
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+            except FileNotFoundError as exc:
+                error_response(self, 404, str(exc))
+            return
         if parsed.path == "/api/scheduled-tasks/import-preview":
             try:
                 payload = self.read_json_body()
@@ -3169,12 +3728,16 @@ class Handler(BaseHTTPRequestHandler):
                 json_response(self, 400, {"error": "批量评审缺少有效数据行。"})
                 return
             task_id = str(uuid.uuid4())
-            concurrency = max(1, min(GLOBAL_TASK_POOL.max_workers, int(payload.get("concurrency") or 1)))
+            concurrency = get_runtime_settings()["batchConcurrency"]
             create_task_record(
                 task_id,
                 task_type="batch",
                 client_id=str(payload.get("clientId") or ""),
                 group_concurrency=concurrency,
+                context={
+                    "taskName": str(payload.get("taskName") or "").strip()
+                    or f"批量评审 · {time.strftime('%Y-%m-%d %H:%M')}",
+                },
             )
             with TASK_LOCK:
                 TASKS[task_id]["result"] = {"items": []}
@@ -3220,13 +3783,20 @@ class Handler(BaseHTTPRequestHandler):
             if not payload.get("requirement") or not payload.get("apiNames"):
                 json_response(self, 400, {"error": "Phase 1 请填写需求内容并至少选择一个接口文档。"})
                 return
+            # Standalone single-factor runs always retain the exact Claude stdin/stdout
+            # in the in-memory task log so the execution-detail view is auditable.
+            payload["debugClaude"] = True
             task_id = str(uuid.uuid4())
             create_task_record(
                 task_id,
-                debug_claude=bool(payload.get("debugClaude")),
+                debug_claude=True,
                 task_type="phase1",
                 client_id=str(payload.get("clientId") or ""),
                 group_concurrency=1,
+                context={
+                    "factorName": str(payload.get("factorName") or "").strip(),
+                    "requirement": str(payload.get("requirement") or ""),
+                },
             )
             GLOBAL_TASK_POOL.submit(task_id, task_id, run_claude_phase1, payload, task_id, group_limit=1)
             with TASK_LOCK:
@@ -3245,13 +3815,19 @@ class Handler(BaseHTTPRequestHandler):
             if not payload.get("draft") or not payload.get("standardFileId") or not payload.get("requirement"):
                 json_response(self, 400, {"error": "Phase 2 请提供待评审加工逻辑、原始需求和标准文件 ID。"})
                 return
+            payload["debugClaude"] = True
             task_id = str(uuid.uuid4())
             create_task_record(
                 task_id,
-                debug_claude=bool(payload.get("debugClaude")),
+                debug_claude=True,
                 task_type="phase2",
                 client_id=str(payload.get("clientId") or ""),
                 group_concurrency=1,
+                context={
+                    "factorName": str(payload.get("factorName") or "").strip(),
+                    "requirement": str(payload.get("requirement") or ""),
+                    "standardFileId": str(payload.get("standardFileId") or ""),
+                },
             )
             GLOBAL_TASK_POOL.submit(task_id, task_id, run_claude_phase2, payload, task_id, group_limit=1)
             with TASK_LOCK:
@@ -3267,6 +3843,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/runtime-settings":
+            try:
+                success_response(self, update_runtime_settings(self.read_json_body()))
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+            except (TypeError, ValueError) as exc:
+                error_response(self, 400, str(exc))
+            return
         if parsed.path.startswith("/api/validation-cases/"):
             case_id = unquote(parsed.path.split("/")[-1])
             try:

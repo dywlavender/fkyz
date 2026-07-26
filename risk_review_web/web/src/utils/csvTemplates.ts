@@ -1,4 +1,5 @@
 const sharedImportHeaders = [
+  '案例名称',
   '因子名',
   '需求内容',
   '接口文档',
@@ -12,6 +13,7 @@ const sharedImportHeaders = [
 ]
 
 const sharedImportExample = [
+  '近12个月医药采购金额 正向案例',
   '近12个月医药采购金额',
   '选取窗口内的采购金额并计算总和。',
   '授信申请接口、ES_医药企业药品采购信息查询接口',

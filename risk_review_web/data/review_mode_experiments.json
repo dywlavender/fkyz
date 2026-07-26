@@ -1,5 +1,494 @@
 [
   {
+    "experimentId": "experiment-afee4eb8-797234d9",
+    "taskId": "afee4eb8-0ce8-456f-a87b-d5d56fe2f5c8",
+    "status": "done",
+    "caseIds": [
+      "case-01",
+      "case-02",
+      "case-03",
+      "case-04",
+      "case-05",
+      "case-06"
+    ],
+    "caseCount": 6,
+    "repetitions": 1,
+    "createdAt": "2026-07-24T17:13:48.789737+00:00",
+    "startedAt": "2026-07-24T17:13:48.794488+00:00",
+    "finishedAt": "2026-07-24T17:23:49.211153+00:00",
+    "items": [
+      {
+        "itemId": "case-01-r1",
+        "caseId": "case-01",
+        "caseName": "近12个月医药采购金额 01 正向",
+        "round": 1,
+        "expectedConclusion": "pass",
+        "issueBaselineConfigured": true,
+        "direct": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": false,
+          "issuesMatched": false,
+          "matched": false,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": false,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 0,
+            "actualIssueCount": 2
+          },
+          "issueStats": {
+            "fail": 2
+          },
+          "durationMs": 25405,
+          "reviewFile": "direct-review-case-01-2026-07-25-afee4eb8-452d846f.md"
+        },
+        "twoStage": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": false,
+          "issuesMatched": false,
+          "matched": false,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": false,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 0,
+            "actualIssueCount": 1
+          },
+          "issueStats": {
+            "fail": 1
+          },
+          "durationMs": 118365,
+          "standardFile": "standard-12-2026-07-25-afee4eb8-2c914606.md",
+          "standardMetadataFile": "standard-12-2026-07-25-afee4eb8-2c914606.metadata.json",
+          "reviewFile": "review-12-2026-07-25-afee4eb8-240d4112.md"
+        }
+      },
+      {
+        "itemId": "case-02-r1",
+        "caseId": "case-02",
+        "caseName": "近12个月医药采购金额 02 反向",
+        "round": 1,
+        "expectedConclusion": "fail",
+        "issueBaselineConfigured": true,
+        "direct": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": true,
+          "issuesMatched": true,
+          "matched": true,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": true,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 3,
+            "actualIssueCount": 2
+          },
+          "issueStats": {
+            "fail": 2
+          },
+          "durationMs": 30562,
+          "reviewFile": "direct-review-case-02-2026-07-25-afee4eb8-3f7d35c6.md"
+        },
+        "twoStage": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": true,
+          "issuesMatched": true,
+          "matched": true,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": true,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 3,
+            "actualIssueCount": 1
+          },
+          "issueStats": {
+            "fail": 1
+          },
+          "durationMs": 32203,
+          "standardFile": "standard-12-2026-07-25-afee4eb8-12a99b5c.md",
+          "standardMetadataFile": "standard-12-2026-07-25-afee4eb8-12a99b5c.metadata.json",
+          "reviewFile": "review-12-2026-07-25-afee4eb8-e0577c5c.md"
+        }
+      },
+      {
+        "itemId": "case-03-r1",
+        "caseId": "case-03",
+        "caseName": "投资人最近一次变更距今月份数 03 正向",
+        "round": 1,
+        "expectedConclusion": "pass",
+        "issueBaselineConfigured": true,
+        "direct": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": false,
+          "issuesMatched": false,
+          "matched": false,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": false,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 0,
+            "actualIssueCount": 2
+          },
+          "issueStats": {
+            "fail": 2
+          },
+          "durationMs": 13524,
+          "reviewFile": "direct-review-case-03-2026-07-25-afee4eb8-af797b96.md"
+        },
+        "twoStage": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": false,
+          "issuesMatched": false,
+          "matched": false,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": false,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 0,
+            "actualIssueCount": 3
+          },
+          "issueStats": {
+            "fail": 3
+          },
+          "durationMs": 164196,
+          "standardFile": "standard-factor-2026-07-25-afee4eb8-b205fac9.md",
+          "standardMetadataFile": "standard-factor-2026-07-25-afee4eb8-b205fac9.metadata.json",
+          "reviewFile": "review-factor-2026-07-25-afee4eb8-60b3dc89.md"
+        }
+      },
+      {
+        "itemId": "case-04-r1",
+        "caseId": "case-04",
+        "caseName": "投资人最近一次变更距今月份数 04 反向",
+        "round": 1,
+        "expectedConclusion": "fail",
+        "issueBaselineConfigured": true,
+        "direct": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": true,
+          "issuesMatched": true,
+          "matched": true,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": true,
+            "expectedIssuePatterns": [
+              "取第一条记录"
+            ],
+            "forbiddenIssuePatterns": [
+              "同时包含"
+            ],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 4,
+            "actualIssueCount": 3
+          },
+          "issueStats": {
+            "fail": 3
+          },
+          "durationMs": 35463,
+          "reviewFile": "direct-review-case-04-2026-07-25-afee4eb8-8448b772.md"
+        },
+        "twoStage": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": true,
+          "issuesMatched": true,
+          "matched": true,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": true,
+            "expectedIssuePatterns": [
+              "取第一条记录"
+            ],
+            "forbiddenIssuePatterns": [
+              "同时包含"
+            ],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 4,
+            "actualIssueCount": 4
+          },
+          "issueStats": {
+            "fail": 4
+          },
+          "durationMs": 70152,
+          "standardFile": "standard-factor-2026-07-25-afee4eb8-ded30998.md",
+          "standardMetadataFile": "standard-factor-2026-07-25-afee4eb8-ded30998.metadata.json",
+          "reviewFile": "review-factor-2026-07-25-afee4eb8-a5635f2c.md"
+        }
+      },
+      {
+        "itemId": "case-05-r1",
+        "caseId": "case-05",
+        "caseName": "提款金额检查 05 正向",
+        "round": 1,
+        "expectedConclusion": "pass",
+        "issueBaselineConfigured": true,
+        "direct": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": false,
+          "issuesMatched": false,
+          "matched": false,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": false,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 0,
+            "actualIssueCount": 2
+          },
+          "issueStats": {
+            "fail": 2
+          },
+          "durationMs": 20509,
+          "reviewFile": "direct-review-case-05-2026-07-25-afee4eb8-cfc911f6.md"
+        },
+        "twoStage": {
+          "status": "success",
+          "actualConclusion": "pass",
+          "conclusionMatched": true,
+          "issuesMatched": true,
+          "matched": true,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": true,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 0,
+            "actualIssueCount": 0
+          },
+          "issueStats": {
+            "fail": 0
+          },
+          "durationMs": 45786,
+          "standardFile": "standard-factor-2026-07-25-afee4eb8-a1202abe.md",
+          "standardMetadataFile": "standard-factor-2026-07-25-afee4eb8-a1202abe.metadata.json",
+          "reviewFile": "review-factor-2026-07-25-afee4eb8-e7043f15.md"
+        }
+      },
+      {
+        "itemId": "case-06-r1",
+        "caseId": "case-06",
+        "caseName": "提款金额检查 06 反向",
+        "round": 1,
+        "expectedConclusion": "fail",
+        "issueBaselineConfigured": true,
+        "direct": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": true,
+          "issuesMatched": true,
+          "matched": true,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": true,
+            "expectedIssuePatterns": [
+              "contractAvailableAmt"
+            ],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 2,
+            "actualIssueCount": 2
+          },
+          "issueStats": {
+            "fail": 2
+          },
+          "durationMs": 9022,
+          "reviewFile": "direct-review-case-06-2026-07-25-afee4eb8-25194532.md"
+        },
+        "twoStage": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": true,
+          "issuesMatched": true,
+          "matched": true,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": true,
+            "expectedIssuePatterns": [
+              "contractAvailableAmt"
+            ],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 2,
+            "actualIssueCount": 2
+          },
+          "issueStats": {
+            "fail": 2
+          },
+          "durationMs": 35200,
+          "standardFile": "standard-factor-2026-07-25-afee4eb8-ba8f3beb.md",
+          "standardMetadataFile": "standard-factor-2026-07-25-afee4eb8-ba8f3beb.metadata.json",
+          "reviewFile": "review-factor-2026-07-25-afee4eb8-b6214e5b.md"
+        }
+      }
+    ],
+    "summary": {
+      "total": 6,
+      "completed": 6,
+      "direct": {
+        "completed": 6,
+        "success": 6,
+        "errors": 0,
+        "conclusionMatched": 3,
+        "issueEvaluated": 6,
+        "issuesMatched": 3,
+        "fullyMatched": 3,
+        "conclusionAccuracy": 50.0,
+        "issueAccuracy": 50.0,
+        "fullAccuracy": 50.0,
+        "averageDurationMs": 22414
+      },
+      "twoStage": {
+        "completed": 6,
+        "success": 6,
+        "errors": 0,
+        "conclusionMatched": 4,
+        "issueEvaluated": 6,
+        "issuesMatched": 4,
+        "fullyMatched": 4,
+        "conclusionAccuracy": 66.7,
+        "issueAccuracy": 66.7,
+        "fullAccuracy": 66.7,
+        "averageDurationMs": 77650
+      },
+      "winner": "twoStage"
+    },
+    "error": null
+  },
+  {
+    "experimentId": "experiment-50b3ea27-d5253ac3",
+    "taskId": "50b3ea27-1713-44d7-aede-ab03d3aeeaa3",
+    "status": "done",
+    "caseIds": [
+      "case-01"
+    ],
+    "caseCount": 1,
+    "repetitions": 1,
+    "createdAt": "2026-07-24T16:10:24.325198+00:00",
+    "startedAt": "2026-07-24T16:10:24.335682+00:00",
+    "finishedAt": "2026-07-24T16:12:15.830847+00:00",
+    "items": [
+      {
+        "itemId": "case-01-r1",
+        "caseId": "case-01",
+        "caseName": "近12个月医药采购金额 01 正向",
+        "round": 1,
+        "expectedConclusion": "pass",
+        "issueBaselineConfigured": true,
+        "direct": {
+          "status": "success",
+          "actualConclusion": "fail",
+          "conclusionMatched": false,
+          "issuesMatched": false,
+          "matched": false,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": false,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 0,
+            "actualIssueCount": 1
+          },
+          "issueStats": {
+            "fail": 1
+          },
+          "durationMs": 35162,
+          "reviewFile": "direct-review-case-01-2026-07-25-50b3ea27-25d70034.md"
+        },
+        "twoStage": {
+          "status": "success",
+          "actualConclusion": "pass",
+          "conclusionMatched": true,
+          "issuesMatched": true,
+          "matched": true,
+          "issueEvaluation": {
+            "configured": true,
+            "matched": true,
+            "expectedIssuePatterns": [],
+            "forbiddenIssuePatterns": [],
+            "missingIssuePatterns": [],
+            "forbiddenIssueHits": [],
+            "maxIssueCount": 0,
+            "actualIssueCount": 0
+          },
+          "issueStats": {
+            "fail": 0
+          },
+          "durationMs": 76324,
+          "standardFile": "standard-12-2026-07-25-50b3ea27-7accd95c.md",
+          "standardMetadataFile": "standard-12-2026-07-25-50b3ea27-7accd95c.metadata.json",
+          "reviewFile": "review-12-2026-07-25-50b3ea27-00a5c122.md"
+        }
+      }
+    ],
+    "summary": {
+      "total": 1,
+      "completed": 1,
+      "direct": {
+        "completed": 1,
+        "success": 1,
+        "errors": 0,
+        "conclusionMatched": 0,
+        "issueEvaluated": 1,
+        "issuesMatched": 0,
+        "fullyMatched": 0,
+        "conclusionAccuracy": 0.0,
+        "issueAccuracy": 0.0,
+        "fullAccuracy": 0.0,
+        "averageDurationMs": 35162
+      },
+      "twoStage": {
+        "completed": 1,
+        "success": 1,
+        "errors": 0,
+        "conclusionMatched": 1,
+        "issueEvaluated": 1,
+        "issuesMatched": 1,
+        "fullyMatched": 1,
+        "conclusionAccuracy": 100.0,
+        "issueAccuracy": 100.0,
+        "fullAccuracy": 100.0,
+        "averageDurationMs": 76324
+      },
+      "winner": "twoStage"
+    },
+    "error": null
+  },
+  {
     "experimentId": "experiment-f59d26d6-546c69da",
     "taskId": "f59d26d6-8343-4ecd-b6b6-9004cc1377ca",
     "status": "done",

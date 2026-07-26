@@ -19,9 +19,9 @@
 
 加工输入字段只列实际参与加工的叶子字段。标准加工逻辑使用固定列：
 
-`步骤 | 逻辑类型 | 标准逻辑 | 形成方式 | 选择理由`
+`步骤 | 逻辑类型 | 标准逻辑`
 
-逻辑类型限定为 `field_mapping`、`time_filter`、`condition_filter`、`iteration`、`aggregation`、`derivation`、`branch`。
+逻辑类型限定为 `time_filter`、`condition_filter`、`iteration`、`aggregation`、`derivation`、`branch`。字段选择和业务概念映射统一在“因子加工输入字段”中表达，不作为加工步骤。
 
 ### Phase 2 输出
 

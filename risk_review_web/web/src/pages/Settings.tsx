@@ -1,12 +1,52 @@
-import { Card, Col, Descriptions, Empty, Row, Space, Statistic, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Col, Descriptions, Empty, Form, InputNumber, Row, Space, Statistic, Tag, Typography } from 'antd'
+import { useEffect, useState } from 'react'
 
-import type { SystemHealth } from '../types/review'
+import { fetchRuntimeSettings, updateRuntimeSettings } from '../api/reviewApi'
+import type { AppNotice, RuntimeSettings, SystemHealth } from '../types/review'
 
 interface SettingsProps {
   health?: SystemHealth | null
+  onNotice: (notice: AppNotice) => void
 }
 
-export function Settings({ health }: SettingsProps) {
+export function Settings({ health, onNotice }: SettingsProps) {
+  const [form] = Form.useForm<RuntimeSettings>()
+  const [settingsLoading, setSettingsLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const globalConcurrency = Form.useWatch('globalConcurrency', form) || 1
+
+  useEffect(() => {
+    let active = true
+    setSettingsLoading(true)
+    fetchRuntimeSettings()
+      .then((settings) => {
+        if (active) form.setFieldsValue(settings)
+      })
+      .catch((caught) => {
+        if (active) onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '加载运行设置失败' })
+      })
+      .finally(() => {
+        if (active) setSettingsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [form, onNotice])
+
+  async function handleSave() {
+    try {
+      const values = await form.validateFields()
+      setSaving(true)
+      const settings = await updateRuntimeSettings(values)
+      form.setFieldsValue(settings)
+      onNotice({ type: 'success', message: '并发设置已生效' })
+    } catch (caught) {
+      if (caught instanceof Error) onNotice({ type: 'error', message: caught.message })
+    } finally {
+      setSaving(false)
+    }
+  }
+
   if (!health) {
     return (
       <Space className="app-page" direction="vertical" size={12} style={{ width: '100%' }}>
@@ -26,7 +66,7 @@ export function Settings({ health }: SettingsProps) {
         <Space direction="vertical" size={2}>
           <Typography.Title level={5} style={{ margin: 0 }}>系统设置</Typography.Title>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            查看运行环境、Claude 调用状态、输出目录和基础文件检查结果。
+            统一配置任务并发，并查看运行环境、Claude 状态和基础文件检查结果。
           </Typography.Text>
         </Space>
       </Card>
@@ -37,6 +77,71 @@ export function Settings({ health }: SettingsProps) {
         <Col xs={12} md={6}><Card className="compact-card"><Statistic title="接口文档" value={health.api_docs?.count ?? 0} /></Card></Col>
         <Col xs={12} md={6}><Card className="compact-card"><Statistic title="文件检查" value={checks.filter(([, value]) => value).length} suffix={`/ ${checks.length}`} /></Card></Col>
       </Row>
+
+      <Card
+        className="compact-card"
+        title="并发设置"
+        extra={<Button type="primary" loading={saving} disabled={settingsLoading} onClick={() => void handleSave()}>保存设置</Button>}
+        loading={settingsLoading}
+      >
+        <Alert
+          showIcon
+          type="info"
+          message="所有并发数由此处统一管理"
+          description="设置保存后立即影响新提交的批量评审和新触发的定时任务；已经运行的任务不会被强制中断。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form form={form} layout="vertical">
+          <Row gutter={[16, 0]}>
+            <Col xs={24} md={8}>
+              <Form.Item
+                name="globalConcurrency"
+                label="全局并发上限"
+                extra="单后端进程内同时执行的任务总数上限。"
+                rules={[{ required: true, message: '请输入全局并发上限' }]}
+              >
+                <InputNumber min={1} max={32} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item
+                name="batchConcurrency"
+                label="批量评审并发上限"
+                extra="单个批量评审可同时占用的最大任务数。"
+                dependencies={['globalConcurrency']}
+                rules={[
+                  { required: true, message: '请输入批量评审并发上限' },
+                  ({ getFieldValue }) => ({
+                    validator: (_rule, value) => !value || value <= getFieldValue('globalConcurrency')
+                      ? Promise.resolve()
+                      : Promise.reject(new Error('不能超过全局并发上限')),
+                  }),
+                ]}
+              >
+                <InputNumber min={1} max={globalConcurrency} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item
+                name="scheduledConcurrency"
+                label="定时任务并发上限"
+                extra="单次定时运行可同时执行的因子数。"
+                dependencies={['globalConcurrency']}
+                rules={[
+                  { required: true, message: '请输入定时任务并发上限' },
+                  ({ getFieldValue }) => ({
+                    validator: (_rule, value) => !value || value <= getFieldValue('globalConcurrency')
+                      ? Promise.resolve()
+                      : Promise.reject(new Error('不能超过全局并发上限')),
+                  }),
+                ]}
+              >
+                <InputNumber min={1} max={globalConcurrency} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+      </Card>
 
       <Card className="compact-card" title="运行状态">
         <Descriptions bordered column={2} size="small">

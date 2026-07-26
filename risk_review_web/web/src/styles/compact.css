@@ -207,9 +207,8 @@ textarea.ant-input {
   height: 100vh;
   overflow: auto;
   padding: 14px 10px;
-  background:
-    linear-gradient(180deg, rgba(20, 32, 51, 1) 0%, rgba(15, 23, 42, 1) 100%) !important;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  background: #f2f3f5 !important;
+  border-right: 1px solid #d9dde3;
 }
 
 .app-shell-collapsed .app-sider {
@@ -229,9 +228,9 @@ textarea.ant-input {
   height: 34px;
   flex: 0 0 34px;
   place-items: center;
-  border: 1px solid rgba(220, 236, 248, 0.42);
+  border: 1px solid #d3d6dc;
   border-radius: 8px;
-  background: #e7e9ff;
+  background: #e1e3e8;
   color: #312e81;
   font-size: 12px;
   font-weight: 800;
@@ -255,26 +254,52 @@ textarea.ant-input {
 
 .brand-title.ant-typography {
   margin: 0 0 2px;
-  color: #f7fbff;
+  color: #20242c;
   line-height: 20px;
 }
 
 .brand-subtitle.ant-typography {
-  color: rgba(235, 244, 255, 0.58);
+  color: #707782;
   font-size: 11px;
 }
 
-.app-nav.ant-menu-dark {
+.app-nav.ant-menu-light {
   border: 0;
   background: transparent;
+  color: #4f5662;
 }
 
 .app-nav .ant-menu-item {
   margin-inline: 4px;
 }
 
+.app-nav .ant-menu-submenu-title {
+  margin-inline: 4px;
+}
+
+.app-nav .ant-menu-sub.ant-menu-inline {
+  margin-block: 4px;
+  padding-block: 4px;
+  border-radius: 8px;
+  background: #e7e9ed;
+}
+
+.app-nav .ant-menu-sub .ant-menu-item {
+  height: 36px;
+  margin-block: 2px;
+  font-size: 12px;
+}
+
 .app-nav .ant-menu-item-selected {
+  background: #d9dde4 !important;
+  color: #312e81;
   font-weight: 650;
+}
+
+.app-nav .ant-menu-item:hover,
+.app-nav .ant-menu-submenu-title:hover {
+  background: #e3e5e9 !important;
+  color: #20242c !important;
 }
 
 .app-shell-collapsed .app-nav .ant-menu-title-content,
@@ -285,10 +310,10 @@ textarea.ant-input {
 .sider-status {
   margin: 18px 4px 0;
   padding: 10px;
-  border: 1px solid rgba(220, 236, 248, 0.16);
+  border: 1px solid #d2d6dc;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.05);
-  color: rgba(235, 244, 255, 0.72);
+  background: #e7e9ed;
+  color: #535b67;
 }
 
 .sider-status-row {
@@ -300,17 +325,17 @@ textarea.ant-input {
 }
 
 .sider-status .ant-badge-status-text {
-  color: rgba(235, 244, 255, 0.82);
+  color: #535b67;
   font-size: 12px;
 }
 
 .sider-status-divider {
   height: 1px;
-  background: rgba(220, 236, 248, 0.12);
+  background: #cfd3da;
 }
 
 .sider-status-value {
-  color: #f7fbff;
+  color: #20242c;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -1427,7 +1452,7 @@ textarea.ant-input {
     justify-content: flex-start;
   }
 
-  .app-nav.ant-menu-dark {
+  .app-nav.ant-menu-light {
     display: flex;
     min-width: 0;
     overflow-x: auto;
@@ -1598,7 +1623,7 @@ textarea.ant-input {
     grid-template-columns: 1fr;
   }
 
-  .app-nav.ant-menu-dark {
+  .app-nav.ant-menu-light {
     width: 100%;
   }
 
@@ -1662,4 +1687,181 @@ textarea.ant-input {
     align-items: flex-start;
     flex-direction: column;
   }
+}
+
+/* 2026 desktop review workspace */
+html,
+body,
+#root {
+  min-width: 1180px;
+  min-height: 100%;
+}
+
+body {
+  background: #f5f6f8;
+  color: #20222a;
+}
+
+.work-surface,
+.batch-import-surface,
+.batch-work-surface,
+.single-input-surface,
+.single-result-surface,
+.document-surface {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.surface-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.surface-heading h3,
+.surface-heading h4 {
+  margin: 0;
+}
+
+.single-review-split {
+  height: auto;
+  min-height: 0;
+}
+
+.single-input-pane,
+.single-result-pane {
+  min-width: 0;
+  min-height: 0;
+}
+
+.single-input-surface,
+.single-result-surface {
+  height: auto;
+  overflow: visible;
+  padding: 20px;
+}
+
+.single-primary-actions {
+  position: static;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px -20px -20px;
+  padding: 14px 20px;
+  background: rgba(255, 255, 255, 0.97);
+  border-top: 1px solid #e7e8ec;
+}
+
+.single-primary-actions .ant-btn-primary {
+  min-width: 132px;
+}
+
+.single-inline-error {
+  margin-bottom: 14px;
+}
+
+.single-result-content {
+  min-height: 360px;
+}
+
+.single-result-content .markdown-body {
+  max-width: none;
+}
+
+.record-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.record-toolbar .ant-input-search {
+  width: 260px;
+}
+
+.task-center-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.task-center-list > div {
+  padding: 12px;
+  background: #fafafa;
+  border: 1px solid #ebecef;
+  border-radius: 7px;
+}
+
+.batch-import-surface,
+.batch-work-surface,
+.document-surface {
+  padding: 20px;
+}
+
+.batch-import-surface {
+  margin-bottom: 14px;
+}
+
+.batch-command-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #ebecef;
+}
+
+.batch-inline-progress {
+  margin: 0 0 14px;
+}
+
+.batch-status-table .ant-table {
+  border: 1px solid #ebecef;
+  border-radius: 7px;
+}
+
+.quality-validation-page,
+.development-spec-page {
+  min-width: 0;
+}
+
+.spec-meta-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: #f7f7fa;
+  border: 1px solid #e8e8ee;
+  border-radius: 6px;
+}
+
+.document-surface {
+  min-height: calc(100vh - 230px);
+}
+
+.ant-btn-primary {
+  box-shadow: none;
+}
+
+.ant-card,
+.ant-modal-content,
+.ant-drawer-content {
+  box-shadow: none;
+}
+
+.ant-table-wrapper .ant-table-thead > tr > th {
+  color: #565b66;
+  background: #f7f7f9;
+  font-weight: 600;
+}
+
+.ant-layout-content {
+  min-width: 0;
 }

@@ -21,6 +21,7 @@ from zipfile import ZipFile
 from risk_review_web.api_docs import get_api_doc, list_api_docs
 from risk_review_web.error_classification import classify_task_error
 from risk_review_web.paths import OUTPUTS_DIR, SCHEDULED_RUNS_PATH, SCHEDULED_TASKS_PATH
+from risk_review_web.runtime_settings import get_runtime_settings
 from risk_review_web.task_pool import GLOBAL_TASK_POOL
 from risk_review_web.utils import atomic_write_text, read_text
 
@@ -1005,7 +1006,7 @@ class ScheduledTaskService:
                 run_id,
                 index,
                 task_standard_file=task_standard_file,
-                group_limit=max(1, min(GLOBAL_TASK_POOL.max_workers, int(task.get("concurrency") or 1))),
+                group_limit=get_runtime_settings()["scheduledConcurrency"],
             )
             futures.append(future)
 
@@ -1192,10 +1193,6 @@ class ScheduledTaskService:
         failure_policy = str(payload.get("failurePolicy") or "").strip() or "continue"
         if failure_policy not in VALID_FAILURE_POLICIES:
             raise ScheduledTaskError("failurePolicy 无效。")
-        concurrency = int(payload.get("concurrency") or 1)
-        if concurrency < 1:
-            raise ScheduledTaskError("concurrency 不能小于 1。")
-        concurrency = min(concurrency, GLOBAL_TASK_POOL.max_workers)
         items = payload.get("items") or []
         if not isinstance(items, list) or not items:
             raise ScheduledTaskError("items 不能为空。")
@@ -1229,7 +1226,6 @@ class ScheduledTaskService:
             "monthDay": str(payload.get("monthDay") or "").strip(),
             "mode": mode,
             "runtimeMode": runtime_mode,
-            "concurrency": concurrency,
             "failurePolicy": failure_policy,
             "standardFile": standard_file,
             "items": normalized_items,

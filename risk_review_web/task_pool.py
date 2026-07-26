@@ -42,13 +42,26 @@ class GlobalTaskPool:
         self._sequence = 0
         self._workers = []
         for index in range(self.max_workers):
-            worker = threading.Thread(
-                target=self._worker_loop,
-                name=f"risk-review-global-{index + 1}",
-                daemon=True,
-            )
-            worker.start()
-            self._workers.append(worker)
+            self._start_worker(index)
+
+    def _start_worker(self, index: int) -> None:
+        worker = threading.Thread(
+            target=self._worker_loop,
+            name=f"risk-review-global-{index + 1}",
+            daemon=True,
+        )
+        worker.start()
+        self._workers.append(worker)
+
+    def resize(self, max_workers: int) -> int:
+        """Apply a new live concurrency cap without interrupting active work."""
+        configured = max(1, min(32, int(max_workers)))
+        with self._condition:
+            self.max_workers = configured
+            while len(self._workers) < configured:
+                self._start_worker(len(self._workers))
+            self._condition.notify_all()
+        return self.max_workers
 
     def submit(
         self,
@@ -134,7 +147,7 @@ class GlobalTaskPool:
             return {
                 "maxWorkers": self.max_workers,
                 "activeWorkers": len(self._active_by_id),
-                "idleWorkers": self.max_workers - len(self._active_by_id),
+                "idleWorkers": max(0, self.max_workers - len(self._active_by_id)),
                 "queuedJobs": len(queued),
                 "activeGroups": len([value for value in self._active_by_group.values() if value > 0]),
                 "queue": [
@@ -149,6 +162,8 @@ class GlobalTaskPool:
             }
 
     def _take_next_locked(self) -> _WorkItem | None:
+        if len(self._active_by_id) >= self.max_workers:
+            return None
         group_count = len(self._group_order)
         for _ in range(group_count):
             group_id = self._group_order.popleft()

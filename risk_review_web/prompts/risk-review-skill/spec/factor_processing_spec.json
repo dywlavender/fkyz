@@ -1,6 +1,6 @@
 {
   "schema_version": "factor_processing_spec_v1",
-  "spec_version": "1.0.0",
+  "spec_version": "1.1.0",
   "title": "因子加工开发规范",
   "principles": [
     {
@@ -22,21 +22,17 @@
       "name": "加工结果唯一可还原",
       "category": "semantic",
       "trigger": "始终适用",
-      "phase1_obligation": "标准加工逻辑必须唯一、确定、可执行；存在会产生不同结果的合理解释时选择最可能口径并标记 selected_interpretation。",
+      "phase1_obligation": "标准加工逻辑必须唯一、确定、可执行；存在会产生不同结果的合理解释时选择最可能口径作为标准逻辑，不输出多套候选方案。",
       "phase2_comparison": "只检查会改变字段取值、筛选范围、计算结果或异常行为的差异；实现方式和等价措辞不构成问题。",
       "violation_conditions": [
         "加工逻辑存在多种会产生不同结果的实现",
         "使用模糊概括替代确定条件",
         "将无业务效果的实现差异判为问题"
       ],
-      "evidence_policy": "引用标准加工逻辑和待评审原文；存在选定解释时明确其为标准选定口径"
+      "evidence_policy": "引用标准加工逻辑和待评审原文"
     }
   ],
   "logic_types": {
-    "field_mapping": {
-      "label": "字段映射",
-      "rule_ids": ["FIELD-001", "FIELD-002"]
-    },
     "time_filter": {
       "label": "时间筛选",
       "rule_ids": ["TIME-001", "TIME-002", "TIME-003", "TIME-004", "FILTER-001", "FILTER-002"]
@@ -68,11 +64,12 @@
       "name": "加工字段真实且必要",
       "category": "field",
       "trigger": "加工逻辑读取接口字段",
-      "phase1_obligation": "只列实际参与取值、转换、过滤、计算、聚合、关联或分支的接口叶子字段，并使用完整路径；纯数组、列表和对象容器不单列。",
+      "phase1_obligation": "只列实际参与取值、转换、过滤、计算、聚合、关联或分支的接口叶子字段。完整路径必须由接口名称和接口内字段层级组成，固定写为“接口名称.接口内字段路径”；不得只写字段简称或接口内相对路径。纯数组、列表和对象容器不单列。",
       "phase2_comparison": "待评审逻辑可使用唯一可识别的字段简称；字段实际指向与标准不同或简称存在同名歧义时才判定不一致。",
       "violation_conditions": [
         "使用接口文档中不存在的字段",
         "遗漏实际参与加工的叶子字段",
+        "Phase 1 标准只写字段简称或接口内相对路径，未从接口名称开始",
         "使用了与标准不同的字段",
         "字段简称无法唯一定位"
       ],
@@ -83,7 +80,7 @@
       "name": "业务字段映射明确",
       "category": "field",
       "trigger": "需求业务名称与实际接口字段名称不同",
-      "phase1_obligation": "使用实际可读取的接口叶子字段，并在 field_mapping 步骤中明确业务概念与接口字段的映射。",
+      "phase1_obligation": "使用实际可读取的接口叶子字段；需求业务名称与接口字段名称不同时，在“因子加工输入字段”的“加工用途”中说明对应关系，不得将字段映射输出为独立加工步骤。",
       "phase2_comparison": "待评审逻辑使用标准字段或明确的等价映射时视为满足；未经说明使用不同字段时判定不一致。",
       "violation_conditions": [
         "业务概念映射到不同接口字段",

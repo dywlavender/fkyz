@@ -1,20 +1,20 @@
-import { FileSearchOutlined, HistoryOutlined } from '@ant-design/icons'
-import { App as AntdApp, Button, ConfigProvider, FloatButton, Space, Typography, message } from 'antd'
+import { App as AntdApp, ConfigProvider, FloatButton, Typography, message } from 'antd'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import { AppLayout, PageActivity, type PageKey } from './components/AppLayout'
+import { TaskCenterDrawer } from './components/TaskCenterDrawer'
 import { ApiDocs } from './pages/ApiDocs'
 import { BatchReview } from './pages/BatchReview'
 import { History } from './pages/History'
 import { ScheduledTasks } from './pages/ScheduledTasks'
 import { Settings } from './pages/Settings'
 import { SingleReview } from './pages/SingleReview'
-import { ValidationSet } from './pages/ValidationSet'
+import { QualityValidation } from './pages/QualityValidation'
 import { ReviewModeExperimentPage } from './pages/ReviewModeExperiment'
-import { Workbench } from './pages/Workbench'
 import { LegacyWorkbench } from './pages/LegacyWorkbench'
-import { fetchApiDocs, fetchExamples, fetchGlobalPoolStatus, fetchHealth, fetchReviewHistory } from './api/reviewApi'
-import type { ApiDocItem, AppNotice, ExampleItem, GlobalPoolStatus, ReviewHistoryRecord, SystemHealth, ValidationCase } from './types/review'
+import { DevelopmentSpec } from './pages/DevelopmentSpec'
+import { cancelTask, fetchApiDocs, fetchExamples, fetchGlobalPoolStatus, fetchHealth, fetchTasks } from './api/reviewApi'
+import type { ApiDocItem, AppNotice, ExampleItem, GlobalPoolStatus, ReviewHistoryRecord, SystemHealth, TaskRecord } from './types/review'
 import { ErrorState } from './components/ErrorState'
 import { appTheme } from './styles/theme'
 
@@ -34,46 +34,78 @@ function KeptPage({ active, children }: { active: boolean; children: ReactNode }
   )
 }
 
+const PAGE_PATHS: Record<PageKey, string> = {
+  'single-review': '/review/single',
+  'batch-review': '/review/batch',
+  'scheduled-tasks': '/review/scheduled',
+  'validation-set': '/quality/runs',
+  'validation-cases': '/quality/cases',
+  'review-mode-experiment': '/quality/experiment',
+  history: '/records',
+  'api-docs': '/system/apis',
+  'development-spec': '/system/spec',
+  settings: '/system/settings',
+  legacy: '/system/legacy',
+}
+
+function pageFromLocation(): PageKey {
+  const path = window.location.pathname.replace(/\/+$/, '') || '/'
+  const exact = (Object.entries(PAGE_PATHS) as Array<[PageKey, string]>).find(([, value]) => value === path)
+  if (exact) return exact[0]
+  if (path.startsWith('/review/batch')) return 'batch-review'
+  if (path.startsWith('/review/scheduled')) return 'scheduled-tasks'
+  if (path.startsWith('/quality/experiment')) return 'review-mode-experiment'
+  if (path.startsWith('/quality/cases')) return 'validation-cases'
+  if (path.startsWith('/quality/')) return 'validation-set'
+  if (path.startsWith('/records')) return 'history'
+  if (path.startsWith('/system/settings')) return 'settings'
+  if (path.startsWith('/system/spec')) return 'development-spec'
+  if (path.startsWith('/system/legacy')) return 'legacy'
+  if (path.startsWith('/system/')) return 'api-docs'
+  return 'single-review'
+}
+
 export default function App() {
-  const [page, setPage] = useState<PageKey>('workbench')
+  const [page, setPage] = useState<PageKey>(() => pageFromLocation())
   const [visitedPages, setVisitedPages] = useState<Set<PageKey>>(
-    () => new Set<PageKey>(['workbench', 'single-review'])
+    () => new Set<PageKey>([pageFromLocation()])
   )
   const [apiDocs, setApiDocs] = useState<ApiDocItem[]>([])
   const [examples, setExamples] = useState<ExampleItem[]>([])
-  const [history, setHistory] = useState<ReviewHistoryRecord[]>([])
   const [health, setHealth] = useState<SystemHealth | null>(null)
   const [pool, setPool] = useState<GlobalPoolStatus | null>(null)
+  const [tasks, setTasks] = useState<TaskRecord[]>([])
+  const [taskCenterOpen, setTaskCenterOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
   const [focusedHistoryRecordId, setFocusedHistoryRecordId] = useState<string>()
-  const [singlePrefill, setSinglePrefill] = useState<ValidationCase | null>(null)
   const [standardPrefill, setStandardPrefill] = useState<ReviewHistoryRecord | null>(null)
   const [messageApi, contextHolder] = message.useMessage()
 
   const mockMode = useMemo(() => detectMockMode(health), [health])
   const claudeReady = useMemo(() => detectClaudeReady(health), [health])
-  const headerActions = page === 'workbench' ? (
-    <Space className="app-header-action-space" size={8} wrap>
-      <Button type="primary" icon={<FileSearchOutlined />} onClick={() => setPage('single-review')}>新建单因子评审</Button>
-      <Button icon={<HistoryOutlined />} onClick={() => setPage('history')}>查看评审历史</Button>
-    </Space>
-  ) : null
+  const activeTaskCount = tasks.filter((task) => ['queued', 'running', 'cancelling'].includes(String(task.status || ''))).length
+
+  const navigate = useCallback((target: PageKey, replace = false) => {
+    const path = PAGE_PATHS[target]
+    if (window.location.pathname !== path) {
+      window.history[replace ? 'replaceState' : 'pushState']({}, '', path)
+    }
+    setPage(target)
+  }, [])
 
   useEffect(() => {
     async function bootstrap() {
       setLoading(true)
       setError(undefined)
       try {
-        const [docs, outputList, systemHealth, exampleList] = await Promise.all([
+        const [docs, systemHealth, exampleList] = await Promise.all([
           fetchApiDocs(),
-          fetchReviewHistory(),
           fetchHealth(),
           fetchExamples(),
         ])
 
         setApiDocs(docs)
-        setHistory(outputList)
         setHealth(systemHealth)
         setExamples(exampleList)
       } catch (caught) {
@@ -89,21 +121,39 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false
-    async function refreshPool() {
+    async function refreshRuntime() {
       try {
-        const next = await fetchGlobalPoolStatus()
-        if (!disposed) setPool(next)
+        const [nextPool, nextTasks] = await Promise.all([
+          fetchGlobalPoolStatus(),
+          fetchTasks(),
+        ])
+        if (!disposed) {
+          setPool(nextPool)
+          setTasks(nextTasks)
+        }
       } catch {
-        if (!disposed) setPool(null)
+        if (!disposed) {
+          setPool(null)
+          setTasks([])
+        }
       }
     }
-    void refreshPool()
-    const timer = window.setInterval(refreshPool, 2000)
+    void refreshRuntime()
+    const timer = window.setInterval(refreshRuntime, 2000)
     return () => {
       disposed = true
       window.clearInterval(timer)
     }
   }, [])
+
+  useEffect(() => {
+    const handlePopState = () => setPage(pageFromLocation())
+    window.addEventListener('popstate', handlePopState)
+    if (window.location.pathname === '/' || !Object.values(PAGE_PATHS).includes(window.location.pathname)) {
+      navigate(pageFromLocation(), true)
+    }
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [navigate])
 
   useEffect(() => {
     setVisitedPages((current) => {
@@ -133,31 +183,12 @@ export default function App() {
     const keep = (target: PageKey) => page === target || visitedPages.has(target)
     return (
       <>
-        {keep('workbench') ? (
-          <KeptPage active={page === 'workbench'}>
-          <Workbench
-            history={history}
-            onOpenHistory={(record) => {
-              setFocusedHistoryRecordId(record.recordId)
-              setPage('history')
-            }}
-            onNavigateSingle={() => setPage('single-review')}
-            onNavigateBatch={() => setPage('batch-review')}
-            onNavigateScheduled={() => setPage('scheduled-tasks')}
-            onNavigateValidation={() => setPage('validation-set')}
-            onNavigateHistory={() => setPage('history')}
-          />
-          </KeptPage>
-        ) : null}
-
         {keep('single-review') ? (
           <KeptPage active={page === 'single-review'}>
             <SingleReview
               apiDocs={apiDocs}
               examples={examples}
               onNotice={handleNotice}
-              prefillCase={singlePrefill}
-              onPrefillConsumed={() => setSinglePrefill(null)}
               prefillStandardRecord={standardPrefill}
               onPrefillStandardConsumed={() => setStandardPrefill(null)}
             />
@@ -176,15 +207,12 @@ export default function App() {
           </KeptPage>
         ) : null}
 
-        {keep('validation-set') ? (
-          <KeptPage active={page === 'validation-set'}>
-          <ValidationSet
+        {keep('validation-set') || keep('validation-cases') ? (
+          <KeptPage active={page === 'validation-set' || page === 'validation-cases'}>
+          <QualityValidation
+            view={page === 'validation-cases' ? 'cases' : 'runs'}
             examples={examples}
             onNotice={handleNotice}
-            onCopyToSingle={(validationCase) => {
-              setSinglePrefill(validationCase)
-              setPage('single-review')
-            }}
           />
           </KeptPage>
         ) : null}
@@ -198,18 +226,13 @@ export default function App() {
         {keep('history') ? (
           <KeptPage active={page === 'history'}>
           <History
-            items={history}
             selectedRecordId={focusedHistoryRecordId}
             onSelectedRecordConsumed={() => setFocusedHistoryRecordId(undefined)}
             onReuse={(record) => {
               setStandardPrefill(record)
-              setPage('single-review')
+              navigate('single-review')
             }}
             onNotice={handleNotice}
-            onDeleted={(recordId) => {
-              setHistory((current) => current.filter((item) => item.recordId !== recordId))
-              if (focusedHistoryRecordId === recordId) setFocusedHistoryRecordId(undefined)
-            }}
           />
           </KeptPage>
         ) : null}
@@ -222,7 +245,13 @@ export default function App() {
 
         {keep('settings') ? (
           <KeptPage active={page === 'settings'}>
-            <Settings health={health} />
+            <Settings health={health} onNotice={handleNotice} />
+          </KeptPage>
+        ) : null}
+
+        {keep('development-spec') ? (
+          <KeptPage active={page === 'development-spec'}>
+            <DevelopmentSpec onNotice={handleNotice} />
           </KeptPage>
         ) : null}
 
@@ -241,14 +270,32 @@ export default function App() {
         {contextHolder}
         <AppLayout
           page={page}
-          onNavigate={setPage}
+          onNavigate={navigate}
           mockMode={mockMode}
           claudeReady={claudeReady}
           pool={pool}
-          headerActions={headerActions}
+          activeTaskCount={activeTaskCount}
+          onOpenTaskCenter={() => setTaskCenterOpen(true)}
         >
           {renderPage()}
         </AppLayout>
+        <TaskCenterDrawer
+          open={taskCenterOpen}
+          tasks={tasks}
+          onClose={() => setTaskCenterOpen(false)}
+          onCancel={(taskId) => {
+            void cancelTask(taskId)
+              .then(() => handleNotice({ type: 'warning', message: '已请求终止任务' }))
+              .catch((caught) => handleNotice({ type: 'error', message: caught instanceof Error ? caught.message : '终止任务失败' }))
+          }}
+          onOpenTask={(task) => {
+            setTaskCenterOpen(false)
+            if (task.taskType === 'batch') navigate('batch-review')
+            else if (task.taskType === 'regression') navigate('validation-set')
+            else if (task.taskType === 'review-mode-experiment') navigate('review-mode-experiment')
+            else navigate('history')
+          }}
+        />
         <FloatButton.BackTop />
       </AntdApp>
     </ConfigProvider>

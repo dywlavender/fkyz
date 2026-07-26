@@ -1,4 +1,4 @@
-import { CopyOutlined, DeleteOutlined, EditOutlined, EyeOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, StopOutlined, UploadOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, EyeOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, StopOutlined, UploadOutlined } from '@ant-design/icons'
 import {
   Alert,
   Button,
@@ -41,7 +41,7 @@ import {
   AppError,
   runRegression,
 } from '../api/reviewApi'
-import { HeaderActions, usePageActive } from '../components/AppLayout'
+import { HeaderActions, usePageActive, type PageKey } from '../components/AppLayout'
 import { MarkdownViewer } from '../components/MarkdownViewer'
 import type {
   AppNotice,
@@ -56,9 +56,9 @@ import type {
 } from '../types/review'
 
 interface ValidationSetProps {
+  headerPage?: PageKey
   examples: ExampleItem[]
   onNotice: (notice: AppNotice) => void
-  onCopyToSingle: (validationCase: ValidationCase) => void
 }
 
 type CaseFormValues = CreateValidationCaseRequest & {
@@ -132,15 +132,6 @@ function taskStatusColor(value?: string) {
   return 'default'
 }
 
-function regressionItemStatusColor(value?: string) {
-  const status = String(value || '').toLowerCase()
-  if (status === 'pass') return 'success'
-  if (status === 'fail' || status === 'error') return 'error'
-  if (status === 'running') return 'processing'
-  if (status === 'skip') return 'default'
-  return 'default'
-}
-
 function normalizeConclusion(value?: string) {
   const source = String(value || 'unreviewable').trim()
   const candidates: string[] = []
@@ -210,7 +201,7 @@ function matchTag(run?: ValidationRun) {
   return <Tag>未执行</Tag>
 }
 
-export function ValidationSet({ examples, onNotice, onCopyToSingle }: ValidationSetProps) {
+export function ValidationSet({ headerPage = 'validation-set', examples, onNotice }: ValidationSetProps) {
   const pageActive = usePageActive()
   const [form] = Form.useForm<CaseFormValues>()
   const [cases, setCases] = useState<ValidationCase[]>([])
@@ -238,6 +229,8 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
   const [query, setQuery] = useState('')
   const [conclusionFilter, setConclusionFilter] = useState(ALL_VALUE)
   const [matchFilter, setMatchFilter] = useState(ALL_VALUE)
+  const [casePage, setCasePage] = useState(1)
+  const [casePageSize, setCasePageSize] = useState(10)
 
   const activeRegressionFileId = activeRegressionDocument === 'review'
     ? activeRegressionItem?.reviewFileId
@@ -450,6 +443,15 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
       return true
     })
   }, [cases, conclusionFilter, latestRunByCase, matchFilter, query])
+
+  useEffect(() => {
+    setCasePage(1)
+  }, [query, conclusionFilter, matchFilter])
+
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(filteredCases.length / casePageSize))
+    if (casePage > maxPage) setCasePage(maxPage)
+  }, [casePage, casePageSize, filteredCases.length])
 
   function openCreator() {
     setEditingCase(null)
@@ -702,12 +704,11 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
     },
     {
       title: '操作',
-      width: 380,
+      width: 280,
       render: (_value, record) => {
         const latestRun = latestRunByCase.get(record.caseId)
         return (
           <Space wrap onClick={(event) => event.stopPropagation()}>
-            <Button type="link" icon={<CopyOutlined />} onClick={() => onCopyToSingle(record)}>复制到单因子</Button>
             <Button
               type="link"
               icon={<PlayCircleOutlined />}
@@ -730,7 +731,7 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
 
   return (
     <Space className="app-page" direction="vertical" size={12} style={{ width: '100%' }}>
-      <HeaderActions page="validation-set">
+      <HeaderActions page={headerPage}>
         <Space className="app-header-action-space" size={8} wrap>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreator}>新增案例</Button>
           <Tooltip title="支持 CSV / XLSX；可直接提供待评审内容，或分别提供因子加工输入字段、加工逻辑和默认值">
@@ -813,12 +814,6 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
                 columns={[
                   { title: '案例', dataIndex: 'title', ellipsis: true, render: (value?: string, record?: RegressionTaskItem) => value || record?.id || '-' },
                   {
-                    title: '状态',
-                    dataIndex: 'status',
-                    width: 100,
-                    render: (value?: string) => <Tag color={regressionItemStatusColor(value)}>{value || '等待中'}</Tag>,
-                  },
-                  {
                     title: '实际结论',
                     dataIndex: 'verdict',
                     width: 110,
@@ -826,11 +821,14 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
                   },
                   {
                     title: '期望匹配',
-                    width: 110,
+                    width: 130,
                     render: (_value, record) => {
-                      if (record.status === 'running') return <Tag color="processing">执行中</Tag>
-                      if (record.expectedOk) return <Tag color="success">匹配</Tag>
-                      if (['fail', 'error'].includes(String(record.status || ''))) return <Tag color="error">不匹配</Tag>
+                      const status = String(record.status || '').toLowerCase()
+                      if (status === 'running') return <Tag color="processing">执行中</Tag>
+                      if (status === 'error') return <Tag color="error">执行失败</Tag>
+                      if (status === 'skip') return <Tag>已取消</Tag>
+                      if (record.expectedOk || status === 'pass') return <Tag color="success">符合预期</Tag>
+                      if (status === 'fail') return <Tag color="error">不符合预期</Tag>
                       return <Tag>待执行</Tag>
                     },
                   },
@@ -923,7 +921,17 @@ export function ValidationSet({ examples, onNotice, onCopyToSingle }: Validation
             onRow={(record) => ({
               onClick: () => setDetailCase(record),
             })}
-            pagination={{ pageSize: 10, size: 'small', showSizeChanger: true }}
+            pagination={{
+              current: casePage,
+              pageSize: casePageSize,
+              size: 'small',
+              showSizeChanger: true,
+              showTotal: (total) => `共 ${total} 条`,
+              onChange: (nextPage, nextPageSize) => {
+                setCasePage(nextPageSize !== casePageSize ? 1 : nextPage)
+                setCasePageSize(nextPageSize)
+              },
+            }}
             scroll={{ x: 1460 }}
           />
         ) : cases.length ? (

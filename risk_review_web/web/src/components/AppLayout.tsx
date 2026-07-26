@@ -1,16 +1,10 @@
 import {
-  ApiOutlined,
-  AppstoreOutlined,
-  BarsOutlined,
   DatabaseOutlined,
-  ExperimentOutlined,
   FileSearchOutlined,
   HistoryOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  ScheduleOutlined,
   SettingOutlined,
-  ToolOutlined,
 } from '@ant-design/icons'
 import { Badge, Button, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
@@ -19,14 +13,15 @@ import type { CSSProperties, ReactNode } from 'react'
 import type { GlobalPoolStatus } from '../types/review'
 
 export type PageKey =
-  | 'workbench'
   | 'single-review'
   | 'batch-review'
   | 'scheduled-tasks'
   | 'validation-set'
+  | 'validation-cases'
   | 'review-mode-experiment'
   | 'history'
   | 'api-docs'
+  | 'development-spec'
   | 'settings'
   | 'legacy'
 
@@ -37,54 +32,71 @@ interface AppLayoutProps {
   claudeReady?: boolean
   headerActions?: ReactNode
   pool?: GlobalPoolStatus | null
+  activeTaskCount?: number
+  onOpenTaskCenter?: () => void
   children: ReactNode
 }
 
-const navItems: Array<{ key: PageKey; icon: ReactNode; label: string }> = [
-  { key: 'workbench', icon: <AppstoreOutlined />, label: '工作台' },
-  { key: 'single-review', icon: <FileSearchOutlined />, label: '单因子评审' },
-  { key: 'batch-review', icon: <BarsOutlined />, label: '批量评审' },
-  { key: 'scheduled-tasks', icon: <ScheduleOutlined />, label: '定时任务' },
-  { key: 'validation-set', icon: <DatabaseOutlined />, label: '验证集' },
-  { key: 'review-mode-experiment', icon: <ExperimentOutlined />, label: '模式对比实验' },
-  { key: 'history', icon: <HistoryOutlined />, label: '评审历史' },
-  { key: 'api-docs', icon: <ApiOutlined />, label: '接口文档库' },
-  { key: 'settings', icon: <SettingOutlined />, label: '系统设置' },
-  { key: 'legacy', icon: <ToolOutlined />, label: '原有功能台' },
-]
-
 const items: MenuProps['items'] = [
   {
-    key: 'group-execute',
-    label: '评审执行',
-    type: 'group',
-    children: navItems.slice(0, 4),
+    key: 'review-root',
+    icon: <FileSearchOutlined />,
+    label: '评审中心',
+    children: [
+      { key: 'single-review', label: '单因子评审' },
+      { key: 'batch-review', label: '批量评审' },
+      { key: 'scheduled-tasks', label: '定时任务' },
+    ],
   },
   {
-    key: 'group-assets',
-    label: '质量与资产',
-    type: 'group',
-    children: navItems.slice(4, 8),
+    key: 'quality-root',
+    icon: <DatabaseOutlined />,
+    label: '质量验证',
+    children: [
+      { key: 'validation-set', label: '执行批次' },
+      { key: 'validation-cases', label: '验证案例' },
+      { key: 'review-mode-experiment', label: '模式对比' },
+    ],
   },
+  { key: 'history', icon: <HistoryOutlined />, label: '评审记录' },
   {
-    key: 'group-system',
-    label: '系统',
-    type: 'group',
-    children: navItems.slice(8),
+    key: 'system-root',
+    icon: <SettingOutlined />,
+    label: '系统管理',
+    children: [
+      { key: 'api-docs', label: '接口文档' },
+      { key: 'development-spec', label: '开发规范' },
+      { key: 'settings', label: '运行设置' },
+      { key: 'legacy', label: '原有功能台' },
+    ],
   },
 ]
 
 const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
-  workbench: { title: '工作台', subtitle: '评审队列、风险资产与操作入口总览' },
-  'single-review': { title: '单因子评审', subtitle: 'Phase 1 标准生成与 Phase 2 加工逻辑评审' },
+  'single-review': { title: '评审中心', subtitle: '提交加工逻辑并获得确定的评审结论' },
   'batch-review': { title: '批量评审', subtitle: '批量导入、并发执行与结果回收' },
-  'scheduled-tasks': { title: '定时任务', subtitle: '周期任务、运行状态与执行记录' },
-  'validation-set': { title: '验证集', subtitle: '回归案例、期望结论与质量验证' },
-  'review-mode-experiment': { title: '评审模式对比实验', subtitle: '直接评审与两阶段评审的同案例基准对照' },
-  history: { title: '评审历史', subtitle: '标准加工规范、评审报告与产物下载' },
-  'api-docs': { title: '接口文档库', subtitle: '评审可引用的数据接口资产' },
-  settings: { title: '系统设置', subtitle: '运行模式、依赖状态与环境配置' },
-  legacy: { title: '原有功能台', subtitle: '保留尚未迁移或仍需使用的页面、按钮与调试入口' },
+  'scheduled-tasks': { title: '定时评审', subtitle: '维护周期性任务与最近运行状态' },
+  'validation-set': { title: '质量验证', subtitle: '验证批次、案例资产与模式对比' },
+  'validation-cases': { title: '验证案例', subtitle: '维护人工核验后的案例与期望结果' },
+  'review-mode-experiment': { title: '模式对比', subtitle: '比较不同评审模式的结论与问题差异' },
+  history: { title: '评审记录', subtitle: '统一追溯单因子、批量、定时和验证任务' },
+  'api-docs': { title: '系统管理', subtitle: '接口资产、开发规范与运行状态' },
+  'development-spec': { title: '因子加工开发规范', subtitle: '只读查看当前生产链路使用的通用开发规范' },
+  settings: { title: '运行设置', subtitle: '统一配置并发上限，查看运行模式与环境状态' },
+  legacy: { title: '原有功能台', subtitle: '保留尚未迁移的页面、按钮与调试入口' },
+}
+
+const PAGE_KEYS: PageKey[] = [
+  'single-review', 'batch-review', 'scheduled-tasks',
+  'validation-set', 'validation-cases', 'review-mode-experiment',
+  'history', 'api-docs', 'development-spec', 'settings', 'legacy',
+]
+
+function parentMenuKey(page: PageKey): string | undefined {
+  if (['single-review', 'batch-review', 'scheduled-tasks'].includes(page)) return 'review-root'
+  if (['validation-set', 'validation-cases', 'review-mode-experiment'].includes(page)) return 'quality-root'
+  if (['api-docs', 'development-spec', 'settings', 'legacy'].includes(page)) return 'system-root'
+  return undefined
 }
 
 type HeaderActionsRegistry = (page: PageKey, actions: ReactNode | null) => void
@@ -110,8 +122,22 @@ export function HeaderActions({ page, children }: { page: PageKey; children: Rea
 }
 
 export function AppLayout(props: AppLayoutProps) {
-  const { page, onNavigate, mockMode, claudeReady, pool, headerActions: propHeaderActions, children } = props
+  const {
+    page,
+    onNavigate,
+    mockMode,
+    claudeReady,
+    pool,
+    activeTaskCount = 0,
+    onOpenTaskCenter,
+    headerActions: propHeaderActions,
+    children,
+  } = props
   const [collapsed, setCollapsed] = useState(false)
+  const [openKeys, setOpenKeys] = useState<string[]>(() => {
+    const parent = parentMenuKey(page)
+    return parent ? [parent] : []
+  })
   const [slotHeaderActions, setSlotHeaderActions] = useState<Partial<Record<PageKey, ReactNode>>>({})
   const meta = pageMeta[page]
   const headerActions = propHeaderActions ?? slotHeaderActions[page]
@@ -128,6 +154,12 @@ export function AppLayout(props: AppLayoutProps) {
       return next
     })
   }, [])
+
+  useEffect(() => {
+    const parent = parentMenuKey(page)
+    if (!parent || collapsed) return
+    setOpenKeys((current) => current.includes(parent) ? current : [...current, parent])
+  }, [collapsed, page])
 
   return (
     <Layout className={collapsed ? 'app-shell app-shell-collapsed' : 'app-shell'} style={shellStyle}>
@@ -146,10 +178,14 @@ export function AppLayout(props: AppLayoutProps) {
         <Menu
           className="app-nav"
           mode="inline"
-          theme="dark"
+          theme="light"
           selectedKeys={[page]}
+          openKeys={collapsed ? [] : openKeys}
+          onOpenChange={(keys) => setOpenKeys(keys)}
           items={items}
-          onClick={(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) => onNavigate(event.key as PageKey)}
+          onClick={(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) => {
+            if (PAGE_KEYS.includes(event.key as PageKey)) onNavigate(event.key as PageKey)
+          }}
         />
         <div className="sider-status" aria-label="系统运行状态">
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -195,7 +231,14 @@ export function AppLayout(props: AppLayoutProps) {
               <Typography.Text>{meta.subtitle}</Typography.Text>
             </div>
           </div>
-          {headerActions ? <div className="app-header-actions">{headerActions}</div> : null}
+          <div className="app-header-actions">
+            <Space size={8}>
+              {headerActions}
+              <Badge count={activeTaskCount} size="small" offset={[-2, 2]}>
+                <Button onClick={onOpenTaskCenter}>任务中心</Button>
+              </Badge>
+            </Space>
+          </div>
         </Layout.Header>
         <Layout.Content className="app-content">
           <HeaderActionsContext.Provider value={registerHeaderActions}>

@@ -1,4 +1,4 @@
-import { Button, Card, Descriptions, Drawer, Empty, Space, Spin, Tabs, Tag, Typography } from 'antd'
+import { Button, Card, Descriptions, Drawer, Empty, Space, Spin, Table, Tabs, Tag, Typography } from 'antd'
 import { useEffect, useState } from 'react'
 
 import { fetchArtifactContent } from '../api/reviewApi'
@@ -24,7 +24,8 @@ const SOURCE_LABELS: Record<string, string> = {
   single: '单因子',
   batch: '批量',
   scheduled: '定时',
-  validation: '验证集',
+  validation: '质量验证',
+  experiment: '模式对比',
 }
 
 const MODE_LABELS: Record<string, string> = {
@@ -175,15 +176,29 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
   const [activeKind, setActiveKind] = useState<ArtifactKind>('md')
   const [contentCache, setContentCache] = useState<Record<string, string>>({})
   const [loadingFile, setLoadingFile] = useState<string>()
+  const [selectedItemIndex, setSelectedItemIndex] = useState<number>()
 
   useEffect(() => {
-    const document = defaultDocument(record)
-    const group = document === 'standard' ? record?.standardArtifacts : record?.reviewArtifacts
+    const firstItem = record?.items?.[0]
+    setSelectedItemIndex(firstItem?.index)
+    const itemStandard = firstItem?.standardFileId
+      ? { md: firstItem.standardFileId, json: firstItem.standardMetadataFileId || undefined }
+      : undefined
+    const itemReview = firstItem?.reviewFileId ? { md: firstItem.reviewFileId } : undefined
+    const document = itemStandard?.md || record?.standardArtifacts?.md ? 'standard' : 'review'
+    const group = document === 'standard' ? itemStandard || record?.standardArtifacts : itemReview || record?.reviewArtifacts
     setActiveDocument(document)
     setActiveKind(defaultKind(group))
   }, [record?.recordId, record?.standardArtifacts, record?.reviewArtifacts])
 
-  const activeGroup = activeDocument === 'standard' ? record?.standardArtifacts : activeDocument === 'review' ? record?.reviewArtifacts : undefined
+  const selectedItem = record?.items?.find((item) => item.index === selectedItemIndex)
+  const selectedStandardArtifacts = selectedItem?.standardFileId
+    ? { md: selectedItem.standardFileId, json: selectedItem.standardMetadataFileId || undefined }
+    : record?.standardArtifacts
+  const selectedReviewArtifacts = selectedItem?.reviewFileId
+    ? { md: selectedItem.reviewFileId }
+    : record?.reviewArtifacts
+  const activeGroup = activeDocument === 'standard' ? selectedStandardArtifacts : activeDocument === 'review' ? selectedReviewArtifacts : undefined
   const activeFilename = activeGroup?.[activeKind]
 
   useEffect(() => {
@@ -200,7 +215,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
 
   function changeDocument(document: DocumentType) {
     if (!record) return
-    const group = document === 'standard' ? record.standardArtifacts : record.reviewArtifacts
+    const group = document === 'standard' ? selectedStandardArtifacts : selectedReviewArtifacts
     setActiveDocument(document)
     setActiveKind(defaultKind(group))
   }
@@ -210,7 +225,6 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
       className="drawer-compact"
       title={record?.factorName || '评审历史详情'}
       open={open}
-      mask={false}
       width="min(920px, 90vw)"
       onClose={onClose}
       extra={record ? <DocumentDownloads record={record} /> : null}
@@ -219,19 +233,19 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <div className="detail-summary-strip">
             <div className="detail-summary-item">
-              <span>Conclusion</span>
+              <span>评审结论</span>
               <StatusBadge value={record.conclusion || 'unreviewable'} />
             </div>
             <div className="detail-summary-item">
-              <span>Risk Count</span>
+              <span>问题数量</span>
               <strong>{record.riskCount ?? 0}</strong>
             </div>
             <div className="detail-summary-item">
-              <span>Source</span>
+              <span>任务来源</span>
               <Tag>{sourceLabel(record.source)}</Tag>
             </div>
             <div className="detail-summary-item">
-              <span>Mode</span>
+              <span>执行模式</span>
               <strong>{modeLabel(record.mode)}</strong>
             </div>
           </div>
@@ -244,6 +258,30 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
             <Descriptions.Item label="风险数量">{record.riskCount ?? 0}</Descriptions.Item>
           </Descriptions>
 
+          {record.items?.length ? (
+            <Table
+              rowKey={(item) => String(item.index)}
+              size="small"
+              pagination={record.items.length > 8 ? { pageSize: 8 } : false}
+              dataSource={record.items}
+              rowClassName={(item) => item.index === selectedItemIndex ? 'ant-table-row-selected' : ''}
+              onRow={(item) => ({
+                onClick: () => {
+                  setSelectedItemIndex(item.index)
+                  const nextDocument = item.standardFileId ? 'standard' : 'review'
+                  setActiveDocument(nextDocument)
+                  setActiveKind('md')
+                },
+              })}
+              columns={[
+                { title: '明细', render: (_value, item) => item.factorName || `第 ${(item.index ?? 0) + 1} 条` },
+                { title: '状态', dataIndex: 'status', width: 110 },
+                { title: '结论', dataIndex: 'conclusion', width: 110, render: (value) => value ? <StatusBadge value={value} /> : '-' },
+                { title: '问题数', dataIndex: 'riskCount', width: 90, render: (value) => value ?? 0 },
+              ]}
+            />
+          ) : null}
+
           <Tabs
             activeKey={activeDocument}
             onChange={(value) => changeDocument(value as DocumentType)}
@@ -253,7 +291,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
                 label: (
                   <Space size={6}>
                     {DOCUMENT_LABELS.standard}
-                    {!hasArtifacts(record.standardArtifacts) ? <Tag>缺失</Tag> : null}
+                    {!hasArtifacts(selectedStandardArtifacts) ? <Tag>缺失</Tag> : null}
                   </Space>
                 ),
                 children: (
@@ -261,7 +299,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
                     <Tabs
                       activeKey={activeKind}
                       onChange={(value) => setActiveKind(value as ArtifactKind)}
-                      items={artifactKindItems('standard', record.standardArtifacts, contentCache, loadingFile)}
+                      items={artifactKindItems('standard', selectedStandardArtifacts, contentCache, loadingFile)}
                     />
                   </Card>
                 ),
@@ -271,7 +309,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
                 label: (
                   <Space size={6}>
                     {DOCUMENT_LABELS.review}
-                    {!hasArtifacts(record.reviewArtifacts) ? <Tag>缺失</Tag> : null}
+                    {!hasArtifacts(selectedReviewArtifacts) ? <Tag>缺失</Tag> : null}
                   </Space>
                 ),
                 children: (
@@ -279,7 +317,7 @@ export function ReviewHistoryDrawer({ record, open, onClose, onNotice }: ReviewH
                     <Tabs
                       activeKey={activeKind}
                       onChange={(value) => setActiveKind(value as ArtifactKind)}
-                      items={artifactKindItems('review', record.reviewArtifacts, contentCache, loadingFile)}
+                      items={artifactKindItems('review', selectedReviewArtifacts, contentCache, loadingFile)}
                     />
                   </Card>
                 ),

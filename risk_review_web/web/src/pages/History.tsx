@@ -1,193 +1,259 @@
-import { Button, Card, DatePicker, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography } from 'antd'
+import { DeleteOutlined, DownloadOutlined, FileExcelOutlined, InboxOutlined, MoreOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Button, DatePicker, Dropdown, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import type { Key } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import type { Dayjs } from 'dayjs'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { deleteReviewHistoryRecord } from '../api/reviewApi'
+import { deleteReviewHistoryRecord, fetchReviewRecords, setReviewRecordArchived } from '../api/reviewApi'
 import { HeaderActions, usePageActive } from '../components/AppLayout'
-import { EmptyState } from '../components/EmptyState'
-import { ReviewHistoryDrawer, hasArtifacts, modeLabel, sourceLabel } from '../components/ReviewHistoryDrawer'
+import { ReviewHistoryDrawer, sourceLabel } from '../components/ReviewHistoryDrawer'
 import { StatusBadge } from '../components/StatusBadge'
+import { TaskStatusBadge } from '../components/TaskStatusBadge'
 import type { AppNotice, ReviewHistoryRecord } from '../types/review'
-import { formatDateTimeValue, mapVerdictToConclusion } from '../utils/reviewTransform'
+import { formatDateTimeValue } from '../utils/reviewTransform'
 
 interface HistoryProps {
-  items: ReviewHistoryRecord[]
   selectedRecordId?: string
   onSelectedRecordConsumed?: () => void
   onReuse: (item: ReviewHistoryRecord) => void
   onNotice: (notice: AppNotice) => void
-  onDeleted: (recordId: string) => void
 }
 
+const ALL_VALUE = '__all__'
+
 function firstDownloadFile(record: ReviewHistoryRecord) {
-  return record.reviewArtifacts?.md || record.standardArtifacts?.md || record.standardArtifacts?.json
+  return record.reviewArtifacts?.md || record.standardArtifacts?.md
 }
 
 function downloadHref(filename?: string) {
   return filename ? `/outputs/${encodeURIComponent(filename)}` : undefined
 }
 
-const DELETE_SUPPORTED = true
-const ALL_VALUE = '__all__'
-
-function artifactCompleteness(record: ReviewHistoryRecord) {
-  const standardCount = [record.standardArtifacts?.md, record.standardArtifacts?.json].filter(Boolean).length
-  const reviewCount = [record.reviewArtifacts?.md].filter(Boolean).length
-  return { standardCount, reviewCount, total: standardCount + reviewCount }
-}
-
-function recordSearchText(record: ReviewHistoryRecord) {
-  return [
-    record.recordId,
-    record.factorName,
-    record.source,
-    record.mode,
-    record.conclusion,
-    ...Object.values(record.standardArtifacts || {}),
-    ...Object.values(record.reviewArtifacts || {}),
-  ].filter(Boolean).join(' ').toLowerCase()
-}
-
-function createdTime(record: ReviewHistoryRecord) {
-  const time = record.createdAt ? new Date(record.createdAt).getTime() : 0
-  return Number.isNaN(time) ? 0 : time
-}
-
 export function History(props: HistoryProps) {
   const pageActive = usePageActive()
-  const { items, selectedRecordId, onSelectedRecordConsumed, onReuse, onNotice, onDeleted } = props
-  const [deleteTarget, setDeleteTarget] = useState<ReviewHistoryRecord | null>(null)
-  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
-  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
+  const { selectedRecordId, onSelectedRecordConsumed, onReuse, onNotice } = props
+  const [records, setRecords] = useState<ReviewHistoryRecord[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [keyword, setKeyword] = useState('')
+  const [source, setSource] = useState(ALL_VALUE)
+  const [taskStatus, setTaskStatus] = useState(ALL_VALUE)
+  const [conclusion, setConclusion] = useState(ALL_VALUE)
+  const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
+  const [showArchived, setShowArchived] = useState(false)
+  const [loading, setLoading] = useState(false)
   const [activeRecord, setActiveRecord] = useState<ReviewHistoryRecord | null>(null)
+  const [archiveTarget, setArchiveTarget] = useState<ReviewHistoryRecord | null>(null)
+  const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([])
+  const [deleteRecordIds, setDeleteRecordIds] = useState<string[]>([])
   const [deleting, setDeleting] = useState(false)
-  const [query, setQuery] = useState('')
-  const [conclusionFilter, setConclusionFilter] = useState(ALL_VALUE)
-  const [dateRange, setDateRange] = useState<[string, string] | null>(null)
+
+  const loadRecords = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
+    try {
+      const result = await fetchReviewRecords({
+        page,
+        pageSize,
+        keyword: keyword.trim(),
+        source: source === ALL_VALUE ? undefined : source,
+        taskStatus: taskStatus === ALL_VALUE ? undefined : taskStatus,
+        conclusion: conclusion === ALL_VALUE ? undefined : conclusion,
+        archived: showArchived,
+        dateFrom: dateRange?.[0]?.startOf('day').toISOString(),
+        dateTo: dateRange?.[1]?.endOf('day').toISOString(),
+      })
+      setRecords(result.items || [])
+      setTotal(result.total || 0)
+    } catch (caught) {
+      if (!silent) {
+        onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '评审记录加载失败' })
+      }
+    } finally {
+      if (!silent) setLoading(false)
+    }
+  }, [conclusion, dateRange, keyword, onNotice, page, pageSize, showArchived, source, taskStatus])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadRecords(), 180)
+    return () => window.clearTimeout(timer)
+  }, [loadRecords])
+
+  useEffect(() => {
+    if (!pageActive) return
+    const timer = window.setInterval(() => void loadRecords(true), 3000)
+    return () => window.clearInterval(timer)
+  }, [loadRecords, pageActive])
 
   useEffect(() => {
     if (!selectedRecordId) return
-    const matched = items.find((item) => item.recordId === selectedRecordId)
+    const matched = records.find((item) => item.recordId === selectedRecordId)
     if (matched) setActiveRecord(matched)
     onSelectedRecordConsumed?.()
-  }, [items, selectedRecordId, onSelectedRecordConsumed])
+  }, [records, selectedRecordId, onSelectedRecordConsumed])
+
+  async function confirmArchive() {
+    if (!archiveTarget) return
+    try {
+      await setReviewRecordArchived(archiveTarget.recordId, !archiveTarget.archived)
+      onNotice({ type: 'success', message: archiveTarget.archived ? '记录已恢复' : '记录已归档' })
+      setArchiveTarget(null)
+      setActiveRecord(null)
+      await loadRecords()
+    } catch (caught) {
+      onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '归档操作失败' })
+    }
+  }
 
   async function confirmDelete() {
-    if (!deleteTarget || !DELETE_SUPPORTED) return
+    if (!deleteRecordIds.length) return
     setDeleting(true)
-    try {
-      await deleteReviewHistoryRecord(deleteTarget.recordId)
-      onDeleted(deleteTarget.recordId)
-      setSelectedRowKeys((current) => current.filter((key) => key !== deleteTarget.recordId))
-      if (activeRecord?.recordId === deleteTarget.recordId) setActiveRecord(null)
-      setDeleteTarget(null)
-      onNotice({ type: 'success', message: '历史记录已删除' })
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : '删除失败'
-      onNotice({ type: 'error', message })
-    } finally {
-      setDeleting(false)
-    }
-  }
-
-  function confirmBatchDelete() {
-    if (!DELETE_SUPPORTED) return
-    if (!selectedRowKeys.length) return
-    setBatchDeleteOpen(true)
-  }
-
-  async function executeBatchDelete() {
-    const ids = selectedRowKeys.map(String)
-    if (!ids.length || !DELETE_SUPPORTED) {
-      setBatchDeleteOpen(false)
+    const results = await Promise.allSettled(
+      deleteRecordIds.map((recordId) => deleteReviewHistoryRecord(recordId))
+    )
+    const failed = results.filter((result) => result.status === 'rejected')
+    const succeededIds = deleteRecordIds.filter((_, index) => results[index]?.status === 'fulfilled')
+    setSelectedRecordIds((current) => current.filter((recordId) => !succeededIds.includes(recordId)))
+    setDeleteRecordIds([])
+    setActiveRecord(null)
+    setDeleting(false)
+    await loadRecords()
+    if (failed.length) {
+      const firstError = failed[0]
+      const reason = firstError.status === 'rejected' && firstError.reason instanceof Error
+        ? firstError.reason.message
+        : '删除失败'
+      onNotice({
+        type: 'error',
+        message: `删除完成：成功 ${succeededIds.length}，失败 ${failed.length}。${reason}`,
+      })
       return
     }
-    setDeleting(true)
-    const failed: Array<{ id: string; message: string }> = []
-    const succeeded: string[] = []
+    onNotice({ type: 'success', message: `已删除 ${succeededIds.length} 条评审记录` })
+  }
+
+  async function exportRecords() {
     try {
-      for (const id of ids) {
-        try {
-          await deleteReviewHistoryRecord(id)
-          succeeded.push(id)
-          onDeleted(id)
-        } catch (caught) {
-          failed.push({
-            id,
-            message: caught instanceof Error ? caught.message : '删除失败',
-          })
-        }
+      const result = await fetchReviewRecords({
+        page: 1,
+        pageSize: 5000,
+        keyword: keyword.trim(),
+        source: source === ALL_VALUE ? undefined : source,
+        taskStatus: taskStatus === ALL_VALUE ? undefined : taskStatus,
+        conclusion: conclusion === ALL_VALUE ? undefined : conclusion,
+        archived: showArchived,
+        dateFrom: dateRange?.[0]?.startOf('day').toISOString(),
+        dateTo: dateRange?.[1]?.endOf('day').toISOString(),
+        export: true,
+      })
+      const safeCell = (value: unknown) => {
+        const raw = String(value ?? '')
+        const protectedValue = /^[=+\-@]/.test(raw) ? `'${raw}` : raw
+        return `"${protectedValue.replace(/"/g, '""')}"`
       }
-      setSelectedRowKeys((current) => current.filter((key) => failed.some((item) => item.id === String(key))))
-      if (activeRecord && succeeded.includes(activeRecord.recordId)) {
-        setActiveRecord(null)
-      }
-      setBatchDeleteOpen(false)
-      if (failed.length) {
-        onNotice({
-          type: 'warning',
-          message: `批量删除完成：成功 ${ids.length - failed.length}，失败 ${failed.length}`,
-          description: failed.slice(0, 3).map((item) => `${item.id}: ${item.message}`).join('；'),
-        })
-      } else {
-        onNotice({ type: 'success', message: `已删除 ${ids.length} 条历史记录` })
-      }
-    } finally {
-      setDeleting(false)
+      const rows = [
+        ['任务名称', '任务编号', '来源', '任务状态', '评审结论', '问题数', '创建时间', '更新时间'],
+        ...result.items.map((record) => [
+          record.title || record.factorName || '',
+          record.taskId || record.recordId,
+          sourceLabel(record.source || ''),
+          record.taskStatus || '',
+          record.conclusion || '',
+          record.riskCount || 0,
+          record.createdAt || '',
+          record.updatedAt || '',
+        ]),
+      ]
+      const csv = `\uFEFF${rows.map((row) => row.map(safeCell).join(',')).join('\n')}`
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `评审记录-${new Date().toISOString().slice(0, 10)}.csv`
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (caught) {
+      onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '导出评审记录失败' })
     }
   }
 
-  const filteredItems = useMemo(() => {
-    const lower = query.trim().toLowerCase()
-    const startTime = dateRange?.[0] ? new Date(`${dateRange[0]} 00:00:00`).getTime() : 0
-    const endTime = dateRange?.[1] ? new Date(`${dateRange[1]} 23:59:59`).getTime() : Number.POSITIVE_INFINITY
-    return items.filter((record) => {
-      if (lower && !recordSearchText(record).includes(lower)) return false
-      if (conclusionFilter !== ALL_VALUE && mapVerdictToConclusion(record.conclusion) !== conclusionFilter) return false
-      const time = createdTime(record)
-      if (dateRange && (time < startTime || time > endTime)) return false
-      return true
-    })
-  }, [items, query, conclusionFilter, dateRange])
-
   const columns: ColumnsType<ReviewHistoryRecord> = useMemo(() => [
-    { title: '因子名称', dataIndex: 'factorName', ellipsis: true, render: (value: string) => value || '-' },
-    { title: '来源', dataIndex: 'source', width: 100, render: (value: string) => <Tag>{sourceLabel(value)}</Tag> },
-    { title: '执行模式', dataIndex: 'mode', width: 150, render: (value: string) => modeLabel(value) },
-    { title: '最终结论', dataIndex: 'conclusion', width: 120, render: (value: string) => <StatusBadge value={value || 'unreviewable'} /> },
-    { title: '风险数', dataIndex: 'riskCount', width: 100, render: (value: number) => value ?? 0 },
     {
-      title: '文档状态',
-      width: 190,
-      render: (_: unknown, record: ReviewHistoryRecord) => {
-        const completeness = artifactCompleteness(record)
-        return (
-          <Tooltip title={`标准产物 ${completeness.standardCount}/2，评审产物 ${completeness.reviewCount}/1，总计 ${completeness.total}/3。`}>
-            <Space size={4} wrap>
-              <Tag color={hasArtifacts(record.standardArtifacts) ? 'blue' : 'default'}>标准：{hasArtifacts(record.standardArtifacts) ? '有' : '无'}</Tag>
-              <Tag color={hasArtifacts(record.reviewArtifacts) ? 'green' : 'default'}>评审：{hasArtifacts(record.reviewArtifacts) ? '有' : '无'}</Tag>
-            </Space>
-          </Tooltip>
-        )
-      },
+      title: '任务名称',
+      dataIndex: 'title',
+      ellipsis: true,
+      render: (value: string, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{value || record.factorName || '-'}</Typography.Text>
+          <Typography.Text type="secondary">{record.taskId?.slice(0, 8) || record.recordId}</Typography.Text>
+        </Space>
+      ),
     },
-    { title: '创建时间', dataIndex: 'createdAt', width: 180, render: (value: string) => formatDateTimeValue(value) },
+    { title: '来源', dataIndex: 'source', width: 110, render: (value: string) => <Tag>{sourceLabel(value)}</Tag> },
+    { title: '任务状态', dataIndex: 'taskStatus', width: 110, render: (value: string) => <TaskStatusBadge value={value || 'done'} /> },
+    {
+      title: '评审结论',
+      dataIndex: 'conclusion',
+      width: 110,
+      render: (value: string, record) => (
+        ['queued', 'running', 'cancelling'].includes(String(record.taskStatus || ''))
+          ? <Typography.Text type="secondary">待完成</Typography.Text>
+          : <StatusBadge value={value || 'unreviewable'} />
+      ),
+    },
+    {
+      title: '结果汇总',
+      width: 150,
+      render: (_: unknown, record) => record.summary?.total
+        ? `${record.summary.completed || 0}/${record.summary.total} 完成`
+        : `${record.riskCount || 0} 个问题`,
+    },
+    { title: '更新时间', dataIndex: 'updatedAt', width: 180, render: (value: string, record) => formatDateTimeValue(value || record.createdAt) },
     {
       title: '操作',
-      width: 280,
       fixed: 'right',
-      render: (_: unknown, record: ReviewHistoryRecord) => {
+      width: 130,
+      render: (_: unknown, record) => {
         const downloadFile = firstDownloadFile(record)
         return (
           <Space onClick={(event) => event.stopPropagation()}>
             <Button type="link" onClick={() => setActiveRecord(record)}>查看</Button>
-            <Button type="link" disabled={!record.standardArtifacts?.md} onClick={() => setActiveRecord(record)}>标准加工规范</Button>
-            <Button type="link" disabled={!downloadFile} href={downloadHref(downloadFile)} target="_blank" download={downloadFile}>下载</Button>
-            <Button type="link" disabled={!record.standardArtifacts?.json} onClick={() => onReuse(record)}>复用标准</Button>
-            <Tooltip title={DELETE_SUPPORTED ? '后端会删除该记录关联产物；成功后才从列表移除。' : '当前后端不支持删除评审历史，不能执行前端假删除。'}>
-              <Button danger type="link" disabled={!DELETE_SUPPORTED} onClick={() => setDeleteTarget(record)}>删除</Button>
-            </Tooltip>
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: 'reuse',
+                    label: '重新评审',
+                    disabled: !record.standardArtifacts?.json,
+                    onClick: () => onReuse(record),
+                  },
+                  {
+                    key: 'download',
+                    label: (
+                      <a href={downloadHref(downloadFile)} download={downloadFile}>
+                        <DownloadOutlined /> 下载报告
+                      </a>
+                    ),
+                    disabled: !downloadFile,
+                  },
+                  {
+                    key: 'archive',
+                    label: <><InboxOutlined /> {record.archived ? '恢复' : '归档'}</>,
+                    danger: !record.archived,
+                    disabled: ['queued', 'running', 'cancelling'].includes(String(record.taskStatus || '')),
+                    onClick: () => setArchiveTarget(record),
+                  },
+                  {
+                    key: 'delete',
+                    label: <><DeleteOutlined /> 删除</>,
+                    danger: true,
+                    disabled: ['queued', 'running', 'cancelling'].includes(String(record.taskStatus || '')),
+                    onClick: () => setDeleteRecordIds([record.recordId]),
+                  },
+                ],
+              }}
+            >
+              <Button type="text" icon={<MoreOutlined />} aria-label="更多操作" />
+            </Dropdown>
           </Space>
         )
       },
@@ -195,125 +261,142 @@ export function History(props: HistoryProps) {
   ], [onReuse])
 
   return (
-    <Space className="app-page" direction="vertical" size={12} style={{ width: '100%' }}>
+    <Space className="app-page records-page" direction="vertical" size={12} style={{ width: '100%' }}>
       <HeaderActions page="history">
-        <Space className="app-header-action-space" size={8} wrap>
-          <Button onClick={() => window.location.reload()}>刷新</Button>
-          <Tooltip title={DELETE_SUPPORTED ? '按评审记录删除会调用后端接口删除关联产物，失败记录会保留。' : '当前后端不支持删除评审历史，不能执行前端假删除。'}>
-            <Button danger loading={deleting} disabled={!DELETE_SUPPORTED || !selectedRowKeys.length} onClick={confirmBatchDelete}>
-              删除所选
-            </Button>
-          </Tooltip>
-        </Space>
+        <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void loadRecords()}>刷新</Button>
       </HeaderActions>
 
-      <Card className="compact-card" title="筛选评审记录">
-        <Space className="responsive-filters" wrap size={8} style={{ width: '100%' }}>
-          <Input.Search
-            className="responsive-filter-search"
-            allowClear
-            placeholder="搜索因子名 / 记录 ID / 产物文件"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          <Select
-            className="responsive-filter-select"
-            value={conclusionFilter}
-            onChange={setConclusionFilter}
-            options={[
-              { label: '全部结论', value: ALL_VALUE },
-              { label: '通过', value: 'pass' },
-              { label: '不通过', value: 'fail' },
-              { label: '无法评审', value: 'unreviewable' },
-            ]}
-          />
-          <DatePicker.RangePicker
-            className="responsive-filter-range"
-            onChange={(_, values) => setDateRange(values[0] && values[1] ? [values[0], values[1]] : null)}
-          />
-          <Button
-            onClick={() => {
-              setQuery('')
-              setConclusionFilter(ALL_VALUE)
-              setDateRange(null)
-            }}
-          >
-            重置
-          </Button>
-          <Typography.Text type="secondary">已选 {selectedRowKeys.length} 条，当前显示 {filteredItems.length} / {items.length} 条</Typography.Text>
-        </Space>
-      </Card>
-
-      <Card className="compact-card" title="评审记录">
-        {filteredItems.length ? (
-          <Table
-            rowKey="recordId"
-            className="compact-table"
-            columns={columns}
-            dataSource={filteredItems}
-            size="small"
-            rowSelection={{
-              selectedRowKeys,
-              onChange: setSelectedRowKeys,
-              renderCell: (_checked, record, _index, originNode) => (
-                <span onClick={(event) => event.stopPropagation()}>{originNode}</span>
-              ),
-            }}
-            onRow={(record) => ({
-              onClick: () => setActiveRecord(record),
-            })}
-            pagination={{ pageSize: 10, size: 'small', showSizeChanger: true }}
-            scroll={{ x: 1280 }}
-          />
-        ) : items.length ? (
-          <EmptyState title="没有符合筛选条件的评审记录。" />
-        ) : (
-          <EmptyState title="暂无评审记录，先执行一次单因子评审。" />
-        )}
-
-        <ReviewHistoryDrawer
-          record={activeRecord}
-          open={pageActive && !!activeRecord}
-          onClose={() => setActiveRecord(null)}
-          onNotice={onNotice}
+      <div className="record-toolbar">
+        <Input.Search
+          allowClear
+          placeholder="搜索任务名称、因子名称或任务编号"
+          value={keyword}
+          onChange={(event) => { setKeyword(event.target.value); setPage(1) }}
+          style={{ width: 320 }}
         />
-
-        <Modal
-          title="批量删除评审记录"
-          open={pageActive && batchDeleteOpen}
-          maskClosable={false}
-          onCancel={() => setBatchDeleteOpen(false)}
-          onOk={() => void executeBatchDelete()}
-          confirmLoading={deleting}
-          okText="批量删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true, disabled: !DELETE_SUPPORTED || !selectedRowKeys.length }}
-          cancelButtonProps={{ disabled: deleting }}
+        <Select
+          value={source}
+          onChange={(value) => { setSource(value); setPage(1) }}
+          style={{ width: 140 }}
+          options={[
+            { label: '全部来源', value: ALL_VALUE },
+            { label: '单因子', value: 'single' },
+            { label: '批量', value: 'batch' },
+            { label: '定时', value: 'scheduled' },
+            { label: '质量验证', value: 'validation' },
+            { label: '模式对比', value: 'experiment' },
+          ]}
+        />
+        <Select
+          value={taskStatus}
+          onChange={(value) => { setTaskStatus(value); setPage(1) }}
+          style={{ width: 140 }}
+          options={[
+            { label: '全部任务状态', value: ALL_VALUE },
+            { label: '排队中', value: 'queued' },
+            { label: '执行中', value: 'running' },
+            { label: '终止中', value: 'cancelling' },
+            { label: '已完成', value: 'done' },
+            { label: '执行失败', value: 'error' },
+            { label: '已取消', value: 'cancelled' },
+          ]}
+        />
+        <Select
+          value={conclusion}
+          onChange={(value) => { setConclusion(value); setPage(1) }}
+          style={{ width: 140 }}
+          options={[
+            { label: '全部评审结论', value: ALL_VALUE },
+            { label: '通过', value: 'pass' },
+            { label: '不通过', value: 'fail' },
+            { label: '无法评审', value: 'unreviewable' },
+          ]}
+        />
+        <DatePicker.RangePicker
+          value={dateRange}
+          onChange={(value) => {
+            setDateRange(value as [Dayjs | null, Dayjs | null] | null)
+            setPage(1)
+          }}
+          allowClear
+        />
+        <Button type={showArchived ? 'primary' : 'default'} onClick={() => { setShowArchived((value) => !value); setPage(1) }}>
+          {showArchived ? '查看有效记录' : '查看归档'}
+        </Button>
+        <Button
+          danger
+          icon={<DeleteOutlined />}
+          disabled={!selectedRecordIds.length}
+          onClick={() => setDeleteRecordIds(selectedRecordIds)}
         >
-          <Typography.Paragraph>
-            将删除已选 {selectedRowKeys.length} 条记录及其关联标准加工规范和评审结果文档，请确认。
-          </Typography.Paragraph>
-          <Typography.Text type="secondary">
-            删除失败的记录会继续保留在列表和选中项中。
-          </Typography.Text>
-        </Modal>
+          删除所选
+        </Button>
+        <Button icon={<FileExcelOutlined />} onClick={() => void exportRecords()}>导出 CSV</Button>
+      </div>
 
-        <Modal
-          title="删除评审记录"
-          open={pageActive && !!deleteTarget}
-          maskClosable={false}
-          onCancel={() => setDeleteTarget(null)}
-          onOk={confirmDelete}
-          confirmLoading={deleting}
-          okText="删除"
-          okButtonProps={{ danger: true, disabled: !DELETE_SUPPORTED }}
-        >
-          <Typography.Paragraph>
-            将调用后端删除该记录关联的标准加工规范、元数据和评审结果文档。只有后端删除成功后，列表才会移除该记录。
-          </Typography.Paragraph>
-          <Typography.Text strong>{deleteTarget?.factorName || deleteTarget?.recordId}</Typography.Text>
-        </Modal>
-      </Card>
+      <Table
+        rowKey="recordId"
+        className="compact-table"
+        loading={loading}
+        columns={columns}
+        dataSource={records}
+        rowSelection={{
+          selectedRowKeys: selectedRecordIds,
+          onChange: (keys) => setSelectedRecordIds(keys.map(String)),
+          getCheckboxProps: (record) => ({
+            disabled: ['queued', 'running', 'cancelling'].includes(String(record.taskStatus || '')),
+          }),
+        }}
+        onRow={(record) => ({ onClick: () => setActiveRecord(record) })}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          showTotal: (value) => `共 ${value} 条`,
+          onChange: (nextPage, nextSize) => {
+            setPage(nextPage)
+            setPageSize(nextSize)
+          },
+        }}
+        scroll={{ x: 980 }}
+      />
+
+      <ReviewHistoryDrawer
+        record={activeRecord}
+        open={pageActive && !!activeRecord}
+        onClose={() => setActiveRecord(null)}
+        onNotice={onNotice}
+      />
+
+      <Modal
+        title={archiveTarget?.archived ? '恢复评审记录？' : '归档评审记录？'}
+        open={pageActive && !!archiveTarget}
+        onCancel={() => setArchiveTarget(null)}
+        onOk={() => void confirmArchive()}
+        okText={archiveTarget?.archived ? '恢复' : '归档'}
+        okButtonProps={{ danger: !archiveTarget?.archived }}
+      >
+        <Typography.Paragraph>
+          {archiveTarget?.archived
+            ? '恢复后记录会重新出现在默认列表中。'
+            : '归档后默认列表不再显示，但标准规范和评审报告不会被删除，可以随时恢复。'}
+        </Typography.Paragraph>
+      </Modal>
+
+      <Modal
+        title={`删除 ${deleteRecordIds.length} 条评审记录？`}
+        open={pageActive && deleteRecordIds.length > 0}
+        onCancel={() => setDeleteRecordIds([])}
+        onOk={() => void confirmDelete()}
+        okText="删除"
+        confirmLoading={deleting}
+        okButtonProps={{ danger: true }}
+      >
+        <Typography.Paragraph>
+          删除后，记录关联的标准规范、结构化摘要和评审报告也会一并删除，无法恢复。
+        </Typography.Paragraph>
+      </Modal>
     </Space>
   )
 }

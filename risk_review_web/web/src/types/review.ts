@@ -28,6 +28,17 @@ export interface ApiDocItem {
   content_size?: number
 }
 
+export interface FactorProcessingSpecResponse {
+  spec: {
+    schema_version?: string
+    spec_version?: string
+    title?: string
+    principles?: Array<Record<string, unknown>>
+    rules?: Array<Record<string, unknown>>
+  }
+  markdown: string
+}
+
 export interface TaskLog {
   time?: number
   message?: string
@@ -50,6 +61,12 @@ export interface TaskRecord<T = unknown> {
   queuePosition?: number | null
   poolQueued?: number
   poolActive?: number
+  context?: {
+    taskName?: string
+    factorName?: string
+    requirement?: string
+    standardFileId?: string
+  }
 }
 
 export interface GlobalPoolStatus {
@@ -165,8 +182,39 @@ export interface ReviewHistoryRecord {
   mode?: 'phase1_only' | 'phase2_only' | 'one_click' | string
   conclusion?: string
   riskCount?: number
+  title?: string
+  taskId?: string
+  taskStatus?: string
+  updatedAt?: string
+  archived?: boolean
+  summary?: {
+    total?: number
+    completed?: number
+    failed?: number
+  }
+  items?: BatchResultItem[]
   standardArtifacts?: ArtifactGroup
   reviewArtifacts?: ArtifactGroup
+}
+
+export interface ReviewRecordPage {
+  items: ReviewHistoryRecord[]
+  page: number
+  pageSize: number
+  total: number
+}
+
+export interface ReviewRecordQuery {
+  page?: number
+  pageSize?: number
+  keyword?: string
+  source?: string
+  taskStatus?: string
+  conclusion?: string
+  archived?: boolean
+  dateFrom?: string
+  dateTo?: string
+  export?: boolean
 }
 
 export interface ExampleItem {
@@ -416,6 +464,7 @@ export interface RegressionTaskResult {
 }
 
 export interface BatchRow {
+  caseName?: string
   factorName?: string
   requirement?: string
   apiNames?: string[]
@@ -425,6 +474,7 @@ export interface BatchRow {
   defaultValues?: string
   defaultVal?: string
   draft?: string
+  remark?: string
 }
 
 export interface BatchResultItem extends TaskErrorMetadata {
@@ -477,6 +527,13 @@ export interface SystemHealth {
     note?: string
   }
   files?: Record<string, { path?: string; exists?: boolean; size?: number }>
+  runtime_settings?: RuntimeSettings
+}
+
+export interface RuntimeSettings {
+  globalConcurrency: number
+  batchConcurrency: number
+  scheduledConcurrency: number
 }
 
 export interface AppNotice {
@@ -516,7 +573,6 @@ export interface ScheduledTask {
   monthDay?: string
   mode: ScheduledTaskMode
   runtimeMode: 'mock' | 'claude'
-  concurrency: number
   failurePolicy: 'continue' | 'stop'
   standardFile?: string
   items: ScheduledTaskItem[]
@@ -580,7 +636,6 @@ export interface CreateScheduledTaskRequest {
   monthDay?: string
   mode: ScheduledTaskMode
   runtimeMode: 'mock' | 'claude'
-  concurrency: number
   failurePolicy: 'continue' | 'stop'
   standardFile?: string
   items: ScheduledTaskItem[]

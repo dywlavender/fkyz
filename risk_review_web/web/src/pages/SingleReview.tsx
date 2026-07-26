@@ -4,6 +4,7 @@ import {
   Card,
   Checkbox,
   Col,
+  Drawer,
   Form,
   Input,
   Modal,
@@ -28,6 +29,7 @@ import { MarkdownViewer, isJsonContent, isMarkdownContent } from '../components/
 import { ReviewResultPanel } from '../components/ReviewResultPanel'
 import {
   cancelTask,
+  fetchApiDocDetail,
   fetchOutputJson,
   fetchOutputText,
   fetchValidationCases,
@@ -53,14 +55,13 @@ import { StatusBadge } from '../components/StatusBadge'
 
 const RUN_INVALIDATED = 'RUN_INVALIDATED'
 const DEFAULT_VALUE_SEMANTICS = '字段缺失、格式错误或数据异常时返回默认值'
+const SINGLE_DRAFT_KEY = 'risk-review.single-draft.v1'
 
 interface SingleReviewProps {
   apiDocs: ApiDocItem[]
   examples: ExampleItem[]
   onNotice: (notice: AppNotice) => void
-  prefillCase?: ValidationCase | null
   prefillStandardRecord?: ReviewHistoryRecord | null
-  onPrefillConsumed?: () => void
   onPrefillStandardConsumed?: () => void
 }
 
@@ -129,16 +130,14 @@ function ArtifactDocumentButton(props: {
 
   return (
     <>
-      <Button block onClick={openDocument} disabled={!fileId}>
+      <Button onClick={openDocument} disabled={!fileId}>
         查看{title}
       </Button>
-      <Modal
+      <Drawer
         title={title}
         open={pageActive && open}
-        maskClosable={false}
-        width="min(860px, 90vw)"
-        footer={null}
-        onCancel={() => setOpen(false)}
+        width="min(1080px, 82vw)"
+        onClose={() => setOpen(false)}
       >
         <Spin spinning={loading}>
           {error ? (
@@ -165,32 +164,14 @@ function ArtifactDocumentButton(props: {
             </Typography.Paragraph>
           )}
         </Spin>
-      </Modal>
+      </Drawer>
     </>
-  )
-}
-
-function ResultArtifactBar(props: {
-  phase1?: Phase1Response | null
-  phase2?: Phase2Response | null
-  onNotice: (notice: AppNotice) => void
-}) {
-  const { phase1, phase2, onNotice } = props
-  const standardFileId = phase1?.standardFileId
-  const reviewFileId = phase2?.reviewFileId
-  return (
-    <Card className="compact-card result-artifact-card" title="评审产物" style={surfaceStyle}>
-      <div className="result-artifact-actions">
-        <ArtifactDocumentButton fileId={standardFileId} title="标准加工规范" onNotice={onNotice} />
-        <ArtifactDocumentButton fileId={reviewFileId} title="评审文档" onNotice={onNotice} />
-      </div>
-    </Card>
   )
 }
 
 export function SingleReview(props: SingleReviewProps) {
   const pageActive = usePageActive()
-  const { apiDocs, examples, onNotice, prefillCase, prefillStandardRecord, onPrefillConsumed, onPrefillStandardConsumed } = props
+  const { apiDocs, examples, onNotice, prefillStandardRecord, onPrefillStandardConsumed } = props
   const [form] = Form.useForm<ReviewFormValues>()
   const [loadingPhase1, setLoadingPhase1] = useState(false)
   const [loadingPhase2, setLoadingPhase2] = useState(false)
@@ -208,7 +189,6 @@ export function SingleReview(props: SingleReviewProps) {
   const [activeStep, setActiveStep] = useState(0)
   const [oneClickRunning, setOneClickRunning] = useState(false)
   const [oneClickPhase, setOneClickPhase] = useState<'phase1' | 'phase2' | null>(null)
-  const [showExecutionLog, setShowExecutionLog] = useState(false)
   const [executionLogOpen, setExecutionLogOpen] = useState(false)
   const [executionLogs, setExecutionLogs] = useState<ExecutionLogItem[]>([])
   const [stoppingExecution, setStoppingExecution] = useState(false)
@@ -218,8 +198,12 @@ export function SingleReview(props: SingleReviewProps) {
   const [validationCases, setValidationCases] = useState<ValidationCase[]>([])
   const [caseLoading, setCaseLoading] = useState(false)
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
+  const [apiDocOpen, setApiDocOpen] = useState(false)
+  const [apiDocLoading, setApiDocLoading] = useState(false)
+  const [apiDocDetail, setApiDocDetail] = useState<ApiDocItem | null>(null)
   const runTokenRef = useRef(0)
   const activeTaskIdsRef = useRef<Set<string>>(new Set())
+  const draftRestoredRef = useRef(false)
 
   const draftPreview = Form.useWatch([], form)
   const drawerIsJson = isJsonContent(drawerContent) || drawerTitle.toLowerCase().endsWith('.json')
@@ -233,10 +217,21 @@ export function SingleReview(props: SingleReviewProps) {
   }, [draftPreview])
 
   useEffect(() => {
-    if (!prefillCase) return
-    applyValidationCase(prefillCase)
-    onPrefillConsumed?.()
-  }, [prefillCase, onPrefillConsumed])
+    if (draftRestoredRef.current || prefillStandardRecord) return
+    draftRestoredRef.current = true
+    try {
+      const saved = window.localStorage.getItem(SINGLE_DRAFT_KEY)
+      if (!saved) return
+      const values = JSON.parse(saved) as Partial<ReviewFormValues>
+      form.setFieldsValue({
+        ...values,
+        defaultValues: values.defaultValues || DEFAULT_VALUE_SEMANTICS,
+      })
+      onNotice({ type: 'info', message: '已恢复上次未提交内容' })
+    } catch {
+      window.localStorage.removeItem(SINGLE_DRAFT_KEY)
+    }
+  }, [form, onNotice, prefillStandardRecord])
 
   useEffect(() => {
     if (!prefillStandardRecord) return
@@ -264,6 +259,13 @@ export function SingleReview(props: SingleReviewProps) {
     runTokenRef.current += 1
     setStoppedPhase(null)
     return runTokenRef.current
+  }
+
+  function beginNewReviewExecution() {
+    setExecutionLogs([])
+    setExecutionLogOpen(false)
+    activeTaskIdsRef.current.clear()
+    return beginExecution()
   }
 
   function invalidateCurrentRun() {
@@ -323,7 +325,6 @@ export function SingleReview(props: SingleReviewProps) {
     setDrawerContent('')
     setDrawerOpen(false)
     setExecutionLogOpen(false)
-    setShowExecutionLog(false)
     setCurrentCase(null)
     setSelectedCaseId(undefined)
     setCaseModalOpen(false)
@@ -331,6 +332,7 @@ export function SingleReview(props: SingleReviewProps) {
     setCaseQuery('')
     setExecutionLogs([])
     activeTaskIdsRef.current.clear()
+    window.localStorage.removeItem(SINGLE_DRAFT_KEY)
   }
 
   function appendExecutionLog(
@@ -381,16 +383,26 @@ export function SingleReview(props: SingleReviewProps) {
       message: log.message || '任务状态更新',
     }))
 
-    const debugLogs = (task.debugLogs || []).map((log, index) => ({
-      id: taskLogId(taskId, phase, 'debug', index, log),
-      time: taskLogTime(log),
-      phase,
-      level: 'info' as const,
-      message: log.stream ? `Claude ${log.stream}` : 'Claude 交互',
-      detail: log.message || '',
-      stream: log.stream,
-      isDebug: true,
-    }))
+    const debugLogs = (task.debugLogs || [])
+      .filter((log) => String(log.stream || '').toLowerCase() !== 'stderr' || Boolean(log.message))
+      .map((log, index) => {
+        const stream = String(log.stream || '').toLowerCase()
+        const labels: Record<string, string> = {
+          prompt: 'Claude 实际输入',
+          stdout: 'Claude 原始输出',
+          stderr: 'Claude 错误输出',
+        }
+        return {
+          id: taskLogId(taskId, phase, 'debug', index, log),
+          time: taskLogTime(log),
+          phase,
+          level: (stream === 'stderr' && log.message ? 'error' : 'info') as ExecutionLogItem['level'],
+          message: labels[stream] || 'Claude 交互',
+          detail: log.message || '',
+          stream,
+          isDebug: true,
+        }
+      })
 
     appendExecutionLogs([...regularLogs, ...debugLogs])
   }
@@ -413,10 +425,6 @@ export function SingleReview(props: SingleReviewProps) {
     }
 
     throw new Error('任务轮询超时，请稍后在历史记录中查看结果。')
-  }
-
-  function openExecutionProcessIfEnabled() {
-    if (showExecutionLog) setExecutionLogOpen(true)
   }
 
   function resetExecutionState() {
@@ -547,7 +555,7 @@ export function SingleReview(props: SingleReviewProps) {
     try {
       const metadata = await fetchOutputJson<StandardMetadataV5>(standardMetadataFile)
       if (metadata.schema_version !== 'risk_review_standard_metadata_v5') {
-        throw new Error('该历史标准不是 v5，请重新执行 Phase 1。')
+        throw new Error('该历史标准不是当前版本，请重新生成标准。')
       }
       form.setFieldsValue({
         factorName: metadata.display_metadata?.factor_name || record.factorName || '',
@@ -662,19 +670,35 @@ export function SingleReview(props: SingleReviewProps) {
     }
   }
 
+  async function openSelectedApiDoc(name?: string) {
+    const selectedName = name || form.getFieldValue('apiNames')?.[0]
+    if (!selectedName) {
+      onNotice({ type: 'warning', message: '请先选择接口文档' })
+      return
+    }
+    setApiDocOpen(true)
+    setApiDocLoading(true)
+    try {
+      setApiDocDetail(await fetchApiDocDetail(selectedName))
+    } catch (caught) {
+      onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '接口文档读取失败' })
+    } finally {
+      setApiDocLoading(false)
+    }
+  }
+
   function logTaskFailure(phase: ExecutionLogItem['phase'], messageText: string, detail?: string) {
-    const normalized = messageText.includes('任务轮询超时') ? '任务轮询超时' : phase === 'phase1' ? 'Phase 1 执行失败' : 'Phase 2 执行失败'
+    const normalized = messageText.includes('任务轮询超时') ? '任务轮询超时' : phase === 'phase1' ? '生成标准失败' : '执行评审失败'
     appendExecutionLog(phase, 'error', normalized, detail || messageText)
   }
 
   async function executePhase1(values: Pick<ReviewFormValues, 'factorName' | 'requirement' | 'apiNames'>, runToken: number) {
-    openExecutionProcessIfEnabled()
     // appendExecutionLog('phase1', 'info', 'Phase 1 任务提交中')
     const response = await runPhase1({
       factorName: values.factorName,
       requirement: values.requirement,
       apiNames: values.apiNames,
-      debugClaude: showExecutionLog,
+      debugClaude: true,
     })
     if (runTokenRef.current !== runToken) {
       void cancelTask(response.taskId)
@@ -683,25 +707,25 @@ export function SingleReview(props: SingleReviewProps) {
     trackTaskId(response.taskId)
     setPhase1TaskId(response.taskId)
     syncTaskLogs(response.taskId, 'phase1', response.task)
-    appendExecutionLog('phase1', 'success', 'Phase 1 任务提交成功')
-    appendExecutionLog('phase1', 'info', 'Phase 1 taskId', response.taskId)
+    appendExecutionLog('phase1', 'success', '生成标准任务提交成功')
+    appendExecutionLog('phase1', 'info', '生成标准任务编号', response.taskId)
     // appendExecutionLog('phase1', 'info', 'Phase 1 轮询开始')
 
     const task = await pollTaskWithLogs<Phase1Response>(response.taskId, 'phase1', runToken)
     ensureRunCurrent(runToken)
     if (String(task.status || '').toLowerCase() === 'cancelled') {
-      throw new Error('Phase 1 已停止')
+      throw new Error('生成标准已停止')
     }
     const taskResult = (task.result || {}) as Phase1Response
 
     if (String(task.status).toLowerCase() !== 'done' || taskResult.success === false) {
-      throw new Error(taskFailureMessage(taskResult, 'Phase 1 执行失败'))
+      throw new Error(taskFailureMessage(taskResult, '生成标准失败'))
     }
 
     appendExecutionLog(
       'phase1',
       'success',
-      'Phase 1 执行完成',
+      '标准生成完成',
       taskResult.cacheHit ? '命中缓存标准' : undefined
     )
     setPhase1(taskResult)
@@ -710,14 +734,13 @@ export function SingleReview(props: SingleReviewProps) {
   }
 
   async function executePhase2(values: ReviewFormValues, standardFileId: string, draft: string, runToken: number) {
-    openExecutionProcessIfEnabled()
-    appendExecutionLog('phase2', 'info', 'Phase 2 任务提交中')
+    appendExecutionLog('phase2', 'info', '评审任务提交中')
     const response = await runPhase2({
       factorName: values.factorName,
       requirement: values.requirement,
       draft,
       standardFileId,
-      debugClaude: showExecutionLog,
+      debugClaude: true,
     })
     if (runTokenRef.current !== runToken) {
       void cancelTask(response.taskId)
@@ -726,25 +749,25 @@ export function SingleReview(props: SingleReviewProps) {
     trackTaskId(response.taskId)
     setPhase2TaskId(response.taskId)
     syncTaskLogs(response.taskId, 'phase2', response.task)
-    appendExecutionLog('phase2', 'success', 'Phase 2 任务提交成功')
-    appendExecutionLog('phase2', 'info', 'Phase 2 taskId', response.taskId)
-    appendExecutionLog('phase2', 'info', 'Phase 2 轮询开始')
+    appendExecutionLog('phase2', 'success', '评审任务提交成功')
+    appendExecutionLog('phase2', 'info', '评审任务编号', response.taskId)
+    appendExecutionLog('phase2', 'info', '开始等待评审结果')
 
     const task = await pollTaskWithLogs<Phase2Response>(response.taskId, 'phase2', runToken)
     ensureRunCurrent(runToken)
     if (String(task.status || '').toLowerCase() === 'cancelled') {
-      throw new Error('Phase 2 已停止')
+      throw new Error('评审已停止')
     }
     const taskResult = (task.result || {}) as Phase2Response
 
     if (String(task.status).toLowerCase() !== 'done' || taskResult.success === false) {
-      throw new Error(taskFailureMessage(taskResult, 'Phase 2 执行失败'))
+      throw new Error(taskFailureMessage(taskResult, '执行评审失败'))
     }
 
     appendExecutionLog(
       'phase2',
       'success',
-      'Phase 2 执行完成'
+      '执行评审完成'
     )
     setPhase2(taskResult)
 
@@ -754,10 +777,10 @@ export function SingleReview(props: SingleReviewProps) {
         try {
           reviewMarkdown = await fetchOutputText(taskResult.reviewFileId)
           ensureRunCurrent(runToken)
-          appendExecutionLog('phase2', 'success', 'Phase 2 评审 Markdown 读取完成', taskResult.reviewFileId)
+          appendExecutionLog('phase2', 'success', '评审报告读取完成', taskResult.reviewFileId)
         } catch (caught) {
           const messageText = caught instanceof Error ? caught.message : '读取评审 Markdown 失败'
-          appendExecutionLog('phase2', 'warning', '读取评审 Markdown 失败', `${messageText}；页面将使用 Phase 2 stdout。`)
+          appendExecutionLog('phase2', 'warning', '读取评审报告失败', `${messageText}；页面将使用任务原始输出。`)
         }
       }
 
@@ -774,7 +797,7 @@ export function SingleReview(props: SingleReviewProps) {
 
   async function handlePhase1() {
     const values = await form.validateFields(['factorName', 'requirement', 'apiNames'])
-    const runToken = beginExecution()
+    const runToken = beginNewReviewExecution()
     setLoadingPhase1(true)
     setError(undefined)
     setPhase1(null)
@@ -817,6 +840,7 @@ export function SingleReview(props: SingleReviewProps) {
       return
     }
 
+    // Phase 2 属于同一轮评审，继续追加日志，保留 Phase 1 的真实输入输出。
     setLoadingPhase2(true)
     const runToken = beginExecution()
     setError(undefined)
@@ -854,7 +878,7 @@ export function SingleReview(props: SingleReviewProps) {
       return
     }
 
-    const runToken = beginExecution()
+    const runToken = beginNewReviewExecution()
     setOneClickRunning(true)
     setLoadingPhase1(true)
     setOneClickPhase('phase1')
@@ -872,7 +896,7 @@ export function SingleReview(props: SingleReviewProps) {
       const phase1Result = await executePhase1(values, runToken)
       ensureRunCurrent(runToken)
       if (!phase1Result.standardFileId) {
-        throw new Error('Phase 1 未返回标准加工规范文件，无法继续 Phase 2。')
+        throw new Error('未生成标准加工规范，无法继续执行评审。')
       }
       setActiveStep(2)
 
@@ -893,6 +917,11 @@ export function SingleReview(props: SingleReviewProps) {
         type: 'success',
         message: '一键评审已完成',
       })
+      try {
+        window.localStorage.removeItem(SINGLE_DRAFT_KEY)
+      } catch {
+        // 评审结果已完成，本地存储清理失败不影响结果。
+      }
     } catch (caught) {
       if (isRunInvalidated(caught)) return
       const messageText = caught instanceof Error ? caught.message : '一键评审失败'
@@ -959,11 +988,11 @@ export function SingleReview(props: SingleReviewProps) {
     error: 'red',
   }
   const logPhaseText: Record<ExecutionLogItem['phase'], string> = {
-    phase1: 'Phase 1',
-    phase2: 'Phase 2',
-    system: 'System',
+    phase1: '生成标准',
+    phase2: '执行评审',
+    system: '系统',
   }
-  const timelineLogs = [...executionLogs].slice(-100).reverse()
+  const timelineLogs = [...executionLogs].reverse()
   const simpleTimelineLogs = timelineLogs.filter((item) => !item.isDebug)
   const debugTimelineLogs = timelineLogs.filter((item) => item.isDebug)
   const debugLogCount = executionLogs.filter((item) => item.isDebug).length
@@ -1006,202 +1035,160 @@ export function SingleReview(props: SingleReviewProps) {
     },
     { title: '更新时间', width: 180, render: (_: unknown, record: CaseOption) => formatDateTimeValue(caseUpdatedAt(record)) },
   ]
+  const userStatus = stoppedPhase
+    ? '已取消'
+    : error
+      ? '执行失败'
+      : loading
+        ? '评审中'
+        : result
+          ? '已完成'
+          : '待提交'
+  const userStatusColor = error
+    ? 'error'
+    : loading
+      ? 'processing'
+      : result
+        ? 'success'
+        : stoppedPhase
+          ? 'default'
+          : 'default'
 
   return (
     <Space className="app-page compact-form single-review-page" direction="vertical" size={12} style={{ width: '100%' }}>
-      <div className="single-review-steps" aria-label="评审流程进度">
-        {flowStepTitles.map((title, index) => {
-          const isActive = index === activeStep
-          const isDone = index < activeStep
-          return (
-            <div
-              key={title}
-              className={isActive ? 'single-step-wrap is-active' : isDone ? 'single-step-wrap is-done' : 'single-step-wrap'}
-            >
-              <div className={isActive ? 'single-step-pill is-active' : isDone ? 'single-step-pill is-done' : 'single-step-pill'}>
-                <span className="single-step-index">{isDone ? '✓' : index + 1}</span>
-                <span className="single-step-title">{title}</span>
+      <Row className="single-review-split" gutter={[0, 16]} align="stretch">
+        <Col span={24} className="single-input-pane">
+          <section className="work-surface single-input-surface" aria-label="评审输入">
+            <div className="surface-heading">
+              <div>
+                <Typography.Title level={5}>评审输入</Typography.Title>
+                <Typography.Text type="secondary">填写需求、接口信息和待评审内容。</Typography.Text>
               </div>
-              {index < flowStepTitles.length - 1 ? <span className="single-step-connector" aria-hidden="true" /> : null}
+              <Space size={8}>
+                <Button size="small" disabled={executionDisabled} onClick={openCaseModal}>加载案例</Button>
+                <Button size="small" danger disabled={executionDisabled} onClick={handleClear}>清空</Button>
+              </Space>
             </div>
-          )
-        })}
-      </div>
-      <div className="single-review-step-compact">
-        步骤 {activeStep + 1} / {flowStepTitles.length}：{flowStepTitles[activeStep] || flowStepTitles[0]}
-      </div>
-      <Row className="single-review-workbench-row" gutter={[16, 12]} align="stretch">
-        <Col xs={24} xl={16} className="single-main-col">
-	          <Card
-	            className="compact-card single-input-card"
-	            title="人工输入"
-	            extra={
-	              <Space size={8} wrap>
-	                <Button size="small" disabled={executionDisabled} onClick={openCaseModal}>加载验证案例</Button>
-	                <Button size="small" danger disabled={executionDisabled} onClick={handleClear}>清空</Button>
-	              </Space>
-	            }
-	            style={surfaceStyle}
-	          >
-            <Spin spinning={loading}>
-	              <Form form={form} layout="vertical" initialValues={{ apiNames: [], defaultValues: DEFAULT_VALUE_SEMANTICS }} className="single-review-form">
-	                <Row gutter={[12, 0]}>
-	                  <Col xs={24}>
-	                    <Form.Item name="factorName" label="因子名称" rules={[{ required: true, message: '请输入因子名称' }]}>
-	                      <Input placeholder="例如：近30日交易金额" />
-	                    </Form.Item>
-	                  </Col>
-	                  <Col xs={24}>
-	                    <Form.Item name="apiNames" label="关联接口文档" rules={[{ required: true, message: '至少选择一个接口文档' }]}>
-	                      <Select
-	                        mode="multiple"
-	                        placeholder="选择接口文档"
-	                        options={apiDocs.map((item) => ({
-	                          label: `${item.name}${item.category ? ` · ${item.category}` : ''}`,
-	                          value: item.name,
-	                        }))}
-	                      />
-	                    </Form.Item>
-	                  </Col>
-	                  <Col xs={24}>
-	                    <Form.Item name="requirement" label="需求内容" rules={[{ required: true, message: '请输入需求内容' }]}>
-	                      <Input.TextArea rows={3} placeholder="填写业务背景、使用场景和加工逻辑要求" />
-	                    </Form.Item>
-	                  </Col>
-	                  <Col xs={24}>
-                      <div className="review-content-fieldset">
-                        <div className="review-content-fieldset-title">待评审内容</div>
-                        <Row gutter={[12, 0]}>
-                          <Col xs={24} md={12}>
-                            <Form.Item name="paramFields" label="因子加工输入字段">
-                              <Input.TextArea rows={3} placeholder="每行一个字段，建议格式：字段名 | 字段来源 | 用途" />
-                            </Form.Item>
-                          </Col>
-                          <Col xs={24} md={12}>
-                            <Form.Item name="defaultValues" label="默认值">
-                              <Input.TextArea rows={3} readOnly />
-                            </Form.Item>
-                          </Col>
-                          <Col xs={24}>
-                            <Form.Item name="procLogic" label="加工逻辑" rules={[{ required: true, message: '请输入加工逻辑' }]}>
-                              <Input.TextArea rows={4} placeholder="逐步填写待评审加工逻辑" />
-                            </Form.Item>
-                          </Col>
-                        </Row>
-                      </div>
-	                  </Col>
-	                </Row>
-		                <div className="single-action-panel">
-	                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-	                    <Typography.Text className="single-action-copy">
-	                      <strong>执行操作</strong>
-	                      <span>主路径优先一键串联，分步操作用于调试和复用标准。</span>
-	                    </Typography.Text>
-	                    <Space size={12} wrap>
-	                      <Checkbox
-	                        checked={showExecutionLog}
-	                        disabled={executionDisabled}
-	                        onChange={(event) => setShowExecutionLog(event.target.checked)}
-	                      >
-	                        展示执行日志
-	                      </Checkbox>
-	                    </Space>
-	                    <div className="single-action-controls">
-	                    <Button
-	                      block
-	                      size="middle"
-	                      type="primary"
-	                      loading={oneClickRunning}
-	                      disabled={executionDisabled && !oneClickRunning}
+            <Form
+                form={form}
+                layout="vertical"
+                initialValues={{ apiNames: [], defaultValues: DEFAULT_VALUE_SEMANTICS }}
+                className="single-review-form"
+                onValuesChange={(_, values) => {
+                  try {
+                    window.localStorage.setItem(SINGLE_DRAFT_KEY, JSON.stringify(values))
+                  } catch {
+                    // 本地存储不可用时不影响当前编辑。
+                  }
+                }}
+              >
+                <Form.Item name="factorName" label="因子名称" rules={[{ required: true, message: '请输入因子名称' }]}>
+                  <Input disabled={loading} placeholder="例如：近30日交易金额" />
+                </Form.Item>
+                <Form.Item
+                  name="apiNames"
+                  label={(
+                    <Space size={8}>
+                      <span>关联接口文档</span>
+                      <Button type="link" size="small" onClick={() => void openSelectedApiDoc()}>查看已选接口</Button>
+                    </Space>
+                  )}
+                  rules={[{ required: true, message: '至少选择一个接口文档' }]}
+                >
+                  <Select
+                    disabled={loading}
+                    mode="multiple"
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="搜索并选择接口文档"
+                    options={apiDocs.map((item) => ({
+                      label: `${item.name}${item.category ? ` · ${item.category}` : ''}`,
+                      value: item.name,
+                    }))}
+                  />
+                </Form.Item>
+                <Form.Item name="requirement" label="需求内容" rules={[{ required: true, message: '请输入需求内容' }]}>
+                  <Input.TextArea disabled={loading} rows={4} placeholder="填写业务背景、使用场景和加工逻辑要求" />
+                </Form.Item>
+                <div className="review-content-fieldset">
+                  <div className="review-content-fieldset-title">待评审内容</div>
+                  <Form.Item name="paramFields" label="因子加工输入字段">
+                    <Input.TextArea disabled={loading} rows={3} placeholder="每行一个字段，建议格式：字段名 | 字段来源 | 用途" />
+                  </Form.Item>
+                  <Form.Item name="procLogic" label="加工逻辑" rules={[{ required: true, message: '请输入加工逻辑' }]}>
+                    <Input.TextArea disabled={loading} rows={6} placeholder="逐步填写待评审加工逻辑" />
+                  </Form.Item>
+                  <Form.Item name="defaultValues" label="默认值">
+                    <Input.TextArea
+                      disabled={loading}
+                      rows={2}
+                      placeholder="填写字段异常、无匹配记录等情况下的默认返回规则"
+                    />
+                  </Form.Item>
+                </div>
+                <div className="single-primary-actions">
+                  <Button
+                    size="large"
+                    type="primary"
+                    loading={oneClickRunning}
+                    disabled={executionDisabled && !oneClickRunning}
                       onClick={handleOneClickReview}
-	                    >
-	                      {oneClickButtonText}
-	                    </Button>
-	                      <Select
-                          className="single-step-select"
-	                        size="small"
-	                        placeholder="分步操作"
-                        value={undefined}
-                        options={[
-                          { label: '仅生成标准', value: 'phase1', disabled: executionDisabled },
-                          { label: '执行加工逻辑评审', value: 'phase2', disabled: executionDisabled || !phase1?.standardFileId },
-                        ]}
-                        onSelect={(value) => {
-                          if (value === 'phase1') void handlePhase1()
-	                          if (value === 'phase2') void handlePhase2()
-	                        }}
-	                      />
-	                    </div>
-                  </Space>
+                  >
+                    {oneClickRunning ? '评审中...' : '开始评审'}
+                  </Button>
+                  {loading ? (
+                    <Button danger loading={stoppingExecution} onClick={handleStopExecution}>终止执行</Button>
+                  ) : null}
+                  <Button disabled={!executionLogs.length} onClick={() => setExecutionLogOpen(true)}>执行详情</Button>
+                  <Tag color={userStatusColor}>{userStatus}</Tag>
                 </div>
               </Form>
-            </Spin>
-          </Card>
+            {error ? (
+              <Alert
+                className="single-inline-error"
+                type="error"
+                showIcon
+                message="评审执行失败"
+                description={error}
+                action={<Button size="small" onClick={() => setExecutionLogOpen(true)}>查看执行详情</Button>}
+              />
+            ) : null}
+          </section>
         </Col>
 
-        <Col xs={24} xl={8} className="single-side-col">
-          <div className="single-side-stack">
-            <Card className="compact-card single-status-card" title="执行状态" style={surfaceStyle}>
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <div className="single-status-row">
-                  <span>Phase 1</span>
-                  <Tag color={phase1Tone === 'success' ? undefined : phase1Tone} style={statusTagStyle[phase1Tone]}>{phase1StatusText}</Tag>
-                </div>
-                <div className="single-status-row">
-                  <span>Phase 2</span>
-                  <Tag color={phase2Tone === 'success' ? undefined : phase2Tone} style={statusTagStyle[phase2Tone]}>{phase2StatusText}</Tag>
-                </div>
-                <div className="single-status-row">
-                  <span>当前阶段</span>
-                  <Typography.Text strong ellipsis>{currentTaskPhaseText}</Typography.Text>
-                </div>
-                <Button
-                  block
-                  disabled={!executionLogs.length}
-                  onClick={() => setExecutionLogOpen(true)}
-                >
-                  查看执行日志（{executionLogs.length}）
-                </Button>
-                <Button
-                  block
-                  danger
-                  disabled={!loading || stoppingExecution}
-                  loading={stoppingExecution}
-                  onClick={handleStopExecution}
-                >
-                  停止执行
-                </Button>
-                {error ? <Alert type="error" showIcon message="执行失败" description={error} /> : null}
-                {stoppedPhase ? (
-                  <Typography.Text type="warning" style={{ fontSize: 12 }}>执行已停止，可调整输入后重新发起评审。</Typography.Text>
-                ) : !error && !loading ? (
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>等待状态会保留当前输入，可继续编辑后重新执行。</Typography.Text>
+        <Col span={24} className="single-result-pane">
+          <section className="work-surface single-result-surface" aria-label="评审结果">
+            <div className="surface-heading">
+              <div>
+                <Typography.Title level={5}>评审结果</Typography.Title>
+                <Typography.Text type="secondary">评审完成后直接展示报告正文。</Typography.Text>
+              </div>
+              <Space size={8}>
+                <ArtifactDocumentButton fileId={phase1?.standardFileId} title="标准加工规范" onNotice={onNotice} />
+                {phase2?.reviewFileId ? (
+                  <Button href={`/outputs/${encodeURIComponent(phase2.reviewFileId)}`} download={phase2.reviewFileId}>
+                    下载评审报告
+                  </Button>
                 ) : null}
               </Space>
-            </Card>
-            <ResultArtifactBar
-              phase1={phase1}
-              phase2={phase2}
-              onNotice={onNotice}
-            />
-          </div>
+            </div>
+            <div className="single-result-content">
+              {loadingPhase2 ? (
+                <Spin />
+              ) : result ? (
+                <ReviewResultPanel
+                  result={result}
+                  phase1={phase1}
+                  phase2={phase2}
+                  onOpenArtifact={handleOpenArtifact}
+                />
+              ) : (
+                <EmptyState title={loading ? '正在生成标准并执行评审…' : '填写左侧内容并开始评审。'} />
+              )}
+            </div>
+          </section>
         </Col>
       </Row>
-
-      <Card className="compact-card result-panel" title="评审结果" style={surfaceStyle}>
-        {loadingPhase2 ? (
-          <Spin />
-        ) : result ? (
-          <ReviewResultPanel
-            result={result}
-            phase1={phase1}
-            phase2={phase2}
-            onOpenArtifact={handleOpenArtifact}
-          />
-        ) : (
-          <EmptyState title="Phase 2 完成后在这里展示评审结果文档。" />
-        )}
-      </Card>
 
       <Modal
         title={drawerTitle}
@@ -1246,6 +1233,30 @@ export function SingleReview(props: SingleReviewProps) {
         )}
       </Modal>
 
+      <Drawer
+        title="接口文档"
+        width="min(920px, 78vw)"
+        open={pageActive && apiDocOpen}
+        onClose={() => setApiDocOpen(false)}
+        extra={(
+          <Select
+            style={{ width: 280 }}
+            value={apiDocDetail?.name}
+            placeholder="切换已选接口"
+            options={(draftPreview?.apiNames || []).map((name) => ({ label: name, value: name }))}
+            onChange={(name) => void openSelectedApiDoc(name)}
+          />
+        )}
+      >
+        <Spin spinning={apiDocLoading}>
+          {apiDocDetail?.content ? (
+            <MarkdownViewer content={apiDocDetail.content} fileName={`${apiDocDetail.name}.md`} />
+          ) : (
+            <EmptyState title="暂无接口文档内容。" />
+          )}
+        </Spin>
+      </Drawer>
+
       <Modal
         title="执行日志"
         open={pageActive && executionLogOpen}
@@ -1268,7 +1279,7 @@ export function SingleReview(props: SingleReviewProps) {
             },
             {
               key: 'debug',
-              label: `调试输出（${debugLogCount}）`,
+              label: `Claude 输入/输出（${debugLogCount}）`,
               children: (
                 <div className="execution-log-modal-body">
                   {renderExecutionTimeline(debugTimelineLogs)}

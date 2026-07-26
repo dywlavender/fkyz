@@ -15,6 +15,8 @@ raw/
 validation/
 logs/
 *.log
+risk_review_web/data/review_records.json
+.playwright-cli/
 
 # Local data
 *.xlsx

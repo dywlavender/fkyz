@@ -72,8 +72,6 @@ async function refreshGlobalPool() {
     if (!res.ok) return;
     const data = await res.json();
     renderGlobalPool(data.pool);
-    const input = $("#batchConcurrency");
-    if (input && data.pool?.maxWorkers) input.max = String(data.pool.maxWorkers);
   } catch (_) {}
 }
 
@@ -2372,7 +2370,6 @@ async function startBatchReview() {
       body: JSON.stringify({
         clientId: CLIENT_INSTANCE_ID,
         rows,
-        concurrency: Number($("#batchConcurrency")?.value || 1),
         retry: Number($("#batchRetry")?.value || 0),
         resume: ($("#batchResume")?.value || "1") === "1",
       }),

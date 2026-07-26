@@ -71,7 +71,6 @@ interface TaskFormValues {
   monthDay?: number
   cron?: string
   standardFile?: string
-  concurrency: number
   ignoreErrorRows?: boolean
 }
 
@@ -79,7 +78,7 @@ const DEFAULT_FORM_VALUES: TaskFormValues = {
   taskName: '',
   enabled: true,
   mode: 'phase1_phase2',
-  runtimeMode: 'mock',
+  runtimeMode: 'claude',
   failurePolicy: 'continue',
   scheduleType: 'daily',
   runTime: dayjs('02:00', 'HH:mm'),
@@ -87,7 +86,6 @@ const DEFAULT_FORM_VALUES: TaskFormValues = {
   monthDay: 1,
   cron: '0 2 * * *',
   standardFile: '',
-  concurrency: 1,
   ignoreErrorRows: false,
 }
 
@@ -140,6 +138,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
   const [detailTask, setDetailTask] = useState<ScheduledTask | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
+  const [openActionTaskId, setOpenActionTaskId] = useState<string | null>(null)
   const [actionLoadingIds, setActionLoadingIds] = useState<string[]>([])
   const [backendUnavailable, setBackendUnavailable] = useState(false)
 
@@ -249,6 +248,9 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
         return (
           <Dropdown
             trigger={['click']}
+            open={openActionTaskId === record.taskId}
+            onOpenChange={(open) => setOpenActionTaskId(open ? record.taskId : null)}
+            destroyOnHidden
             dropdownRender={() => (
               <Card size="small" style={{ width: 168 }}>
                 <Space direction="vertical" size={2} style={{ width: '100%' }}>
@@ -309,7 +311,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
     const values = form.getFieldsValue()
     try {
       const result = await previewScheduledTaskImport(file, {
-        mode: values.mode,
+        mode: 'phase1_phase2',
         standardFile: values.standardFile,
       })
       setPreview(result)
@@ -332,6 +334,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
   }
 
   async function openDetail(taskId: string) {
+    setOpenActionTaskId(null)
     try {
       const task = await fetchScheduledTask(taskId)
       setDetailTask(task)
@@ -343,6 +346,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
   }
 
   async function openEditor(taskId: string) {
+    setOpenActionTaskId(null)
     try {
       const task = await fetchScheduledTask(taskId)
       setEditingTaskId(taskId)
@@ -360,8 +364,8 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
       form.setFieldsValue({
         taskName: task.taskName,
         enabled: task.enabled,
-        mode: task.mode,
-        runtimeMode: task.runtimeMode,
+        mode: 'phase1_phase2',
+        runtimeMode: 'claude',
         failurePolicy: task.failurePolicy,
         scheduleType: task.scheduleType,
         runDate: task.runDate ? dayjs(task.runDate, 'YYYY-MM-DD') : undefined,
@@ -370,7 +374,6 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
         monthDay: task.monthDay ? Number(task.monthDay) : 1,
         cron: task.cron || '',
         standardFile: task.standardFile || '',
-        concurrency: task.concurrency,
         ignoreErrorRows: false,
       })
       setCreatorOpen(true)
@@ -381,6 +384,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
   }
 
   async function toggleTask(task: ScheduledTask) {
+    setOpenActionTaskId(null)
     setActionLoading(task.taskId, true)
     try {
       if (task.enabled) {
@@ -404,6 +408,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
   }
 
   async function handleDelete(taskId: string) {
+    setOpenActionTaskId(null)
     setActionLoading(taskId, true)
     try {
       await deleteScheduledTask(taskId)
@@ -422,6 +427,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
   }
 
   async function handleRunNow(taskId: string) {
+    setOpenActionTaskId(null)
     setActionLoading(taskId, true)
     try {
       const run = await runScheduledTaskNow(taskId)
@@ -439,7 +445,6 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
   }
 
   const watchedScheduleType = Form.useWatch('scheduleType', { form, preserve: true })
-  const watchedMode = Form.useWatch('mode', { form, preserve: true })
   const watchedIgnoreErrorRows = Form.useWatch('ignoreErrorRows', { form, preserve: true })
 
   const canCreate = useMemo(() => {
@@ -469,9 +474,8 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
         weekday: values.weekday,
         monthDay: values.monthDay ? String(values.monthDay) : undefined,
         cron: values.cron,
-        mode: values.mode,
-        runtimeMode: values.runtimeMode,
-        concurrency: values.concurrency,
+        mode: 'phase1_phase2',
+        runtimeMode: 'claude',
         failurePolicy: values.failurePolicy,
         standardFile: values.standardFile,
         items: preview.items,
@@ -692,28 +696,6 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
                 <Form.Item name="enabled" label="创建后启用" valuePropName="checked">
                   <Switch />
                 </Form.Item>
-                <Form.Item name="mode" label="执行模式" rules={[{ required: true, message: '请选择执行模式' }]}>
-                  <Radio.Group
-                    options={[
-                      { value: 'phase1_only', label: 'Phase 1 only' },
-                      { value: 'phase1_phase2', label: 'Phase 1 + Phase 2' },
-                      { value: 'phase2_only', label: 'Phase 2 only' },
-                    ]}
-                  />
-                </Form.Item>
-                {watchedMode === 'phase2_only' ? (
-                  <Form.Item name="standardFile" label="任务级标准来源">
-                    <Input placeholder="可选，若行内未填写 standardFile 则使用这里的标准文件 ID" />
-                  </Form.Item>
-                ) : null}
-                <Form.Item name="runtimeMode" label="运行模式" rules={[{ required: true, message: '请选择运行模式' }]}>
-                  <Radio.Group
-                    options={[
-                      { value: 'mock', label: 'Mock' },
-                      { value: 'claude', label: 'Claude' },
-                    ]}
-                  />
-                </Form.Item>
                 <Form.Item name="failurePolicy" label="失败策略" rules={[{ required: true, message: '请选择失败策略' }]}>
                   <Radio.Group
                     options={[
@@ -721,9 +703,6 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
                       { value: 'stop', label: '失败停止' },
                     ]}
                   />
-                </Form.Item>
-                <Form.Item name="concurrency" label="并发数">
-                  <InputNumber min={1} max={5} style={{ width: '100%' }} />
                 </Form.Item>
                 {renderScheduleFields(watchedScheduleType)}
               </Card>
@@ -738,7 +717,7 @@ export function ScheduledTasks({ onNotice }: ScheduledTasksProps) {
                   </Typography.Paragraph>
                   <Typography.Paragraph>
                     任务将按 {watchedScheduleType ? SCHEDULE_TYPE_LABELS[watchedScheduleType] : '-'} 周期执行，
-                    模式为 {watchedMode ? TASK_MODE_LABELS[watchedMode] : '-'}。
+                    模式为 {TASK_MODE_LABELS.phase1_phase2}。
                   </Typography.Paragraph>
                 </Space>
               </Card>

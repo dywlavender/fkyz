@@ -21,6 +21,7 @@ import {
   Space,
   Spin,
   Statistic,
+  Switch,
   Table,
   Tag,
   Typography,
@@ -123,6 +124,7 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
   const [documentTitle, setDocumentTitle] = useState('')
   const [documentText, setDocumentText] = useState('')
   const [documentLoading, setDocumentLoading] = useState(false)
+  const [differencesOnly, setDifferencesOnly] = useState(true)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -257,6 +259,17 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
     { title: '案例', dataIndex: 'caseName', ellipsis: true, width: 190 },
     { title: '轮次', dataIndex: 'round', width: 70, align: 'center' },
     {
+      title: '模式差异',
+      width: 120,
+      render: (_value, record) => {
+        const conclusionDiff = record.direct.actualConclusion !== record.twoStage.actualConclusion
+        const issueDiff = record.direct.issuesMatched !== record.twoStage.issuesMatched
+        return conclusionDiff || issueDiff
+          ? <Tag color="error">{conclusionDiff ? '结论不同' : '问题命中不同'}</Tag>
+          : <Tag>结果一致</Tag>
+      },
+    },
+    {
       title: '期望',
       dataIndex: 'expectedConclusion',
       width: 90,
@@ -277,7 +290,7 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
       ),
     },
     {
-      title: '两阶段评审',
+      title: '标准驱动评审',
       width: 210,
       render: (_value, record) => (
         <Space direction="vertical" size={3}>
@@ -298,10 +311,10 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
           <Button type="link" disabled={!record.direct.reviewFile} onClick={() => openDocument(record.direct.reviewFile, '直接评审报告')}>
             直接评审
           </Button>
-          <Button type="link" disabled={!record.twoStage.standardFile} onClick={() => openDocument(record.twoStage.standardFile, '两阶段标准文档')}>
-            标准文档
-          </Button>
-          <Button type="link" disabled={!record.twoStage.reviewFile} onClick={() => openDocument(record.twoStage.reviewFile, '两阶段评审报告')}>
+            <Button type="link" disabled={!record.twoStage.standardFile} onClick={() => openDocument(record.twoStage.standardFile, '标准加工规范')}>
+              标准文档
+            </Button>
+          <Button type="link" disabled={!record.twoStage.reviewFile} onClick={() => openDocument(record.twoStage.reviewFile, '标准驱动评审报告')}>
             评审报告
           </Button>
         </Space>
@@ -319,7 +332,7 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
       render: (_value, record) => accuracy(record.summary?.direct?.fullAccuracy),
     },
     {
-      title: '两阶段命中率',
+      title: '标准驱动命中率',
       width: 140,
       render: (_value, record) => accuracy(record.summary?.twoStage?.fullAccuracy),
     },
@@ -336,6 +349,12 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
 
   const directMetric = activeExperiment?.summary?.direct
   const twoStageMetric = activeExperiment?.summary?.twoStage
+  const visibleExperimentItems = (activeExperiment?.items || []).filter((item) => {
+    if (!differencesOnly) return true
+    return item.direct.actualConclusion !== item.twoStage.actualConclusion
+      || item.direct.issuesMatched !== item.twoStage.issuesMatched
+      || item.direct.status !== item.twoStage.status
+  })
 
   return (
     <Space className="app-page" direction="vertical" size={12} style={{ width: '100%' }}>
@@ -352,7 +371,7 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
         type="info"
         showIcon
         message="同一案例、两种评审方式、同一套人工基准"
-        description="直接评审只读取需求内容和待评审加工逻辑；两阶段评审按现有 Phase 1 + Phase 2 链路执行。命中率来自验证案例中的期望结论与问题级标注，不以任一模型产物作为正确答案。"
+        description="直接评审读取需求内容和待评审加工逻辑；标准驱动评审先生成标准加工规范，再据此评审。命中率来自验证案例中的人工期望，不以任一模型产物作为正确答案。"
       />
 
       <Card
@@ -431,7 +450,7 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
             </Col>
             <Col xs={24} lg={10}>
               <Card className="compact-card">
-                <Statistic title="两阶段评审 · 综合命中率" value={twoStageMetric?.fullAccuracy ?? 0} precision={1} suffix="%" />
+                <Statistic title="标准驱动评审 · 综合命中率" value={twoStageMetric?.fullAccuracy ?? 0} precision={1} suffix="%" />
                 <Typography.Text type="secondary">{twoStageMetric ? metricDescription(twoStageMetric) : '-'}</Typography.Text>
               </Card>
             </Col>
@@ -443,7 +462,7 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
                     activeExperiment.summary.winner === 'direct'
                       ? '直接评审'
                       : activeExperiment.summary.winner === 'twoStage'
-                        ? '两阶段'
+                        ? '标准驱动'
                         : '持平'
                   }
                 />
@@ -452,12 +471,21 @@ export function ReviewModeExperimentPage({ onNotice }: ReviewModeExperimentPageP
             </Col>
           </Row>
 
-          <Card className="compact-card" title="逐案例结果">
+          <Card
+            className="compact-card"
+            title="逐案例结果"
+            extra={(
+              <Space>
+                <Typography.Text type="secondary">仅看差异</Typography.Text>
+                <Switch size="small" checked={differencesOnly} onChange={setDifferencesOnly} />
+              </Space>
+            )}
+          >
             <Table
               rowKey="itemId"
               size="small"
               columns={resultColumns}
-              dataSource={activeExperiment.items}
+              dataSource={visibleExperimentItems}
               pagination={{ pageSize: 10, showSizeChanger: true }}
               scroll={{ x: 1050 }}
               locale={{ emptyText: <Empty description="实验尚未产生结果" /> }}

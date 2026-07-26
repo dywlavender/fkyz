@@ -53,8 +53,8 @@ const items: MenuProps['items'] = [
     icon: <DatabaseOutlined />,
     label: '质量验证',
     children: [
-      { key: 'validation-set', label: '执行批次' },
       { key: 'validation-cases', label: '验证案例' },
+      { key: 'validation-set', label: '验证历史记录' },
       { key: 'review-mode-experiment', label: '模式对比' },
     ],
   },
@@ -76,7 +76,7 @@ const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
   'single-review': { title: '评审中心', subtitle: '提交加工逻辑并获得确定的评审结论' },
   'batch-review': { title: '批量评审', subtitle: '批量导入、并发执行与结果回收' },
   'scheduled-tasks': { title: '定时评审', subtitle: '维护周期性任务与最近运行状态' },
-  'validation-set': { title: '质量验证', subtitle: '验证批次、案例资产与模式对比' },
+  'validation-set': { title: '验证结果', subtitle: '查看验证批次、预期一致率与案例执行明细' },
   'validation-cases': { title: '验证案例', subtitle: '维护人工核验后的案例与期望结果' },
   'review-mode-experiment': { title: '模式对比', subtitle: '比较不同评审模式的结论与问题差异' },
   history: { title: '评审记录', subtitle: '统一追溯单因子、批量、定时和验证任务' },

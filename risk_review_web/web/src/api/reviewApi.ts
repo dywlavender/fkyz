@@ -356,6 +356,14 @@ export async function fetchValidationRunGroups(page = 1, pageSize = 20): Promise
   return requestApiData(`/api/validation-run-groups?page=${page}&pageSize=${pageSize}`)
 }
 
+export async function batchDeleteValidationRunGroups(groupIds: string[]): Promise<BatchOperationResult> {
+  return requestApiData<BatchOperationResult>('/api/validation-run-groups/batch-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ groupIds }),
+  })
+}
+
 export async function fetchValidationRun(runId: string): Promise<ValidationRun> {
   return requestApiData<ValidationRun>(`/api/validation-runs/${encodeURIComponent(runId)}`)
 }

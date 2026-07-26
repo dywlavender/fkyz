@@ -1,9 +1,9 @@
-import { EyeOutlined, ReloadOutlined } from '@ant-design/icons'
-import { Button, Drawer, Progress, Space, Table, Tag, Typography } from 'antd'
+import { DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Button, Drawer, Modal, Progress, Space, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useState } from 'react'
 
-import { fetchValidationRunGroups } from '../api/reviewApi'
+import { batchDeleteValidationRunGroups, fetchValidationRunGroups } from '../api/reviewApi'
 import { EmptyState } from '../components/EmptyState'
 import { HeaderActions, usePageActive } from '../components/AppLayout'
 import { StatusBadge } from '../components/StatusBadge'
@@ -38,6 +38,8 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
   const [pageSize, setPageSize] = useState(20)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([])
   const [activeBatch, setActiveBatch] = useState<ValidationBatch | null>(null)
 
   const load = useCallback(async () => {
@@ -47,7 +49,7 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
       setBatches(result.items)
       setTotal(result.total)
     } catch (caught) {
-      onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '验证执行批次加载失败' })
+      onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '验证结果加载失败' })
     } finally {
       setLoading(false)
     }
@@ -55,9 +57,44 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
 
   useEffect(() => { void load() }, [load])
 
+  function confirmBatchDelete() {
+    Modal.confirm({
+      title: '确认删除验证结果？',
+      content: `将删除已选 ${selectedGroupIds.length} 个验证批次的运行记录，标准文档和评审文档仍会保留。`,
+      okText: '删除所选',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setDeleting(true)
+        try {
+          const result = await batchDeleteValidationRunGroups(selectedGroupIds)
+          const failedItems = result.items.filter((item) => !item.success)
+          setSelectedGroupIds([])
+          if (activeBatch && result.items.some((item) => item.id === activeBatch.groupId && item.success)) {
+            setActiveBatch(null)
+          }
+          onNotice({
+            type: result.failed ? 'warning' : 'success',
+            message: `删除完成：成功 ${result.success}，失败 ${result.failed}`,
+            description: failedItems.map((item) => `${item.id}: ${item.error || '删除失败'}`).join('；') || undefined,
+          })
+          if (result.success && batches.length === result.success && page > 1) {
+            setPage((value) => Math.max(1, value - 1))
+          } else {
+            await load()
+          }
+        } catch (caught) {
+          onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '删除验证结果失败' })
+        } finally {
+          setDeleting(false)
+        }
+      },
+    })
+  }
+
   const columns: ColumnsType<ValidationBatch> = [
     {
-      title: '执行批次',
+      title: '验证批次',
       dataIndex: 'groupId',
       ellipsis: true,
       render: (value: string) => <Typography.Text copyable={{ text: value }}>{value.slice(0, 16)}</Typography.Text>,
@@ -94,6 +131,15 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <HeaderActions page="validation-set">
+        <Button
+          danger
+          icon={<DeleteOutlined />}
+          disabled={!selectedGroupIds.length}
+          loading={deleting}
+          onClick={confirmBatchDelete}
+        >
+          删除所选
+        </Button>
         <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button>
       </HeaderActions>
       {batches.length || loading ? (
@@ -103,6 +149,15 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
           loading={loading}
           columns={columns}
           dataSource={batches}
+          rowSelection={{
+            selectedRowKeys: selectedGroupIds,
+            preserveSelectedRowKeys: true,
+            onChange: (keys) => setSelectedGroupIds(keys.map(String)),
+            getCheckboxProps: (record) => ({
+              disabled: record.status === 'running',
+              name: record.groupId,
+            }),
+          }}
           onRow={(record) => ({ onClick: () => setActiveBatch(record) })}
           pagination={{
             current: page,
@@ -118,7 +173,7 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
           scroll={{ x: 1100 }}
         />
       ) : (
-        <EmptyState title="暂无验证执行批次，请在“验证案例”中发起执行。" />
+        <EmptyState title="暂无验证结果，请在“验证案例”中发起执行。" />
       )}
       <Drawer
         title="验证批次详情"

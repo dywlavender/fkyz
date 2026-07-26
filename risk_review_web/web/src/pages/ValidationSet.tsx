@@ -1,6 +1,7 @@
 import { DeleteOutlined, EditOutlined, EyeOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, StopOutlined, UploadOutlined } from '@ant-design/icons'
 import {
   Alert,
+  App as AntdApp,
   Button,
   Card,
   Col,
@@ -112,6 +113,24 @@ function isTerminalTask(task?: TaskRecord) {
   return TERMINAL_TASK_STATUSES.has(String(task?.status || '').toLowerCase())
 }
 
+function selectRegressionTask(
+  tasks: TaskRecord[],
+  storedTask: TaskRecord<RegressionTaskResult> | undefined,
+  clientId: string,
+) {
+  const regressions = tasks
+    .filter((item) => item.taskType === 'regression')
+    .sort((left, right) => (right.created || 0) - (left.created || 0)) as TaskRecord<RegressionTaskResult>[]
+  const activeRegressions = regressions.filter((item) => !isTerminalTask(item))
+
+  if (storedTask && !isTerminalTask(storedTask)) return storedTask
+  return activeRegressions.find((item) => item.clientId === clientId)
+    || activeRegressions[0]
+    || storedTask
+    || regressions.find((item) => item.clientId === clientId)
+    || regressions[0]
+}
+
 function taskStatusLabel(value?: string) {
   const labels: Record<string, string> = {
     queued: '排队中',
@@ -203,6 +222,7 @@ function matchTag(run?: ValidationRun) {
 
 export function ValidationSet({ headerPage = 'validation-set', examples, onNotice }: ValidationSetProps) {
   const pageActive = usePageActive()
+  const { modal } = AntdApp.useApp()
   const [form] = Form.useForm<CaseFormValues>()
   const [cases, setCases] = useState<ValidationCase[]>([])
   const [runs, setRuns] = useState<ValidationRun[]>([])
@@ -296,28 +316,24 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
   }, [])
 
   useEffect(() => {
+    if (!pageActive) return
     let disposed = false
 
     async function restoreRegressionTask() {
       setRegressionRecovering(true)
       try {
-        let task: TaskRecord<RegressionTaskResult> | undefined
+        let storedTask: TaskRecord<RegressionTaskResult> | undefined
         const storedTaskId = window.localStorage.getItem(REGRESSION_TASK_STORAGE_KEY) || ''
         if (storedTaskId) {
           try {
-            task = await fetchTask(storedTaskId) as TaskRecord<RegressionTaskResult>
+            storedTask = await fetchTask(storedTaskId) as TaskRecord<RegressionTaskResult>
           } catch (caught) {
             if (!(caught instanceof AppError) || caught.status !== 404) throw caught
             window.localStorage.removeItem(REGRESSION_TASK_STORAGE_KEY)
           }
         }
 
-        if (!task) {
-          const clientId = getClientId()
-          task = (await fetchTasks())
-            .filter((item) => item.taskType === 'regression' && item.clientId === clientId)
-            .sort((left, right) => (right.created || 0) - (left.created || 0))[0] as TaskRecord<RegressionTaskResult> | undefined
-        }
+        const task = selectRegressionTask(await fetchTasks(), storedTask, getClientId())
 
         if (disposed || !task?.id) return
         window.localStorage.setItem(REGRESSION_TASK_STORAGE_KEY, task.id)
@@ -338,7 +354,7 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
     return () => {
       disposed = true
     }
-  }, [])
+  }, [pageActive])
 
   useEffect(() => {
     if (!regressionTaskId) return
@@ -531,7 +547,7 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
   }
 
   function confirmDelete(record: ValidationCase) {
-    Modal.confirm({
+    modal.confirm({
       title: '确认删除验证案例？',
       content: `将删除「${record.caseName}」，历史运行记录会保留。`,
       okText: '删除',
@@ -575,7 +591,7 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
   }
 
   function confirmBatchDelete() {
-    Modal.confirm({
+    modal.confirm({
       title: '确认批量删除验证案例？',
       content: `将删除已选 ${selectedRowKeys.length} 条案例，历史运行记录会保留。`,
       okText: '批量删除',
@@ -635,7 +651,7 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
 
   function terminateRegression() {
     if (!regressionTaskId || !regressionActive || regressionCancelling) return
-    Modal.confirm({
+    modal.confirm({
       title: '确认终止本次回归验证？',
       content: '排队中的案例会被取消，正在运行的 Claude 调用会被终止，已完成结果仍会保留。',
       okText: '终止执行',
@@ -707,13 +723,14 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
       width: 280,
       render: (_value, record) => {
         const latestRun = latestRunByCase.get(record.caseId)
+        const caseRunning = runningIds.includes(record.caseId) || Boolean(latestRun && !isTerminalRun(latestRun))
         return (
           <Space wrap onClick={(event) => event.stopPropagation()}>
             <Button
               type="link"
               icon={<PlayCircleOutlined />}
-              disabled={regressionActive && !runningIds.includes(record.caseId)}
-              loading={runningIds.includes(record.caseId)}
+              disabled={regressionActive && !caseRunning}
+              loading={caseRunning}
               onClick={() => executeOne(record)}
             >
               执行验证

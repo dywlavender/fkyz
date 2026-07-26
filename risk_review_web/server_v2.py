@@ -1117,6 +1117,48 @@ def save_validation_runs(runs: list[dict]):
     atomic_write_text(VALIDATION_RUNS_PATH, json.dumps(trimmed, ensure_ascii=False, indent=2))
 
 
+def batch_delete_validation_run_groups(group_ids: list[str]) -> dict:
+    ordered_group_ids = list(dict.fromkeys(str(item).strip() for item in group_ids if str(item).strip()))
+    with VALIDATION_RUNS_LOCK:
+        runs = parse_validation_runs()
+        grouped: dict[str, list[dict]] = {}
+        for run in runs:
+            group_id = str(run.get("groupId") or run.get("runId") or "")
+            if group_id:
+                grouped.setdefault(group_id, []).append(run)
+
+        removable: set[str] = set()
+        items: list[dict] = []
+        for group_id in ordered_group_ids:
+            group_runs = grouped.get(group_id)
+            if not group_runs:
+                items.append({"id": group_id, "success": False, "error": "验证批次不存在"})
+                continue
+            if any(
+                str(run.get("status") or "") in {"pending", "queued", "running", "cancelling"}
+                for run in group_runs
+            ):
+                items.append({"id": group_id, "success": False, "error": "执行中的验证批次不能删除"})
+                continue
+            removable.add(group_id)
+            items.append({"id": group_id, "success": True})
+
+        if removable:
+            save_validation_runs([
+                run
+                for run in runs
+                if str(run.get("groupId") or run.get("runId") or "") not in removable
+            ])
+
+    success_count = sum(1 for item in items if item["success"])
+    return {
+        "total": len(items),
+        "success": success_count,
+        "failed": len(items) - success_count,
+        "items": items,
+    }
+
+
 def recover_stale_validation_runs():
     with VALIDATION_RUNS_LOCK:
         runs = parse_validation_runs()
@@ -3457,6 +3499,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/validation-run-groups/batch-delete":
+            try:
+                payload = self.read_json_body()
+            except json.JSONDecodeError:
+                error_response(self, 400, "invalid json")
+                return
+            group_ids = [str(item) for item in payload.get("groupIds") or [] if str(item).strip()]
+            if not group_ids:
+                error_response(self, 400, "请至少选择一个验证批次")
+                return
+            success_response(self, batch_delete_validation_run_groups(group_ids))
+            return
         if parsed.path.startswith("/api/review-records/") and parsed.path.endswith("/archive"):
             record_id = unquote(parsed.path.split("/")[-2])
             try:

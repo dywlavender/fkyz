@@ -1,5 +1,5 @@
 import { DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'
-import { Button, Drawer, Modal, Progress, Space, Table, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Drawer, Progress, Space, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useState } from 'react'
 
@@ -33,6 +33,7 @@ interface ValidationBatch {
 
 function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => void }) {
   const pageActive = usePageActive()
+  const { modal } = AntdApp.useApp()
   const [batches, setBatches] = useState<ValidationBatch[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -58,7 +59,7 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
   useEffect(() => { void load() }, [load])
 
   function confirmBatchDelete() {
-    Modal.confirm({
+    modal.confirm({
       title: '确认删除验证结果？',
       content: `将删除已选 ${selectedGroupIds.length} 个验证批次的运行记录，标准文档和评审文档仍会保留。`,
       okText: '删除所选',

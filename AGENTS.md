@@ -17,7 +17,8 @@
 - 路径定义：`risk_review_web/paths.py`
 - Phase 1/Phase 2 Prompt：`risk_review_web/prompts/`
 - 阶段 Skill：`risk_review_web/prompts/risk-review-skill/phase/`
-- 因子加工开发规范唯一规则源：`risk_review_web/prompts/risk-review-skill/spec/factor_processing_spec.json`
+- Phase 1 因子加工开发规范：`risk_review_web/prompts/risk-review-skill/spec/phase1_processing_spec.json`
+- Phase 2 因子加工评审规范：`risk_review_web/prompts/risk-review-skill/spec/phase2_review_spec.json`
 - React 前端源码：`risk_review_web/web/src/`
 - React 前端构建配置：`risk_review_web/web/vite.config.ts`
 - React 前端构建产物：`risk_review_web/static/dist/`
@@ -44,32 +45,27 @@ outputs/
 
 文件保存必须由 Python 后端完成。Claude 只能向 stdout 输出正文，不得自行创建、修改、移动或删除文件。
 
-## 4. 当前标准契约（仅 v5）
+## 4. 当前业务契约
 
-- 标准 schema 固定为 `risk_review_standard_v5`，元数据 schema 固定为 `risk_review_standard_metadata_v5`。
+- 标准 schema 为 `risk_review_standard_v5`，元数据 schema 为 `risk_review_standard_metadata_v5`。
+- Phase 1 规则的唯一来源是 `risk_review_web/prompts/risk-review-skill/spec/phase1_processing_spec.json`。
+- Phase 2 规则的唯一来源是 `risk_review_web/prompts/risk-review-skill/spec/phase2_review_spec.json`。
+- 两个阶段不得读取或复制对方规则；阶段 Skill 只维护角色、处理流程和输出格式，不复制规则正文。
+- 业务规则不得在 Prompt、Skill、`AGENTS.md`、`CLAUDE.md` 或校验代码中作为独立事实来源手工重复维护；由构建脚本从规则 JSON 生成的派生产物除外。
+- 因子名只用于页面展示和文件命名，不得进入模型业务输入、评审判断或业务缓存键。
+- Phase 2 直接使用冻结的标准 Markdown 作为业务判定基准，不读取或重建结构化业务摘要。
 - 不保留 v2/v3/v4 兼容分支、旧摘要解析或旧 Prompt 契约；旧标准必须重新执行 Phase 1。
-- 因子加工开发规范是 Phase 1/Phase 2 共用的唯一规则源；Skill 只描述阶段操作，不复制规则正文。
-- Phase 1 生成唯一、最可能、可执行的标准加工逻辑，不生成多套候选方案。
-- 标准正文固定为“因子加工输入字段、标准加工逻辑、默认值兜底”三个部分。
-- 加工步骤使用开发规范定义的封闭逻辑类型；不输出不适用步骤。
-- 原始输入存在多种会产生不同结果的合理解释时，必须选择最可能口径并只输出唯一标准逻辑，不记录来源分类或决策过程。
-- 因子加工输入字段只列实际参与加工的叶子字段；字段完整路径必须从接口名称开始，固定写为“接口名称.接口内字段路径”；不得只写字段简称或接口内相对路径。纯数组、列表、对象容器不单列，通过叶子字段完整路径表达层级。
-- “因子名”只是展示和文件命名元数据，不得传给模型参与准出生成或评审判断。
-- 不存在“因子输出字段”评审维度。
-- 默认值只校验统一语义：“字段缺失、格式错误或数据异常时返回默认值”；具体返回值不进入标准，也不参与评审。
-- v5 元数据只记录输入、版本、checksum、生成契约和逻辑类型索引，不复制或改写标准正文中的业务规则。
+- 契约变更必须同步修改生成、校验、前端展示、Mock 和回归链路，不得通过新增兼容限制保留旧逻辑。
 
-契约变更必须完整修改生成、结构化摘要、校验、前端展示、Mock 和回归链路，不得通过新增兼容限制保留旧逻辑。
-
-## 5. 阶段
+## 5. 阶段数据边界
 
 ### Phase 1
 
-只接收需求内容、指定接口文档、公共业务规则和因子加工开发规范，生成三部分标准加工规范及 v5 元数据。不得读取待评审加工逻辑。
+输入包括需求内容、指定接口文档、公共业务规则、Phase 1 Skill 和 Phase 1 规则 JSON。不得读取待评审加工逻辑、Phase 2 Skill 或 Phase 2 规则。
 
 ### Phase 2
 
-直接依据冻结的标准加工规范和同版本因子加工开发规范评审待评审加工逻辑。原始需求仅用于引用证据；不得重新读取接口文档或公共业务规则，不得重新推导或改变 Phase 1 已冻结的标准逻辑。
+输入包括冻结的标准加工规范、原始需求、待评审加工逻辑、Phase 2 Skill 和 Phase 2 规则 JSON。原始需求只作为证据来源；不得读取接口文档、公共业务规则、Phase 1 Skill 或 Phase 1 规则。
 
 当前只执行最小技术防护：输出非空且必要 Markdown 章节可识别。严格完整性校验尚未启用，前后端不得保留无效校验开关。不得使用固定业务措辞或时间窗口表格项正则作为阶段阻断条件。
 
@@ -78,12 +74,11 @@ outputs/
 - Claude 使用 `-p --output-format text` 管道模式。
 - stdout 必须是完整 Markdown 正文；不得只输出摘要、路径、保存提示、计划或检查过程。
 - Claude 不得自行保存标准或报告；后端负责规范化、校验和落盘。
-- 调用目录必须保证读取到本项目的 `CLAUDE.md`，不得误读其他知识库运行契约。
 - Phase 1、Phase 2 只能读取当前阶段明确允许的 Skill 和输入。
 - 不得把因子名、内部任务 ID、客户端 ID 或线程池信息拼入模型业务输入。
-- Phase 1 必须在按任务创建的临时隔离工作目录中运行；目录内只复制 Phase 1 Skill、因子加工开发规范、当次指定接口文档和公共业务规则。
+- Phase 1 必须在按任务创建的临时隔离工作目录中运行；目录内只复制 Phase 1 Skill、Phase 1 因子加工开发规范、当次指定接口文档和公共业务规则。
 - Phase 1 Claude 调用只允许在隔离目录内使用只读 `Read`、`Glob`、`Grep`，必须禁用 Bash、写文件工具、Slash Commands、项目自定义配置和外部 MCP；任务结束后立即清理隔离目录。
-- Phase 2 必须在按任务创建的临时隔离工作目录中运行；目录内只复制 Phase 2 Skill 和同版本因子加工开发规范，冻结标准、原始需求和待评审逻辑通过 Prompt 提供。
+- Phase 2 必须在按任务创建的临时隔离工作目录中运行；目录内只复制 Phase 2 Skill 和 Phase 2 因子加工评审规范，冻结标准、原始需求和待评审逻辑通过 Prompt 提供。
 - Phase 2 Claude 调用使用与 Phase 1 相同的只读工具和隔离限制，任务结束后立即清理隔离目录。
 - 不得把允许读取的文件全文一次性拼入 Prompt 代替文件隔离。
 
@@ -134,21 +129,18 @@ outputs/
 
 ## 10. 验证要求
 
-修改后至少执行：
+根据修改范围执行对应验证：
 
-```bash
-python3 -m py_compile risk_review_web/server_v2.py risk_review_web/task_pool.py risk_review_web/artifacts.py risk_review_web/prompt_builder.py
-node --check risk_review_web/static/app.js
-cd risk_review_web/web && npm run typecheck && npm run build
-```
+| 修改范围 | 必须验证 |
+|---|---|
+| Python 后端 | 对相关模块执行 `python3 -m py_compile` |
+| 原有功能台 | 执行 `node --check risk_review_web/static/app.js` |
+| React 前端 | 在 `risk_review_web/web/` 执行 `npm run typecheck` 和 `npm run build` |
+| Phase 1 Prompt、Skill 或规则 | 重新生成或核对派生 Prompt，执行 Phase 1 Mock 冒烟 |
+| Phase 2 Prompt、Skill 或规则 | 重新生成或核对派生 Prompt，执行 Phase 2 Mock 冒烟 |
+| 全局任务池 | 验证并发上限、排队、公平调度和取消 |
+| 定时任务 | 至少验证一次手动触发和一次到期自动触发 |
+| 批量评审 | 至少执行一组多行批量验证 |
+| 验证集 | 至少执行一条回归案例 |
 
-并完成：
-
-- Mock 模式 Phase 1 冒烟
-- Mock 模式 Phase 2 冒烟
-- 涉及任务调度时，验证全局并发上限、排队、公平调度和取消
-- 涉及定时任务时，至少验证一次手动触发和一次到期自动触发，并在结束后清理测试任务、运行记录和产物
-- 涉及批量时，至少执行一组多行批量验证
-- 涉及验证集时，至少执行一条回归案例
-- 涉及 Prompt/Skill 时，重新生成或核对派生 Prompt，确保源文件与产物一致
-- 检查 `outputs/`，清理本次测试产物
+测试生成的临时任务、运行记录和 `outputs/` 产物必须在交付前清理。

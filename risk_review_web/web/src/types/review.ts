@@ -28,15 +28,19 @@ export interface ApiDocItem {
   content_size?: number
 }
 
-export interface FactorProcessingSpecResponse {
+export interface FactorProcessingSpecView {
   spec: {
     schema_version?: string
     spec_version?: string
     title?: string
-    principles?: Array<Record<string, unknown>>
     rules?: Array<Record<string, unknown>>
   }
   markdown: string
+}
+
+export interface FactorProcessingSpecResponse {
+  phase1: FactorProcessingSpecView
+  phase2: FactorProcessingSpecView
 }
 
 export interface TaskLog {
@@ -122,6 +126,11 @@ export interface StandardMetadataV5 {
   source_inputs?: {
     requirement?: string
     api_docs?: string[]
+  }
+  phase1_spec?: {
+    schema_version?: string
+    spec_version?: string
+    checksum?: string
   }
   logic_types?: string[]
 }

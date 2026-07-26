@@ -33,7 +33,8 @@ from risk_review_web.artifacts import (
     compute_phase1_checksum,
     compute_review_checksum,
     find_cached_phase1_standard,
-    load_factor_processing_spec,
+    load_phase1_processing_spec,
+    load_phase2_review_spec,
     normalize_phase1_output,
     normalize_review_output,
     read_phase1_standard,
@@ -51,8 +52,6 @@ from risk_review_web.business_rules import (
 )
 from risk_review_web.paths import (
     BUSINESS_RULES_PATH,
-    FACTOR_PROCESSING_SPEC_PATH,
-    FACTOR_PROCESSING_SPEC_DOC_PATH,
     EXAMPLES_DIR,
     EXAMPLES_PATH,
     VALIDATION_RUNS_PATH,
@@ -61,7 +60,11 @@ from risk_review_web.paths import (
     SCHEDULED_RUNS_PATH,
     OUTPUTS_DIR,
     PHASE1_SKILL_PATH,
+    PHASE1_PROCESSING_SPEC_DOC_PATH,
+    PHASE1_PROCESSING_SPEC_PATH,
     PHASE2_SKILL_PATH,
+    PHASE2_REVIEW_SPEC_DOC_PATH,
+    PHASE2_REVIEW_SPEC_PATH,
     RULE_ENGINE_BUILD_PATH,
     RULE_ENGINE_PHASE1_OUTPUT_PATH,
     RULE_ENGINE_PHASE2_OUTPUT_PATH,
@@ -1719,7 +1722,8 @@ def system_health() -> dict:
     required = [
         PHASE1_SKILL_PATH,
         PHASE2_SKILL_PATH,
-        FACTOR_PROCESSING_SPEC_PATH,
+        PHASE1_PROCESSING_SPEC_PATH,
+        PHASE2_REVIEW_SPEC_PATH,
         RULE_ENGINE_BUILD_PATH,
         RULE_ENGINE_PHASE1_OUTPUT_PATH,
         RULE_ENGINE_PHASE2_OUTPUT_PATH,
@@ -1830,7 +1834,7 @@ def claude_failure_stderr(stdout: str, stderr: str, returncode: int | None) -> s
 def create_phase1_isolated_workspace(task_id: str, payload: dict) -> Path:
     workspace = Path(tempfile.mkdtemp(prefix=f"risk-review-phase1-{task_id[:8]}-"))
     try:
-        allowed_sources = [PHASE1_SKILL_PATH, FACTOR_PROCESSING_SPEC_PATH, BUSINESS_RULES_PATH]
+        allowed_sources = [PHASE1_SKILL_PATH, PHASE1_PROCESSING_SPEC_PATH, BUSINESS_RULES_PATH]
         for identifier in payload.get("apiNames") or []:
             doc = get_api_doc(str(identifier))
             if doc is None:
@@ -1867,7 +1871,7 @@ def create_phase2_isolated_workspace(task_id: str) -> Path:
     workspace = Path(tempfile.mkdtemp(prefix=f"risk-review-phase2-{task_id[:8]}-"))
     try:
         staged_files = []
-        for source_path in (PHASE2_SKILL_PATH, FACTOR_PROCESSING_SPEC_PATH):
+        for source_path in (PHASE2_SKILL_PATH, PHASE2_REVIEW_SPEC_PATH):
             source_path = source_path.resolve()
             if not source_path.is_file():
                 continue
@@ -3449,10 +3453,18 @@ class Handler(BaseHTTPRequestHandler):
             json_response(self, 200, {"rules": parse_business_rules()})
         elif path == "/api/factor-processing-spec":
             success_response(self, {
-                "spec": load_factor_processing_spec(),
-                "markdown": read_text(FACTOR_PROCESSING_SPEC_DOC_PATH)
-                if FACTOR_PROCESSING_SPEC_DOC_PATH.exists()
-                else "",
+                "phase1": {
+                    "spec": load_phase1_processing_spec(),
+                    "markdown": read_text(PHASE1_PROCESSING_SPEC_DOC_PATH)
+                    if PHASE1_PROCESSING_SPEC_DOC_PATH.exists()
+                    else "",
+                },
+                "phase2": {
+                    "spec": load_phase2_review_spec(),
+                    "markdown": read_text(PHASE2_REVIEW_SPEC_DOC_PATH)
+                    if PHASE2_REVIEW_SPEC_DOC_PATH.exists()
+                    else "",
+                },
             })
         elif path == "/api/tasks":
             json_response(self, 200, {"tasks": task_history(), "pool": GLOBAL_TASK_POOL.snapshot()})

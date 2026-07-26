@@ -6,9 +6,9 @@
 
 ## 能力概览
 
-- **Phase 1 · 标准加工规范**：依据需求、指定接口文档、公共业务规则和统一《因子加工开发规范》，生成加工输入字段、标准加工逻辑、默认值兜底三部分内容。
+- **Phase 1 · 标准加工规范**：依据需求、指定接口文档、公共业务规则和 Phase 1《因子加工开发规范》，生成加工输入字段、标准加工逻辑、默认值兜底三部分内容。
 - **Phase 2 · 评审报告**：直接以冻结的 Phase 1 Markdown 为唯一业务标准，结合原始需求引用证据，评审待评审加工逻辑。
-- **统一开发规范**：稳定规则编号、闭集逻辑类型和完整性要求统一维护在 `factor_processing_spec.json`，Phase 1 与 Phase 2 共用。
+- **阶段规则隔离**：Phase 1 标准生成规则维护在 `phase1_processing_spec.json`，Phase 2 评审规则维护在 `phase2_review_spec.json`，两个阶段只读取各自规则。
 - **一键评审**：自动串联 Phase 1 → Phase 2，一次性完成完整评审。
 - **批量评审**：CSV / Excel 批量导入多条因子。
 - **验证集工作台**：基于 `data/examples.json` 做回归验证。
@@ -95,8 +95,8 @@ RISK_REVIEW_MOCK=1 ./start_v2.sh
 用户输入 → 前端验证 → 后端 API → Claude Code → 结果返回 → 前端渲染
 ```
 
-- **Phase 1**：`POST /api/review/phase1` → 在临时只读隔离目录中提供 Phase 1 Skill、统一开发规范、指定接口文档和公共业务规则 → 调用 `claude -p` → 写入标准 Markdown 与 `.metadata.json`。
-- **Phase 2**：`POST /api/review/phase2` → 在独立只读隔离目录中提供 Phase 2 Skill 和统一开发规范，并通过 Prompt 提供冻结标准、原始需求和待评审逻辑 → 返回仅含总体结论和问题清单的 Markdown 报告。
+- **Phase 1**：`POST /api/review/phase1` → 在临时只读隔离目录中提供 Phase 1 Skill、Phase 1 开发规范、指定接口文档和公共业务规则 → 调用 `claude -p` → 写入标准 Markdown 与 `.metadata.json`。
+- **Phase 2**：`POST /api/review/phase2` → 在独立只读隔离目录中提供 Phase 2 Skill 和 Phase 2 评审规范，并通过 Prompt 提供冻结标准、原始需求和待评审逻辑 → 返回仅含总体结论和问题清单的 Markdown 报告。
 - **一键评审**：前端 `runFullReview()` 顺序调用 Phase 1 → Phase 2。
 
 因子名仅用于页面展示和文件命名，不进入模型业务判断或标准缓存键。当前全局任务池只覆盖单个 Python 后端进程；不要同时启动多个后端实例共享同一 `data/` 目录。

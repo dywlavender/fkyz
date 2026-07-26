@@ -9,11 +9,12 @@ from pathlib import Path
 from .api_docs import list_api_docs
 from .business_rules import business_rules_fingerprint
 from .paths import (
-    FACTOR_PROCESSING_SPEC_PATH,
     OUTPUTS_DIR,
+    PHASE1_PROCESSING_SPEC_PATH,
     PHASE1_PROMPT_PATH,
     PHASE1_SKILL_PATH,
     PHASE2_PROMPT_PATH,
+    PHASE2_REVIEW_SPEC_PATH,
     PHASE2_SKILL_PATH,
 )
 from .utils import atomic_write_text, parse_frontmatter, read_text
@@ -105,21 +106,45 @@ def extract_markdown_tables(section_text: str) -> list[dict[str, list[dict[str, 
     return tables
 
 
-def load_factor_processing_spec() -> dict:
-    spec = json.loads(read_text(FACTOR_PROCESSING_SPEC_PATH))
-    if spec.get("schema_version") != "factor_processing_spec_v1":
-        raise ValueError("因子加工开发规范 schema_version 无效。")
+def _load_processing_spec(path: Path, schema_version: str, label: str) -> dict:
+    spec = json.loads(read_text(path))
+    if spec.get("schema_version") != schema_version:
+        raise ValueError(f"{label} schema_version 无效。")
     return spec
 
 
-def factor_processing_spec_fingerprint() -> dict:
-    spec_text = read_text(FACTOR_PROCESSING_SPEC_PATH)
+def load_phase1_processing_spec() -> dict:
+    return _load_processing_spec(
+        PHASE1_PROCESSING_SPEC_PATH,
+        "factor_processing_phase1_spec_v1",
+        "Phase 1 因子加工开发规范",
+    )
+
+
+def load_phase2_review_spec() -> dict:
+    return _load_processing_spec(
+        PHASE2_REVIEW_SPEC_PATH,
+        "factor_processing_phase2_spec_v1",
+        "Phase 2 因子加工评审规范",
+    )
+
+
+def _processing_spec_fingerprint(path: Path) -> dict:
+    spec_text = read_text(path)
     spec = json.loads(spec_text)
     return {
         "schema_version": spec.get("schema_version", ""),
         "spec_version": spec.get("spec_version", ""),
         "checksum": sha256_text(spec_text),
     }
+
+
+def phase1_processing_spec_fingerprint() -> dict:
+    return _processing_spec_fingerprint(PHASE1_PROCESSING_SPEC_PATH)
+
+
+def phase2_review_spec_fingerprint() -> dict:
+    return _processing_spec_fingerprint(PHASE2_REVIEW_SPEC_PATH)
 
 
 def extract_logic_types(standard_text: str) -> list[str]:
@@ -162,7 +187,7 @@ def validate_phase2_review_basic_output(review_text: str) -> None:
 def build_standard_metadata(standard_file_id: str, standard_text: str, payload: dict | None = None) -> dict:
     validate_phase1_standard_basic_output(standard_text)
     meta = parse_frontmatter(standard_text)
-    spec = factor_processing_spec_fingerprint()
+    spec = phase1_processing_spec_fingerprint()
     return {
         "schema_version": STANDARD_METADATA_SCHEMA_VERSION,
         "standard_schema_version": STANDARD_SCHEMA_VERSION,
@@ -183,13 +208,11 @@ def build_standard_metadata(standard_file_id: str, standard_text: str, payload: 
                 if str(item).strip()
             ],
         },
-        "development_spec": spec,
+        "phase1_spec": spec,
         "logic_types": extract_logic_types(standard_text),
         "generation_contract": {
             "phase1_prompt_checksum": sha256_text(read_text(PHASE1_PROMPT_PATH)),
             "phase1_skill_checksum": sha256_text(read_text(PHASE1_SKILL_PATH)),
-            "phase2_prompt_checksum": sha256_text(read_text(PHASE2_PROMPT_PATH)),
-            "phase2_skill_checksum": sha256_text(read_text(PHASE2_SKILL_PATH)),
         },
     }
 
@@ -227,7 +250,7 @@ def build_phase1_frontmatter(
 ) -> str:
     requirement = (payload.get("requirement") or "").strip()
     api_names = [str(item).strip() for item in payload.get("apiNames") or [] if str(item).strip()]
-    spec = factor_processing_spec_fingerprint()
+    spec = phase1_processing_spec_fingerprint()
     return "\n".join([
         "---",
         "phase: 1",
@@ -236,8 +259,8 @@ def build_phase1_frontmatter(
         f"factor_name: {factor_name}",
         f"generated: {time.strftime('%Y-%m-%d')}",
         f"input_checksum: {checksum}",
-        f"development_spec_version: {spec['spec_version']}",
-        f"development_spec_checksum: {spec['checksum']}",
+        f"phase1_spec_version: {spec['spec_version']}",
+        f"phase1_spec_checksum: {spec['checksum']}",
         f"mock: {'true' if mock else 'false'}",
         "input_summary:",
         f"  requirement: {requirement[:120]}",
@@ -279,7 +302,7 @@ def compute_review_checksum(payload: dict, standard_text: str = "") -> str:
         "draft": (payload.get("draft") or "").strip(),
         "requirement": (payload.get("requirement") or "").strip(),
         "standardBody": strip_yaml_frontmatter(standard_text),
-        "developmentSpec": factor_processing_spec_fingerprint(),
+        "phase2Spec": phase2_review_spec_fingerprint(),
         "phase2Prompt": sha256_text(read_text(PHASE2_PROMPT_PATH)),
         "phase2Skill": sha256_text(read_text(PHASE2_SKILL_PATH)),
     }
@@ -319,7 +342,7 @@ def compute_phase1_checksum(payload: dict) -> str:
         "apiDocs": api_fingerprints,
         "businessRules": business_rules_fingerprint(),
         "standardSchemaVersion": STANDARD_SCHEMA_VERSION,
-        "developmentSpec": factor_processing_spec_fingerprint(),
+        "phase1Spec": phase1_processing_spec_fingerprint(),
         "phase1Prompt": sha256_text(read_text(PHASE1_PROMPT_PATH)),
         "phase1Skill": sha256_text(read_text(PHASE1_SKILL_PATH)),
     }

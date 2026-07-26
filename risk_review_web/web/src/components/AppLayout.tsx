@@ -81,7 +81,7 @@ const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
   'review-mode-experiment': { title: '模式对比', subtitle: '比较不同评审模式的结论与问题差异' },
   history: { title: '评审记录', subtitle: '统一追溯单因子、批量、定时和验证任务' },
   'api-docs': { title: '系统管理', subtitle: '接口资产、开发规范与运行状态' },
-  'development-spec': { title: '因子加工开发规范', subtitle: '只读查看当前生产链路使用的通用开发规范' },
+  'development-spec': { title: '因子加工开发规范', subtitle: '分别查看标准生成规则与加工评审规则' },
   settings: { title: '运行设置', subtitle: '统一配置并发上限，查看运行模式与环境状态' },
   legacy: { title: '原有功能台', subtitle: '保留尚未迁移的页面、按钮与调试入口' },
 }

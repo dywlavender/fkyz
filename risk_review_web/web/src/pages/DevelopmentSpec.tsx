@@ -1,11 +1,26 @@
 import { ReloadOutlined } from '@ant-design/icons'
-import { Button, Descriptions, Space, Spin, Tag } from 'antd'
+import { Button, Descriptions, Space, Spin, Tabs, Tag } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 
 import { fetchFactorProcessingSpec } from '../api/reviewApi'
 import { HeaderActions } from '../components/AppLayout'
 import { MarkdownViewer } from '../components/MarkdownViewer'
-import type { AppNotice, FactorProcessingSpecResponse } from '../types/review'
+import type { AppNotice, FactorProcessingSpecResponse, FactorProcessingSpecView } from '../types/review'
+
+function SpecContent({ data, fileName }: { data?: FactorProcessingSpecView; fileName: string }) {
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Descriptions className="spec-meta-strip" bordered size="small" column={3}>
+        <Descriptions.Item label="规范名称">{data?.spec.title || '-'}</Descriptions.Item>
+        <Descriptions.Item label="规范版本"><Tag color="blue">{data?.spec.spec_version || '-'}</Tag></Descriptions.Item>
+        <Descriptions.Item label="规则数量">{data?.spec.rules?.length || 0}</Descriptions.Item>
+      </Descriptions>
+      <div className="work-surface document-surface">
+        <MarkdownViewer content={data?.markdown || '# 开发规范\n\n暂无内容。'} fileName={fileName} />
+      </div>
+    </Space>
+  )
+}
 
 export function DevelopmentSpec({ onNotice }: { onNotice: (notice: AppNotice) => void }) {
   const [data, setData] = useState<FactorProcessingSpecResponse>()
@@ -28,15 +43,22 @@ export function DevelopmentSpec({ onNotice }: { onNotice: (notice: AppNotice) =>
       <HeaderActions page="development-spec">
         <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button>
       </HeaderActions>
-      <Descriptions className="spec-meta-strip" bordered size="small" column={3}>
-        <Descriptions.Item label="规范名称">{data?.spec.title || '-'}</Descriptions.Item>
-        <Descriptions.Item label="规范版本"><Tag color="blue">{data?.spec.spec_version || '-'}</Tag></Descriptions.Item>
-        <Descriptions.Item label="规则数量">{data?.spec.rules?.length || 0}</Descriptions.Item>
-      </Descriptions>
       <Spin spinning={loading}>
-        <div className="work-surface document-surface">
-          <MarkdownViewer content={data?.markdown || '# 因子加工开发规范\n\n暂无内容。'} fileName="factor_processing_spec.md" />
-        </div>
+        <Tabs
+          defaultActiveKey="phase1"
+          items={[
+            {
+              key: 'phase1',
+              label: 'Phase 1 · 标准生成规范',
+              children: <SpecContent data={data?.phase1} fileName="phase1_processing_spec.md" />,
+            },
+            {
+              key: 'phase2',
+              label: 'Phase 2 · 加工评审规范',
+              children: <SpecContent data={data?.phase2} fileName="phase2_review_spec.md" />,
+            },
+          ]}
+        />
       </Spin>
     </Space>
   )

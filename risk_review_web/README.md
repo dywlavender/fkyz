@@ -4,8 +4,8 @@
 
 平台使用两阶段评审：
 
-1. Phase 1 根据需求、指定接口文档、公共业务规则和统一《因子加工开发规范》，生成唯一的标准加工规范。
-2. Phase 2 直接以冻结的标准加工规范为业务基准，比较待评审加工逻辑是否具有相同结果语义。
+1. Phase 1 根据需求、指定接口文档、公共业务规则和 Phase 1《因子加工开发规范》，生成唯一的标准加工规范。
+2. Phase 2 直接以冻结的标准加工规范为业务基准，按 Phase 2《因子加工评审规范》比较待评审加工逻辑是否具有相同结果语义。
 
 因子名只用于页面展示和文件命名，不传给模型参与业务判断，也不进入标准缓存键。
 
@@ -32,9 +32,10 @@
 
 总体结论限定为通过、不通过、无法评审。每条问题引用稳定的开发规范编号，并同时展示需求原文、标准加工逻辑、待评审原文、影响和修改建议。
 
-## 单一事实来源
+## 阶段规则来源
 
-- 开发规范：`prompts/risk-review-skill/spec/factor_processing_spec.json`
+- Phase 1 开发规范：`prompts/risk-review-skill/spec/phase1_processing_spec.json`
+- Phase 2 评审规范：`prompts/risk-review-skill/spec/phase2_review_spec.json`
 - Phase 1 Skill：`prompts/risk-review-skill/phase/phase1_standard.md`
 - Phase 2 Skill：`prompts/risk-review-skill/phase/phase2_review.md`
 - Prompt 模板：`prompts/phase1.md`、`prompts/phase2.md`
@@ -49,8 +50,8 @@ python3 risk_review_web/prompts/risk-review-skill/build/build_prompt.py
 
 ## 隔离与数据边界
 
-- Phase 1 临时目录只包含 Phase 1 Skill、开发规范、当次指定接口文档和公共业务规则。
-- Phase 2 临时目录只包含 Phase 2 Skill和开发规范；冻结标准、原始需求和待评审逻辑通过 Prompt 提供。
+- Phase 1 临时目录只包含 Phase 1 Skill、Phase 1 开发规范、当次指定接口文档和公共业务规则。
+- Phase 2 临时目录只包含 Phase 2 Skill 和 Phase 2 评审规范；冻结标准、原始需求和待评审逻辑通过 Prompt 提供。
 - 两阶段均只允许只读文件工具，不允许 Bash、写文件工具、外部 MCP 或项目自定义配置。
 - Phase 2 不读取接口文档和公共业务规则，不重新推导标准。
 - Markdown 正文由模型输出，Python 后端负责校验、加展示元数据并写入根目录 `outputs/`。

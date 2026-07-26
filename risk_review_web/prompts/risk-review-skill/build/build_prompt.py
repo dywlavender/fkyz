@@ -6,8 +6,10 @@ from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = SKILL_ROOT / "output"
-SPEC_JSON_PATH = SKILL_ROOT / "spec" / "factor_processing_spec.json"
-SPEC_MD_PATH = SKILL_ROOT / "spec" / "factor_processing_spec.md"
+PHASE1_SPEC_JSON_PATH = SKILL_ROOT / "spec" / "phase1_processing_spec.json"
+PHASE1_SPEC_MD_PATH = SKILL_ROOT / "spec" / "phase1_processing_spec.md"
+PHASE2_SPEC_JSON_PATH = SKILL_ROOT / "spec" / "phase2_review_spec.json"
+PHASE2_SPEC_MD_PATH = SKILL_ROOT / "spec" / "phase2_review_spec.md"
 
 
 def read_text(path: Path) -> str:
@@ -19,22 +21,17 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text.strip() + "\n", encoding="utf-8")
 
 
-def render_rule(rule: dict) -> list[str]:
+def render_phase1_rule(rule: dict) -> list[str]:
     lines = [
         f"### {rule['rule_id']} {rule['name']}",
         "",
-        f"- 分类：`{rule['category']}`",
-        f"- 适用条件：{rule['trigger']}",
-        f"- Phase 1：{rule['phase1_obligation']}",
-        f"- Phase 2：{rule['phase2_comparison']}",
-        f"- 证据要求：{rule['evidence_policy']}",
-        "- 违反情形：",
+        f"- 适用条件：{rule['applies_when']}",
+        f"- 编写要求：{rule['instruction']}",
     ]
-    lines.extend(f"  - {item}" for item in rule.get("violation_conditions") or [])
     return lines
 
 
-def render_spec_markdown(spec: dict) -> str:
+def render_phase1_spec_markdown(spec: dict) -> str:
     lines = [
         f"# {spec['title']}",
         "",
@@ -43,34 +40,66 @@ def render_spec_markdown(spec: dict) -> str:
         "",
         "## 逻辑类型",
         "",
-        "| 类型 | 名称 | 关联规则 |",
-        "|---|---|---|",
+        "| 类型 | 名称 |",
+        "|---|---|",
     ]
-    for logic_type, config in spec["logic_types"].items():
-        lines.append(
-            f"| `{logic_type}` | {config['label']} | {', '.join(f'`{item}`' for item in config['rule_ids'])} |"
-        )
-    lines.extend(["", "## 全局原则", ""])
-    for rule in spec["principles"]:
-        lines.extend([*render_rule(rule), ""])
-    lines.extend(["## 原子规则", ""])
+    for logic_type, label in spec["logic_types"].items():
+        lines.append(f"| `{logic_type}` | {label} |")
+    lines.extend(["", "## 编写规则", ""])
     for rule in spec["rules"]:
-        lines.extend([*render_rule(rule), ""])
+        lines.extend([*render_phase1_rule(rule), ""])
+    return "\n".join(lines)
+
+
+def render_phase2_rule(rule: dict) -> list[str]:
+    lines = [
+        f"### {rule['rule_id']} {rule['name']}",
+        "",
+        f"- 分类：`{rule['category']}`",
+        f"- 适用条件：{rule['applies_when']}",
+        f"- 比较要求：{rule['comparison']}",
+        f"- 证据要求：{rule['evidence']}",
+        "- 违反情形：",
+    ]
+    lines.extend(f"  - {item}" for item in rule.get("violations") or [])
+    return lines
+
+
+def render_phase2_spec_markdown(spec: dict) -> str:
+    lines = [
+        f"# {spec['title']}",
+        "",
+        f"- Schema：`{spec['schema_version']}`",
+        f"- 版本：`{spec['spec_version']}`",
+        "",
+        "## 逻辑类型与评审规则",
+        "",
+        "| 类型 | 关联规则 |",
+        "|---|---|",
+    ]
+    for logic_type, rule_ids in spec["logic_types"].items():
+        lines.append(f"| `{logic_type}` | {', '.join(f'`{item}`' for item in rule_ids)} |")
+    lines.extend(["", "## 评审规则", ""])
+    for rule in spec["rules"]:
+        lines.extend([*render_phase2_rule(rule), ""])
     return "\n".join(lines)
 
 
 def build() -> None:
-    spec = json.loads(SPEC_JSON_PATH.read_text(encoding="utf-8"))
-    spec_markdown = render_spec_markdown(spec)
-    write_text(SPEC_MD_PATH, spec_markdown)
+    phase1_spec = json.loads(PHASE1_SPEC_JSON_PATH.read_text(encoding="utf-8"))
+    phase2_spec = json.loads(PHASE2_SPEC_JSON_PATH.read_text(encoding="utf-8"))
+    phase1_spec_markdown = render_phase1_spec_markdown(phase1_spec)
+    phase2_spec_markdown = render_phase2_spec_markdown(phase2_spec)
+    write_text(PHASE1_SPEC_MD_PATH, phase1_spec_markdown)
+    write_text(PHASE2_SPEC_MD_PATH, phase2_spec_markdown)
 
     phase1_prompt = "\n\n---\n\n".join([
-        spec_markdown,
+        phase1_spec_markdown,
         read_text(SKILL_ROOT / "phase" / "phase1_standard.md"),
         read_text(SKILL_ROOT / "template" / "phase1_output.md"),
     ])
     phase2_prompt = "\n\n---\n\n".join([
-        spec_markdown,
+        phase2_spec_markdown,
         read_text(SKILL_ROOT / "phase" / "phase2_review.md"),
         read_text(SKILL_ROOT / "template" / "phase2_output.md"),
     ])

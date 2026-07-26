@@ -135,12 +135,14 @@ outputs/
 |---|---|
 | Python 后端 | 对相关模块执行 `python3 -m py_compile` |
 | 原有功能台 | 执行 `node --check risk_review_web/static/app.js` |
-| React 前端 | 在 `risk_review_web/web/` 执行 `npm run typecheck` 和 `npm run build` |
+| React 前端源码、依赖或构建配置 | 在 `risk_review_web/web/` 执行 `npm run typecheck` 和 `npm run build` |
 | Phase 1 Prompt、Skill 或规则 | 重新生成或核对派生 Prompt，执行 Phase 1 Mock 冒烟 |
 | Phase 2 Prompt、Skill 或规则 | 重新生成或核对派生 Prompt，执行 Phase 2 Mock 冒烟 |
 | 全局任务池 | 验证并发上限、排队、公平调度和取消 |
 | 定时任务 | 至少验证一次手动触发和一次到期自动触发 |
 | 批量评审 | 至少执行一组多行批量验证 |
 | 验证集 | 至少执行一条回归案例 |
+
+只修改 Python、Prompt、Skill、规则 JSON、派生规范 Markdown 或数据文件时，不得运行无关的前端构建，也不得因此更新 `risk_review_web/static/dist/`。只有 `risk_review_web/web/src/`、前端依赖、Vite 配置或其他实际参与前端打包的输入发生变化时，才重新生成 React 构建产物。
 
 测试生成的临时任务、运行记录和 `outputs/` 产物必须在交付前清理。

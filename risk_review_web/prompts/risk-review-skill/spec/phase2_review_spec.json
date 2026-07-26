@@ -1,14 +1,31 @@
 {
   "schema_version": "factor_processing_phase2_spec_v1",
-  "spec_version": "1.0.1",
+  "spec_version": "1.1.0",
   "title": "因子加工评审规范（Phase 2）",
-  "logic_types": {
-    "time_filter": ["TIME-001", "TIME-002", "TIME-003", "TIME-004", "FILTER-001", "FILTER-002"],
-    "condition_filter": ["FILTER-001", "FILTER-002"],
-    "iteration": ["ITERATE-001", "ITERATE-002"],
-    "aggregation": ["AGGREGATION-001", "AGGREGATION-002"],
-    "derivation": ["DERIVATION-001", "DERIVATION-002"],
-    "branch": ["BRANCH-001"]
+  "review_scopes": {
+    "global": {
+      "label": "整份标准规范",
+      "rule_ids": ["SOURCE-001", "SEMANTIC-001"]
+    },
+    "input_fields": {
+      "source_section": "因子加工输入字段",
+      "rule_ids": ["FIELD-001", "FIELD-002"]
+    },
+    "processing_logic": {
+      "source_section": "标准加工逻辑",
+      "logic_types": {
+        "time_filter": ["TIME-001", "TIME-002", "TIME-003", "TIME-004", "FILTER-001", "FILTER-002"],
+        "condition_filter": ["FILTER-001", "FILTER-002"],
+        "iteration": ["ITERATE-001", "ITERATE-002"],
+        "aggregation": ["AGGREGATION-001", "AGGREGATION-002"],
+        "derivation": ["DERIVATION-001", "DERIVATION-002"],
+        "branch": ["BRANCH-001"]
+      }
+    },
+    "default_fallback": {
+      "source_section": "默认值兜底",
+      "rule_ids": ["DEFAULT-001"]
+    }
   },
   "rules": [
     {

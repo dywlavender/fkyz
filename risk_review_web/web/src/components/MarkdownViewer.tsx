@@ -17,6 +17,15 @@ interface MarkdownViewerProps {
   fileName?: string
 }
 
+const STANDARD_LOGIC_TYPE_LABELS: Record<string, string> = {
+  time_filter: '时间处理与筛选',
+  condition_filter: '条件筛选',
+  iteration: '列表遍历',
+  aggregation: '聚合计算',
+  derivation: '衍生计算',
+  branch: '条件分支',
+}
+
 export function isJsonContent(content?: string) {
   if (!content?.trim()) return false
   try {
@@ -185,8 +194,19 @@ function stripYamlFrontmatter(markdown: string) {
     .trim()
 }
 
+function localizeStandardLogicTypes(markdown: string) {
+  if (!/(^|\n)##\s+标准加工逻辑\s*(?:\n|$)/.test(markdown)) return markdown
+  const typeCodes = Object.keys(STANDARD_LOGIC_TYPE_LABELS).join('|')
+  const tableCellPattern = new RegExp('(\\|\\s*)`?(' + typeCodes + ')`?(\\s*\\|)', 'g')
+  return markdown.replace(
+    tableCellPattern,
+    (_match, prefix: string, typeCode: string, suffix: string) =>
+      `${prefix}${STANDARD_LOGIC_TYPE_LABELS[typeCode]}${suffix}`,
+  )
+}
+
 function renderMarkdown(markdown: string): string {
-  const cleanMarkdown = stripYamlFrontmatter(markdown)
+  const cleanMarkdown = localizeStandardLogicTypes(stripYamlFrontmatter(markdown))
   try {
     if (window.marked?.parse) {
       return window.marked.parse(cleanMarkdown, {

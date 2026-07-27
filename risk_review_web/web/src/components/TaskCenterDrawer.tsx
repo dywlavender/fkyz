@@ -25,6 +25,10 @@ function taskTitle(task: TaskRecord) {
 }
 
 function taskProgress(task: TaskRecord) {
+  const total = Number(task.progress?.total || 0)
+  if (total > 0) {
+    return Math.round((Number(task.progress?.completed || 0) / total) * 100)
+  }
   const result = task.result as { items?: Array<{ status?: string }> } | undefined
   const items = result?.items || []
   if (!items.length) return undefined

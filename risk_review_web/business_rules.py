@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 
-from .paths import BUSINESS_RULES_PATH, EXAMPLES_DIR
+from .paths import BUSINESS_RULES_PATH, DATA_DIR
 from .utils import read_text
 
 
@@ -63,7 +63,7 @@ def parse_business_rules():
 
 
 def save_business_rules(rules: list[dict]):
-    EXAMPLES_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(exist_ok=True)
     BUSINESS_RULES_PATH.write_text(json.dumps(rules, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

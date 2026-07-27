@@ -198,7 +198,7 @@ export async function fetchHealth(): Promise<SystemHealth> {
 }
 
 export async function fetchTasks(): Promise<TaskRecord[]> {
-  const data = await requestJson<{ tasks: TaskRecord[] }>('/api/tasks')
+  const data = await requestJson<{ tasks: TaskRecord[] }>('/api/tasks?scope=all')
   return data.tasks || []
 }
 
@@ -392,8 +392,11 @@ export async function deleteHistoryItem(_id: string): Promise<void> {
   return deleteReviewHistoryRecord(_id)
 }
 
-export async function deleteReviewHistoryRecord(recordId: string): Promise<void> {
-  await requestApiData(`/api/review-history/${encodeURIComponent(recordId)}`, {
+export async function deleteReviewHistoryRecord(recordId: string, taskId?: string): Promise<void> {
+  const path = taskId
+    ? `/api/tasks/${encodeURIComponent(taskId)}`
+    : `/api/review-history/${encodeURIComponent(recordId)}`
+  await requestApiData(path, {
     method: 'DELETE',
   })
 }

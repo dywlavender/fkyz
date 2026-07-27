@@ -27,9 +27,11 @@
 - 原有功能台样式：`risk_review_web/static/style.css`
 - 公共业务规则：`risk_review_web/data/business_rules.json`
 - 验证集案例：`risk_review_web/data/examples.json`
-- 定时任务配置：`risk_review_web/data/scheduled_tasks.json`
-- 定时任务运行记录：`risk_review_web/data/scheduled_runs.json`
-- 统一并发设置：`risk_review_web/data/runtime_settings.json`
+- 本地运行状态：`risk_review_web/.local/state/`
+- 定时任务配置：`risk_review_web/.local/state/scheduled_tasks.json`
+- 定时任务运行记录：`risk_review_web/.local/state/scheduled_runs.json`
+- 统一并发设置：`risk_review_web/.local/state/runtime_settings.json`
+- 验证运行与评审记录：`risk_review_web/.local/state/validation_runs.json`、`review_records.json`
 
 不要在 `server_v2.py` 中复制一套与 `artifacts.py`、`prompt_builder.py` 或 `task_pool.py` 重复的规则。
 
@@ -136,8 +138,8 @@ outputs/
 | Python 后端 | 对相关模块执行 `python3 -m py_compile` |
 | 原有功能台 | 执行 `node --check risk_review_web/static/app.js` |
 | React 前端源码、依赖或构建配置 | 在 `risk_review_web/web/` 执行 `npm run typecheck` 和 `npm run build` |
-| Phase 1 Prompt、Skill 或规则 | 重新生成或核对派生 Prompt，执行 Phase 1 Mock 冒烟 |
-| Phase 2 Prompt、Skill 或规则 | 重新生成或核对派生 Prompt，执行 Phase 2 Mock 冒烟 |
+| Phase 1 Prompt、Skill 或规则 | 重新生成或核对派生规范展示 Markdown，执行 Phase 1 Mock 冒烟 |
+| Phase 2 Prompt、Skill 或规则 | 重新生成或核对派生规范展示 Markdown，执行 Phase 2 Mock 冒烟 |
 | 全局任务池 | 验证并发上限、排队、公平调度和取消 |
 | 定时任务 | 至少验证一次手动触发和一次到期自动触发 |
 | 批量评审 | 至少执行一组多行批量验证 |

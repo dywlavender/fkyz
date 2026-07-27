@@ -592,5 +592,220 @@
       }
     ],
     "createdAt": "2026-07-26T02:11:57+08:00"
+  },
+  {
+    "runId": "run-20260727-020001-f6e5",
+    "taskId": "task-20260725-010522-2a81",
+    "taskName": "测试",
+    "trigger": "scheduler",
+    "status": "partial_success",
+    "startedAt": "2026-07-27T02:00:01+08:00",
+    "finishedAt": "2026-07-27T02:19:28+08:00",
+    "total": 18,
+    "success": 6,
+    "failed": 12,
+    "unknown": 0,
+    "durationMs": 1167871,
+    "items": [
+      {
+        "index": 1,
+        "factorName": "近12个月医药采购金额",
+        "status": "success",
+        "standardFile": "standard-12-2026-07-27-run20260-d943fcc4.md",
+        "reviewFile": "review-12-2026-07-27-run20260-806f49fe.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 2,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Claude 未输出完整 Phase 1 标准加工规范正文，stdout 必须以「# 标准加工规范」开头。",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 3,
+        "factorName": "投资人最近一次变更距今月份数",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream error: error decoding response body",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 4,
+        "factorName": "投资人最近一次变更距今月份数",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-27-run20260-a423443f.md",
+        "reviewFile": "review-factor-2026-07-27-run20260-e013be84.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 5,
+        "factorName": "提款金额检查",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "API Error: Stream error: error decoding response body",
+        "errorCode": "MODEL_CALL_FAILED",
+        "errorCategory": "模型调用失败",
+        "suggestedAction": "检查 Claude 可用性、网络和超时配置后重试。"
+      },
+      {
+        "index": 6,
+        "factorName": "提款金额检查",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-27-run20260-caeacdde.md",
+        "reviewFile": "review-factor-2026-07-27-run20260-23101f8a.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 7,
+        "factorName": "近12个月医药采购金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Phase 2 评审报告缺少必要章节：总体结论、汇总问题清单",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 8,
+        "factorName": "近12个月医药采购金额",
+        "status": "success",
+        "standardFile": "standard-12-2026-07-27-run20260-d943fcc4.md",
+        "reviewFile": "review-12-2026-07-27-run20260-5967e809.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 9,
+        "factorName": "近6个月主账户成功入账金额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Claude 未输出完整 Phase 2 评审报告正文，stdout 必须以「# 评审报告」开头。",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 10,
+        "factorName": "近6个月主账户成功入账金额",
+        "status": "success",
+        "standardFile": "standard-6-2026-07-27-run20260-2d7a070d.md",
+        "reviewFile": "review-6-2026-07-27-run20260-f7c2f529.md",
+        "reviewConclusion": "fail",
+        "error": ""
+      },
+      {
+        "index": 11,
+        "factorName": "流动资金提款可用标志",
+        "status": "success",
+        "standardFile": "standard-factor-2026-07-27-b65e537f-23eae10f.md",
+        "reviewFile": "review-factor-2026-07-27-run20260-7b5b7a99.md",
+        "reviewConclusion": "pass",
+        "error": ""
+      },
+      {
+        "index": 12,
+        "factorName": "流动资金提款可用标志",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Phase 2 评审报告缺少必要章节：总体结论、汇总问题清单",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 13,
+        "factorName": "近12个月有效购方数量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Phase 2 评审报告缺少必要章节：总体结论、汇总问题清单",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 14,
+        "factorName": "近12个月有效购方数量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Phase 2 评审报告缺少必要章节：总体结论、汇总问题清单",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 15,
+        "factorName": "严重逾期存续贷款余额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Phase 2 评审报告缺少必要章节：总体结论、汇总问题清单",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 16,
+        "factorName": "严重逾期存续贷款余额",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Phase 2 评审报告缺少必要章节：总体结论、汇总问题清单",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 17,
+        "factorName": "未来30天临期可售库存量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Claude 未输出完整 Phase 2 评审报告正文，stdout 必须以「# 评审报告」开头。",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      },
+      {
+        "index": 18,
+        "factorName": "未来30天临期可售库存量",
+        "status": "failed",
+        "standardFile": "",
+        "reviewFile": "",
+        "reviewConclusion": "unreviewable",
+        "error": "Phase 2 评审报告缺少必要章节：总体结论、汇总问题清单",
+        "errorCode": "OUTPUT_STRUCTURE_INVALID",
+        "errorCategory": "模型输出结构无效",
+        "suggestedAction": "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"
+      }
+    ],
+    "createdAt": "2026-07-27T02:00:01+08:00"
   }
 ]

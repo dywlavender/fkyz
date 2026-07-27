@@ -39,10 +39,9 @@
 - Phase 1 Skill：`prompts/risk-review-skill/phase/phase1_standard.md`
 - Phase 2 Skill：`prompts/risk-review-skill/phase/phase2_review.md`
 - Prompt 模板：`prompts/phase1.md`、`prompts/phase2.md`
-- 派生 Prompt：`prompts/risk-review-skill/output/`
 - 产物与最低技术校验：`artifacts.py`
 
-修改开发规范或 Skill 后，运行：
+修改开发规范后，重新生成前端展示文档：
 
 ```bash
 python3 risk_review_web/prompts/risk-review-skill/build/build_prompt.py
@@ -55,6 +54,13 @@ python3 risk_review_web/prompts/risk-review-skill/build/build_prompt.py
 - 两阶段均只允许只读文件工具，不允许 Bash、写文件工具、外部 MCP 或项目自定义配置。
 - Phase 2 不读取接口文档和公共业务规则，不重新推导标准。
 - Markdown 正文由模型输出，Python 后端负责校验、加展示元数据并写入根目录 `outputs/`。
+
+## 版本数据与运行状态
+
+- `data/examples.json`、`data/business_rules.json` 是需要版本管理的案例和公共规则。
+- 任务、评审记录、验证运行、定时任务和运行设置保存在 `risk_review_web/.local/state/`，不进入 Git。
+- 首次启动会从旧 `data/` 状态文件复制一次；之后只读写独立状态目录。
+- 测试可通过 `RISK_REVIEW_STATE_DIR`、`RISK_REVIEW_OUTPUTS_DIR` 使用临时目录，并以 `RISK_REVIEW_STATE_SEED=0` 禁用历史数据种子。
 
 ## 页面
 
@@ -73,9 +79,31 @@ python3 risk_review_web/prompts/risk-review-skill/build/build_prompt.py
 
 单因子、批量、验证集、对比实验和定时任务均提交到 `GLOBAL_TASK_POOL`。全局并发由 `RISK_REVIEW_GLOBAL_CONCURRENCY` 控制，默认 3；批量和定时任务的并发值只是各自组内上限。
 
-当前任务池只适用于单 Python 后端进程。禁止同时启动多个后端进程共享 `data/` 和 `outputs/`；多进程或多机部署必须改用集中式队列和分布式锁。
+任务中心和评审记录共用 `taskId`、`taskType`、`status`、`context`和 `progress` 等核心字段。`GET /api/tasks?scope=all` 同时返回内存中的执行任务和已持久化的历史任务；服务重启后仍可按 `taskId` 查看详情或删除记录。
+
+当前任务池只适用于单 Python 后端进程。禁止同时启动多个后端进程共享同一状态目录和 `outputs/`；多进程或多机部署必须改用集中式队列和分布式锁。
 
 ## 本地验证
+
+常规改动统一使用按变更范围选择检查的入口：
+
+```bash
+python3 risk_review_web/scripts/verify_changed.py
+```
+
+它会按实际改动执行 Python 编译、Mock 冒烟、黄金案例冻结检查、React 构建和桌面端 Playwright 主链；可使用 `--all` 强制全部执行。
+
+独立检查命令：
+
+```bash
+python3 risk_review_web/scripts/smoke_review.py --phase all
+python3 risk_review_web/scripts/golden_gate.py
+python3 risk_review_web/scripts/playwright_desktop_smoke.py
+```
+
+`golden_gate.py` 不传 `--base-url` 时只检查人工冻结的案例版本；对已启动的真实服务传入 `--base-url` 后，会重复执行并检查结论、问题数、问题类型和依据稳定性。
+
+分项手动检查：
 
 ```bash
 python3 -m py_compile \

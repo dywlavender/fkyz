@@ -5,7 +5,6 @@ from pathlib import Path
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_DIR = SKILL_ROOT / "output"
 PHASE1_SPEC_JSON_PATH = SKILL_ROOT / "spec" / "phase1_processing_spec.json"
 PHASE1_SPEC_MD_PATH = SKILL_ROOT / "spec" / "phase1_processing_spec.md"
 PHASE2_SPEC_JSON_PATH = SKILL_ROOT / "spec" / "phase2_review_spec.json"
@@ -130,19 +129,6 @@ def build() -> None:
     phase2_spec_markdown = render_phase2_spec_markdown(phase2_spec)
     write_text(PHASE1_SPEC_MD_PATH, phase1_spec_markdown)
     write_text(PHASE2_SPEC_MD_PATH, phase2_spec_markdown)
-
-    phase1_prompt = "\n\n---\n\n".join([
-        phase1_spec_markdown,
-        read_text(SKILL_ROOT / "phase" / "phase1_standard.md"),
-        read_text(SKILL_ROOT / "template" / "phase1_output.md"),
-    ])
-    phase2_prompt = "\n\n---\n\n".join([
-        phase2_spec_markdown,
-        read_text(SKILL_ROOT / "phase" / "phase2_review.md"),
-        read_text(SKILL_ROOT / "template" / "phase2_output.md"),
-    ])
-    write_text(OUTPUT_DIR / "phase1.prompt", phase1_prompt)
-    write_text(OUTPUT_DIR / "phase2.prompt", phase2_prompt)
 
 
 if __name__ == "__main__":

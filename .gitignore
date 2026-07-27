@@ -16,6 +16,7 @@ validation/
 logs/
 *.log
 risk_review_web/data/review_records.json
+risk_review_web/.local/
 .playwright-cli/
 
 # Local data

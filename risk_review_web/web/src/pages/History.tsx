@@ -109,7 +109,10 @@ export function History(props: HistoryProps) {
     if (!deleteRecordIds.length) return
     setDeleting(true)
     const results = await Promise.allSettled(
-      deleteRecordIds.map((recordId) => deleteReviewHistoryRecord(recordId))
+      deleteRecordIds.map((recordId) => {
+        const record = records.find((item) => item.recordId === recordId)
+        return deleteReviewHistoryRecord(recordId, record?.taskId)
+      })
     )
     const failed = results.filter((result) => result.status === 'rejected')
     const succeededIds = deleteRecordIds.filter((_, index) => results[index]?.status === 'fulfilled')

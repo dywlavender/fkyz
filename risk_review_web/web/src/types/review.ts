@@ -51,6 +51,8 @@ export interface TaskLog {
 
 export interface TaskRecord<T = unknown> {
   id?: string
+  taskId?: string
+  recordId?: string
   status?: string
   result?: T
   caseIds?: string[]
@@ -61,6 +63,16 @@ export interface TaskRecord<T = unknown> {
   updated?: number
   taskType?: string
   clientId?: string
+  parentTaskId?: string
+  persisted?: boolean
+  source?: string
+  conclusion?: string
+  riskCount?: number
+  progress?: {
+    total?: number
+    completed?: number
+    failed?: number
+  }
   poolStatus?: string | null
   queuePosition?: number | null
   poolQueued?: number
@@ -185,6 +197,7 @@ export interface ArtifactGroup {
 
 export interface ReviewHistoryRecord {
   recordId: string
+  id?: string
   factorName?: string
   createdAt?: string
   source?: 'single' | 'batch' | 'scheduled' | 'validation' | string
@@ -193,6 +206,12 @@ export interface ReviewHistoryRecord {
   riskCount?: number
   title?: string
   taskId?: string
+  taskType?: string
+  status?: string
+  clientId?: string
+  parentTaskId?: string
+  context?: TaskRecord['context']
+  progress?: TaskRecord['progress']
   taskStatus?: string
   updatedAt?: string
   archived?: boolean

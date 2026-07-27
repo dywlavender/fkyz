@@ -52,7 +52,7 @@ from risk_review_web.business_rules import (
 )
 from risk_review_web.paths import (
     BUSINESS_RULES_PATH,
-    EXAMPLES_DIR,
+    DATA_DIR,
     EXAMPLES_PATH,
     VALIDATION_RUNS_PATH,
     REVIEW_RECORDS_PATH,
@@ -66,8 +66,6 @@ from risk_review_web.paths import (
     PHASE2_REVIEW_SPEC_DOC_PATH,
     PHASE2_REVIEW_SPEC_PATH,
     RULE_ENGINE_BUILD_PATH,
-    RULE_ENGINE_PHASE1_OUTPUT_PATH,
-    RULE_ENGINE_PHASE2_OUTPUT_PATH,
     ROOT,
     STATIC_DIR,
     resolve_validation_set_path,
@@ -272,7 +270,7 @@ def normalize_batch_rows_from_table(rows: list[list[str]]) -> list[dict]:
     return normalized
 
 def list_outputs():
-    OUTPUTS_DIR.mkdir(exist_ok=True)
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     files = []
     candidates = [
         path
@@ -282,10 +280,14 @@ def list_outputs():
         and path.name.endswith((".md", ".json", ".txt"))
     ]
     for path in sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            display_path = path.relative_to(ROOT).as_posix()
+        except ValueError:
+            display_path = path.as_posix()
         files.append(
             {
                 "name": path.name,
-                "path": path.relative_to(ROOT).as_posix(),
+                "path": display_path,
                 "mtime": int(path.stat().st_mtime),
                 "size": path.stat().st_size,
             }
@@ -521,9 +523,21 @@ def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict 
     }.get(task_type, task_type or "single")
     created = float(task.get("created") or time.time())
     updated = float(task.get("updated") or created)
+    progress = {
+        "total": len(items) if items else 1,
+        "completed": len(done_items) if items else int(task.get("status") == "done"),
+        "failed": len(failed_items) if items else int(task.get("status") == "error"),
+    }
     return {
         "recordId": f"task-{task.get('id')}",
+        "id": task.get("id"),
         "taskId": task.get("id"),
+        "taskType": task_type,
+        "parentTaskId": task.get("parentTaskId"),
+        "clientId": task.get("clientId") or "",
+        "status": status,
+        "context": context,
+        "progress": progress,
         "title": _task_record_title(task),
         "factorName": context.get("factorName") or _task_record_title(task),
         "source": source,
@@ -533,11 +547,7 @@ def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict 
         "createdAt": datetime.fromtimestamp(created, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
         "updatedAt": datetime.fromtimestamp(updated, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
         "archived": False,
-        "summary": {
-            "total": len(items) if items else 1,
-            "completed": len(done_items) if items else int(task.get("status") == "done"),
-            "failed": len(failed_items) if items else int(task.get("status") == "error"),
-        },
+        "summary": progress,
         "standardArtifacts": {
             **({"md": standard_file} if standard_file else {}),
             **({"json": standard_metadata} if standard_metadata else {}),
@@ -760,7 +770,7 @@ def review_history_records(include_archived: bool = False) -> list[dict]:
         if str(record.get("recordId") or "") not in deleted_ids
         and str(record.get("recordId") or "") not in persisted_ids
     ]
-    records = [*live, *persisted, *historical]
+    records = [normalize_task_record_view(record) for record in [*live, *persisted, *historical]]
     if not include_archived:
         records = [record for record in records if not record.get("archived")]
     return sorted(
@@ -768,6 +778,90 @@ def review_history_records(include_archived: bool = False) -> list[dict]:
         key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""),
         reverse=True,
     )
+
+
+def normalize_task_record_view(record: dict) -> dict:
+    """Expose one stable task shape in both task-center and history APIs."""
+    source = str(record.get("source") or "single")
+    task_type = str(record.get("taskType") or {
+        "single": "phase2",
+        "batch": "batch",
+        "scheduled": "scheduled",
+        "validation": "regression",
+        "experiment": "review-mode-experiment",
+    }.get(source, source))
+    task_id = str(record.get("taskId") or record.get("id") or record.get("recordId") or "")
+    status = str(record.get("status") or record.get("taskStatus") or "done")
+    progress = record.get("progress") or record.get("summary") or {
+        "total": 1,
+        "completed": int(status == "done"),
+        "failed": int(status == "error"),
+    }
+    context = dict(record.get("context") or {})
+    context.setdefault("taskName", record.get("title") or record.get("factorName") or "评审任务")
+    context.setdefault("factorName", record.get("factorName") or record.get("title") or "")
+    return {
+        **record,
+        "id": task_id,
+        "taskId": task_id,
+        "taskType": task_type,
+        "parentTaskId": record.get("parentTaskId"),
+        "status": status,
+        "taskStatus": status,
+        "context": context,
+        "progress": progress,
+        "summary": progress,
+    }
+
+
+def _timestamp_from_iso(value: object) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def review_record_to_task(record: dict) -> dict:
+    """Convert a persisted review record to the canonical task API shape."""
+    normalized = normalize_task_record_view(record)
+    standard_artifacts = normalized.get("standardArtifacts") or {}
+    review_artifacts = normalized.get("reviewArtifacts") or {}
+    result = {
+        "items": normalized.get("items") or [],
+        **({"standardFileId": standard_artifacts.get("md")} if standard_artifacts.get("md") else {}),
+        **({"standardMetadataFileId": standard_artifacts.get("json")} if standard_artifacts.get("json") else {}),
+        **({"reviewFileId": review_artifacts.get("md")} if review_artifacts.get("md") else {}),
+    }
+    return {
+        "id": normalized["taskId"],
+        "taskId": normalized["taskId"],
+        "recordId": normalized.get("recordId"),
+        "taskType": normalized.get("taskType"),
+        "parentTaskId": normalized.get("parentTaskId"),
+        "clientId": normalized.get("clientId") or "",
+        "status": normalized.get("status"),
+        "context": normalized.get("context") or {},
+        "progress": normalized.get("progress") or {},
+        "result": result,
+        "created": _timestamp_from_iso(normalized.get("createdAt")),
+        "updated": _timestamp_from_iso(normalized.get("updatedAt")),
+        "createdAt": normalized.get("createdAt"),
+        "updatedAt": normalized.get("updatedAt"),
+        "source": normalized.get("source"),
+        "conclusion": normalized.get("conclusion"),
+        "riskCount": normalized.get("riskCount") or 0,
+        "persisted": True,
+    }
+
+
+def find_persisted_task(task_id: str) -> dict | None:
+    for record in review_history_records(include_archived=True):
+        if str(record.get("taskId") or "") == task_id:
+            return review_record_to_task(record)
+    return None
 
 
 def query_review_records(query: dict[str, list[str]]) -> dict:
@@ -861,8 +955,14 @@ def delete_review_history_record(record_id: str) -> dict:
     if str(record.get("taskStatus") or "") in {"queued", "running", "cancelling"}:
         raise ValueError("执行中的评审记录不能删除，请先终止任务")
     file_names = _review_record_artifact_names(record)
+    other_references = {
+        file_name
+        for item in review_history_records(include_archived=True)
+        if str(item.get("recordId") or "") != record_id
+        for file_name in _review_record_artifact_names(item)
+    }
     deleted_files = []
-    for file_name in sorted(file_names):
+    for file_name in sorted(file_names - other_references):
         safe_name = Path(file_name)
         if safe_name.is_absolute() or len(safe_name.parts) != 1 or safe_name.name != file_name:
             raise ValueError(f"非法产物文件名：{file_name}")
@@ -898,7 +998,7 @@ def parse_examples():
 
 
 def save_examples(examples: list[dict]):
-    EXAMPLES_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(exist_ok=True)
     atomic_write_text(EXAMPLES_PATH, json.dumps(examples, ensure_ascii=False, indent=2))
 
 
@@ -1111,7 +1211,7 @@ def query_validation_run_groups(query: dict[str, list[str]]) -> dict:
 
 
 def save_validation_runs(runs: list[dict]):
-    EXAMPLES_DIR.mkdir(exist_ok=True)
+    VALIDATION_RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
     trimmed = sorted(
         runs,
         key=lambda item: item.get("finishedAt") or item.get("startedAt") or "",
@@ -1244,7 +1344,7 @@ def parse_review_mode_experiments() -> list[dict]:
 
 
 def save_review_mode_experiments(experiments: list[dict]):
-    EXAMPLES_DIR.mkdir(exist_ok=True)
+    REVIEW_MODE_EXPERIMENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     trimmed = sorted(
         experiments,
         key=lambda item: item.get("createdAt") or "",
@@ -1513,15 +1613,67 @@ def decorate_task(task: dict) -> dict:
     job_info = GLOBAL_TASK_POOL.job_info(task_id)
     if job_info.get("poolStatus") is not None:
         snapshot.update(job_info)
+    result = snapshot.get("result") or {}
+    items = result.get("items") if isinstance(result, dict) else None
+    if isinstance(items, list):
+        terminal = {"done", "pass", "fail", "error", "skip", "cancelled"}
+        snapshot["progress"] = {
+            "total": len(items),
+            "completed": sum(1 for item in items if str(item.get("status") or "") in terminal),
+            "failed": sum(1 for item in items if str(item.get("status") or "") in {"error", "skip"}),
+        }
+    else:
+        status = str(snapshot.get("status") or "")
+        snapshot["progress"] = {
+            "total": 1,
+            "completed": int(status in {"done", "error", "cancelled"}),
+            "failed": int(status == "error"),
+        }
+    snapshot["taskId"] = task_id
+    snapshot["persisted"] = False
     return snapshot
 
 
-def task_history():
+def task_history(*, include_history: bool = False):
     sync_terminal_tasks_to_review_records()
     gc_tasks()
     with TASK_LOCK:
         tasks = [decorate_task(task) for task in TASKS.values()]
+    if include_history:
+        known_ids = {str(task.get("id") or "") for task in tasks}
+        with REVIEW_RECORDS_LOCK:
+            persisted_records = [
+                normalize_task_record_view(record)
+                for record in parse_review_records()
+                if not record.get("deleted") and not record.get("archived")
+            ]
+        tasks.extend(
+            review_record_to_task(record)
+            for record in persisted_records
+            if str(record.get("taskId") or "") not in known_ids
+        )
     return sorted(tasks, key=lambda x: x.get("created", 0), reverse=True)[:50]
+
+
+def delete_task_record(task_id: str) -> dict:
+    with TASK_LOCK:
+        task = TASKS.get(task_id)
+        if task and not _is_terminal_status(str(task.get("status") or "")):
+            raise ValueError("执行中的任务不能删除，请先终止任务")
+    record = next(
+        (
+            item
+            for item in review_history_records(include_archived=True)
+            if str(item.get("taskId") or "") == task_id
+        ),
+        None,
+    )
+    if not record:
+        raise FileNotFoundError("任务记录不存在")
+    deleted = delete_review_history_record(str(record.get("recordId") or ""))
+    with TASK_LOCK:
+        TASKS.pop(task_id, None)
+    return {**deleted, "taskId": task_id}
 
 
 def task_log(task_id: str, message: str):
@@ -1691,18 +1843,22 @@ def file_health(path: Path) -> dict:
 
 
 def outputs_health() -> dict:
-    OUTPUTS_DIR.mkdir(exist_ok=True)
+    try:
+        display_path = OUTPUTS_DIR.relative_to(ROOT).as_posix()
+    except ValueError:
+        display_path = str(OUTPUTS_DIR)
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     probe = OUTPUTS_DIR / f".health-{uuid.uuid4().hex}.tmp"
     try:
         probe.write_text("ok", encoding="utf-8")
         probe.unlink(missing_ok=True)
-        return {"path": OUTPUTS_DIR.relative_to(ROOT).as_posix(), "exists": True, "writable": True, "note": ""}
+        return {"path": display_path, "exists": True, "writable": True, "note": ""}
     except Exception as exc:
         try:
             probe.unlink(missing_ok=True)
         except Exception:
             pass
-        return {"path": OUTPUTS_DIR.relative_to(ROOT).as_posix(), "exists": OUTPUTS_DIR.exists(), "writable": False, "note": str(exc)}
+        return {"path": display_path, "exists": OUTPUTS_DIR.exists(), "writable": False, "note": str(exc)}
 
 
 def api_docs_health() -> dict:
@@ -1725,8 +1881,6 @@ def system_health() -> dict:
         PHASE1_PROCESSING_SPEC_PATH,
         PHASE2_REVIEW_SPEC_PATH,
         RULE_ENGINE_BUILD_PATH,
-        RULE_ENGINE_PHASE1_OUTPUT_PATH,
-        RULE_ENGINE_PHASE2_OUTPUT_PATH,
         STATIC_DIR / "index.html",
         STATIC_DIR / "app.js",
         STATIC_DIR / "style.css",
@@ -3467,7 +3621,12 @@ class Handler(BaseHTTPRequestHandler):
                 },
             })
         elif path == "/api/tasks":
-            json_response(self, 200, {"tasks": task_history(), "pool": GLOBAL_TASK_POOL.snapshot()})
+            query = parse_qs(parsed.query)
+            include_history = (query.get("scope") or ["active"])[0].lower() == "all"
+            json_response(self, 200, {
+                "tasks": task_history(include_history=include_history),
+                "pool": GLOBAL_TASK_POOL.snapshot(),
+            })
         elif path == "/api/pool/status":
             json_response(self, 200, {"pool": GLOBAL_TASK_POOL.snapshot()})
         elif path == "/api/runtime-settings":
@@ -3494,13 +3653,20 @@ class Handler(BaseHTTPRequestHandler):
             except ScheduledTaskError as exc:
                 error_response(self, 404, str(exc))
         elif path.startswith("/api/tasks/"):
-            task_id = path.split("/")[-1]
+            task_id = unquote(path.split("/")[-1])
             with TASK_LOCK:
                 task = TASKS.get(task_id)
             if not task:
-                json_response(self, 404, {"error": "not found"})
+                persisted_task = find_persisted_task(task_id)
+                if not persisted_task:
+                    json_response(self, 404, {"error": "not found"})
+                    return
+                json_response(self, 200, {"task": persisted_task, "pool": GLOBAL_TASK_POOL.snapshot()})
                 return
-            json_response(self, 200, {"task": decorate_task(task), "pool": GLOBAL_TASK_POOL.snapshot()})
+            json_response(self, 200, {
+                "task": decorate_task(task),
+                "pool": GLOBAL_TASK_POOL.snapshot(),
+            })
         elif path.startswith("/outputs/"):
             self.serve_output(path[len("/outputs/") :])
         elif any(path.startswith(prefix) for prefix in ("/review/", "/quality/", "/records", "/system/")):
@@ -4003,6 +4169,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/tasks/"):
+            task_id = unquote(parsed.path.split("/")[-1])
+            try:
+                success_response(self, delete_task_record(task_id))
+            except FileNotFoundError as exc:
+                error_response(self, 404, str(exc))
+            except (OSError, ValueError) as exc:
+                error_response(self, 400, str(exc))
+            return
         if parsed.path.startswith("/api/review-history/"):
             record_id = unquote(parsed.path.split("/")[-1])
             try:

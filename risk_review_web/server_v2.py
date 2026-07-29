@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
-import csv
 import hashlib
 import json
 import os
@@ -17,24 +15,17 @@ import tempfile
 import threading
 import time
 import uuid
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from io import BytesIO
-from io import StringIO
 from concurrent.futures import CancelledError
-from zipfile import ZipFile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from risk_review_web.api_docs import get_api_doc, list_api_docs
 from risk_review_web.artifacts import (
     STANDARD_SCHEMA_VERSION,
     compute_phase1_checksum,
     compute_review_checksum,
     find_cached_phase1_standard,
-    load_phase1_processing_spec,
-    load_phase2_review_spec,
     normalize_phase1_output,
     normalize_review_output,
     read_phase1_standard,
@@ -52,43 +43,80 @@ from risk_review_web.business_rules import (
 )
 from risk_review_web.paths import (
     BUSINESS_RULES_PATH,
-    DATA_DIR,
     EXAMPLES_PATH,
     VALIDATION_RUNS_PATH,
     REVIEW_RECORDS_PATH,
-    REVIEW_MODE_EXPERIMENTS_PATH,
     SCHEDULED_RUNS_PATH,
     OUTPUTS_DIR,
     PHASE1_SKILL_PATH,
-    PHASE1_PROCESSING_SPEC_DOC_PATH,
     PHASE1_PROCESSING_SPEC_PATH,
     PHASE2_SKILL_PATH,
-    PHASE2_REVIEW_SPEC_DOC_PATH,
     PHASE2_REVIEW_SPEC_PATH,
     RULE_ENGINE_BUILD_PATH,
     ROOT,
     STATIC_DIR,
-    resolve_validation_set_path,
 )
 from risk_review_web.prompt_builder import (
     build_phase1_prompt,
     build_phase2_prompt,
     build_direct_review_prompt,
 )
-from risk_review_web.scheduled_tasks import ScheduledTaskError, build_service as build_scheduled_task_service
+from risk_review_web.scheduled_tasks import build_service as build_scheduled_task_service
 from risk_review_web.runtime_settings import get_runtime_settings, update_runtime_settings
 from risk_review_web.task_pool import GLOBAL_TASK_POOL
 from risk_review_web.utils import atomic_write_text, parse_frontmatter, read_text
 from risk_review_web.error_classification import attach_error_metadata, classify_task_error
+from risk_review_web.services.review_evaluation import (
+    collect_review_stats,
+    detect_verdict_text,
+    evaluate_issue_expectations,
+    expected_matches_verdict,
+    optional_nonnegative_int as _optional_nonnegative_int,
+    string_list as _string_list,
+    validation_expected_code,
+)
+from risk_review_web.services.tabular_import import (
+    normalize_batch_rows_from_table,
+    parse_csv_rows,
+    parse_xlsx,
+)
+from risk_review_web.services.http_responses import (
+    error_response,
+    json_response,
+    success_response,
+)
+from risk_review_web.services.review_history import (
+    REVIEW_RECORDS_LOCK,
+    _external_review_records,
+    _review_record_artifact_names,
+    _task_to_review_record,
+    artifact_review_history_records,
+    list_outputs,
+    parse_review_records,
+    save_review_records,
+)
+from risk_review_web.services.time_utils import iso_time as _iso_time
+from risk_review_web.services.validation_store import (
+    EXAMPLES_LOCK,
+    cancel_validation_runs_for_task,
+    normalize_example,
+    parse_examples,
+    recover_stale_review_mode_experiments,
+    recover_stale_validation_runs,
+    save_examples,
+    upsert_review_mode_experiment,
+    upsert_validation_run,
+    validate_example,
+)
+from risk_review_web.routes import scheduled as scheduled_routes
+from risk_review_web.routes import static_files as static_routes
+from risk_review_web.routes import system as system_routes
+from risk_review_web.routes import validation as validation_routes
 
 TASKS = {}
 TASK_LOCK = threading.Lock()
 RUNNING_PROCS = {}
 RUNNING_PROCS_LOCK = threading.Lock()
-EXAMPLES_LOCK = threading.Lock()
-VALIDATION_RUNS_LOCK = threading.Lock()
-REVIEW_MODE_EXPERIMENTS_LOCK = threading.Lock()
-REVIEW_RECORDS_LOCK = threading.Lock()
 SCHEDULED_TASK_SERVICE = None
 
 # 任务记录回收：终态任务保留 N 分钟后删除；TASKS 总量不超过上限。
@@ -109,6 +137,7 @@ def task_output_token(task_id: str) -> str:
 
 
 def _is_terminal_status(status: str | None) -> bool:
+    """Return whether a task has reached a non-resumable terminal state."""
     return status in ("done", "error", "cancelled")
 
 
@@ -143,558 +172,8 @@ def gc_tasks(force: bool = False) -> int:
     return removed
 
 
-def json_response(handler, status: int, payload: dict):
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
-
-
-def success_response(handler, data, *, status: int = 200):
-    json_response(handler, status, {"success": True, "data": data})
-
-
-def error_response(handler, status: int, message: str, detail=None):
-    payload = {"success": False, "error": message}
-    if detail is not None:
-        payload["detail"] = detail
-    json_response(handler, status, payload)
-
-
-def text_response(handler, status: int, content: bytes, content_type: str):
-    handler.send_response(status)
-    handler.send_header("Content-Type", content_type)
-    handler.send_header("Content-Length", str(len(content)))
-    handler.end_headers()
-    handler.wfile.write(content)
-
-
-
-def parse_xlsx(data: bytes) -> list[list[str]]:
-    """Parse .xlsx file using only Python stdlib."""
-    rows = []
-    ns = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
-    try:
-        with ZipFile(BytesIO(data)) as z:
-            sst = []
-            if 'xl/sharedStrings.xml' in z.namelist():
-                tree = ET.parse(z.open('xl/sharedStrings.xml'))
-                for si in tree.findall(f'{ns}si'):
-                    texts = [t.text or '' for t in si.findall(f'.//{ns}t')]
-                    sst.append(''.join(texts))
-            tree = ET.parse(z.open('xl/worksheets/sheet1.xml'))
-            sheet = tree.getroot()
-            sheet_data = sheet.find(f'{ns}sheetData')
-            if sheet_data is None:
-                return rows
-            for row_el in sheet_data.findall(f'{ns}row'):
-                cells = {}
-                for c in row_el.findall(f'{ns}c'):
-                    r = c.get('r', '')
-                    t = c.get('t', '')
-                    v_el = c.find(f'{ns}v')
-                    val = v_el.text if v_el is not None else ''
-                    if t == 's' and val:
-                        try:
-                            val = sst[int(float(val))]
-                        except (IndexError, ValueError):
-                            pass
-                    cells[r] = val
-                if not cells:
-                    continue
-                max_col = 0
-                for ref in cells:
-                    col_str = ''.join(filter(str.isalpha, ref))
-                    col_idx = 0
-                    for ch in col_str.upper():
-                        col_idx = col_idx * 26 + (ord(ch) - 64)
-                    max_col = max(max_col, col_idx)
-                row_num = ''.join(filter(str.isdigit, next(iter(cells))))
-                row_data = []
-                for col_i in range(1, max_col + 1):
-                    ref = ''
-                    c = col_i
-                    while c > 0:
-                        c, r = divmod(c - 1, 26)
-                        ref = chr(r + 65) + ref
-                    ref += row_num
-                    row_data.append(cells.get(ref, ''))
-                rows.append(row_data)
-    except Exception:
-        return []
-    return rows
-
-
-def parse_csv_rows(text: str) -> list[list[str]]:
-    sample = text.lstrip("\ufeff")
-    rows = []
-    for row in csv.reader(StringIO(sample)):
-        if any(str(cell).strip() for cell in row):
-            rows.append([str(cell).strip() for cell in row])
-    return rows
-
-
-def normalize_batch_rows_from_table(rows: list[list[str]]) -> list[dict]:
-    if not rows:
-        return []
-    aliases = {
-        "caseName": ["案例名称", "案例名", "caseName", "case_name", "title"],
-        "factorName": ["因子名", "因子中文名", "factorName", "factor_name"],
-        "requirement": ["需求内容", "需求", "requirement"],
-        "apiDocs": ["接口文档", "接口", "接口文档ID", "apiDocs", "apiDocIds", "api_names"],
-        "paramFields": ["因子加工输入字段", "paramFields"],
-        "procLogic": ["加工逻辑", "逻辑", "procLogic"],
-        "draft": ["待评审内容", "准出内容", "reviewContent", "review_content", "draft"],
-        "defaultValues": ["默认值", "defaultVal", "defaultValues"],
-        "businessRuleIds": ["业务规则ID", "业务规则 ID", "businessRuleIds", "business_rule_ids"],
-        "standardFile": ["标准文件ID", "标准文件", "standardFile", "standard_file"],
-        "remark": ["备注", "remark"],
-    }
-    header = [str(cell).strip() for cell in rows[0]]
-    col_map = {}
-    for key, names in aliases.items():
-        for name in names:
-            if name in header:
-                col_map[key] = header.index(name)
-                break
-    normalized = []
-    for raw in rows[1:]:
-        item = {}
-        for key in aliases:
-            index = col_map.get(key)
-            item[key] = str(raw[index]).strip() if index is not None and index < len(raw) else ""
-        if item.get("factorName") or item.get("requirement"):
-            normalized.append(item)
-    return normalized
-
-def list_outputs():
-    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    files = []
-    candidates = [
-        path
-        for path in OUTPUTS_DIR.iterdir()
-        if path.is_file()
-        and path.name.startswith(("standard-", "review-", "risk-review-"))
-        and path.name.endswith((".md", ".json", ".txt"))
-    ]
-    for path in sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            display_path = path.relative_to(ROOT).as_posix()
-        except ValueError:
-            display_path = path.as_posix()
-        files.append(
-            {
-                "name": path.name,
-                "path": display_path,
-                "mtime": int(path.stat().st_mtime),
-                "size": path.stat().st_size,
-            }
-        )
-    return files
-
-
-def review_history_record_id(base: str) -> str:
-    """Match the browser's unsigned 32-bit JavaScript hash for existing session IDs."""
-    hash_value = 0
-    encoded = str(base).encode("utf-16-be", errors="surrogatepass")
-    for index in range(0, len(encoded), 2):
-        code_unit = int.from_bytes(encoded[index:index + 2], "big")
-        hash_value = ((hash_value * 31) + code_unit) & 0xFFFFFFFF
-    return f"session-{hash_value:08x}"
-
-
-def factor_name_from_output_name(name: str) -> str:
-    current = re.match(
-        r"^(?:standard|review)-(.+?)-\d{4}-\d{2}-\d{2}-[a-z0-9]{8}-[a-z0-9]{8}(?:\.|$)",
-        name,
-        re.I,
-    )
-    if current:
-        return current.group(1).replace("-", " ").strip()
-    legacy = re.match(
-        r"^(?:standard|review)-(.+)-\d{4}-\d{2}-\d{2}-[a-z0-9]{8}\.",
-        name,
-        re.I,
-    )
-    return legacy.group(1).replace("-", " ").strip() if legacy else name
-
-
-def parse_review_history_artifact(name: str) -> dict | None:
-    legacy = re.match(
-        r"^(standard|review)-(.+)\.(standard|review)\.(md|json|raw\.txt|validation\.json)$",
-        name,
-        re.I,
-    )
-    if legacy and legacy.group(1).lower() == legacy.group(3).lower():
-        extension = legacy.group(4).lower()
-        return {
-            "phase": legacy.group(1).lower(),
-            "base": legacy.group(2),
-            "kind": "raw" if extension == "raw.txt" else "validation" if extension == "validation.json" else extension,
-        }
-    current = re.match(
-        r"^(standard|review)-(.+)\.(md|metadata\.json|raw\.txt|validation\.json)$",
-        name,
-        re.I,
-    )
-    if not current:
-        return None
-    extension = current.group(3).lower()
-    return {
-        "phase": current.group(1).lower(),
-        "base": f"{current.group(1).lower()}-{current.group(2)}",
-        "kind": (
-            "json"
-            if extension == "metadata.json"
-            else "raw"
-            if extension == "raw.txt"
-            else "validation"
-            if extension == "validation.json"
-            else "md"
-        ),
-    }
-
-
-def artifact_review_history_records() -> list[dict]:
-    grouped: dict[str, dict] = {}
-    created_at_numbers: dict[str, int] = {}
-    for output in list_outputs():
-        parsed = parse_review_history_artifact(output["name"])
-        if not parsed:
-            continue
-        review_text = ""
-        base = parsed["base"]
-        if parsed["phase"] == "review" and parsed["kind"] == "md":
-            try:
-                review_text = read_text(OUTPUTS_DIR / output["name"])
-                linked_standard = str(parse_frontmatter(review_text).get("standard_file") or "").strip()
-                if linked_standard and Path(linked_standard).name == linked_standard:
-                    base = Path(linked_standard).stem
-            except OSError:
-                review_text = ""
-        record = grouped.get(base)
-        if record is None:
-            record = {
-                "recordId": review_history_record_id(base),
-                "factorName": factor_name_from_output_name(output["name"]),
-                "createdAt": datetime.fromtimestamp(output.get("mtime") or 0, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
-                "source": "validation" if "vrun-" in base else "single",
-                "mode": "phase1_only",
-                "conclusion": "unreviewable",
-                "riskCount": 0,
-                "standardArtifacts": {},
-                "reviewArtifacts": {},
-            }
-            grouped[base] = record
-            created_at_numbers[base] = int(output.get("mtime") or 0)
-        if int(output.get("mtime") or 0) > created_at_numbers[base]:
-            created_at_numbers[base] = int(output.get("mtime") or 0)
-            record["createdAt"] = datetime.fromtimestamp(
-                output.get("mtime") or 0,
-                tz=timezone.utc,
-            ).isoformat().replace("+00:00", "Z")
-        artifact_group = record["standardArtifacts"] if parsed["phase"] == "standard" else record["reviewArtifacts"]
-        artifact_group[parsed["kind"]] = output["name"]
-        if parsed["phase"] == "review" and parsed["kind"] == "md":
-            try:
-                review_text = review_text or read_text(OUTPUTS_DIR / output["name"])
-                record["conclusion"] = detect_verdict_text(review_text)
-                record["riskCount"] = int(collect_review_stats(review_text).get("fail") or 0)
-            except OSError:
-                record["conclusion"] = "unreviewable"
-                record["riskCount"] = 0
-        record["mode"] = (
-            "one_click"
-            if record["standardArtifacts"].get("md") and record["reviewArtifacts"].get("md")
-            else "phase2_only"
-            if record["reviewArtifacts"].get("md")
-            else "phase1_only"
-        )
-    return sorted(grouped.values(), key=lambda item: str(item.get("createdAt") or ""), reverse=True)
-
-
-def parse_review_records() -> list[dict]:
-    if not REVIEW_RECORDS_PATH.exists():
-        return []
-    try:
-        data = json.loads(read_text(REVIEW_RECORDS_PATH))
-    except Exception:
-        return []
-    return data if isinstance(data, list) else []
-
-
-def save_review_records(records: list[dict]) -> None:
-    REVIEW_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(
-        REVIEW_RECORDS_PATH,
-        json.dumps(records[-5000:], ensure_ascii=False, indent=2),
-    )
-
-
-def _review_record_artifact_names(record: dict) -> set[str]:
-    names = set()
-    for group_name in ("standardArtifacts", "reviewArtifacts"):
-        for file_name in (record.get(group_name) or {}).values():
-            if file_name:
-                names.add(str(file_name))
-    for item in record.get("items") or []:
-        for key in ("standardFileId", "standardMetadataFileId", "reviewFileId"):
-            if item.get(key):
-                names.add(str(item[key]))
-    return names
-
-
-def _task_record_title(task: dict) -> str:
-    context = task.get("context") or {}
-    task_type = str(task.get("taskType") or "")
-    if context.get("taskName"):
-        return str(context["taskName"])
-    if context.get("factorName"):
-        return str(context["factorName"])
-    labels = {
-        "batch": "批量评审",
-        "regression": "质量验证",
-        "review-mode-experiment": "模式对比实验",
-        "phase1": "标准生成",
-        "phase2": "单因子评审",
-    }
-    return f"{labels.get(task_type, '评审任务')} · {str(task.get('id') or '')[:8]}"
-
-
-def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict | None:
-    status = str(task.get("status") or "")
-    if not include_active and not _is_terminal_status(status):
-        return None
-    task_type = str(task.get("taskType") or "")
-    if task_type in {"child", "scheduled-phase1", "scheduled-phase2"}:
-        return None
-    result = task.get("result") or {}
-    context = task.get("context") or {}
-    items = result.get("items") if isinstance(result, dict) else None
-    if not isinstance(items, list):
-        items = []
-    standard_file = result.get("standardFileId") or context.get("standardFileId")
-    standard_metadata = result.get("standardMetadataFileId")
-    if standard_file and not standard_metadata:
-        standard_stem = Path(str(standard_file)).stem
-        for metadata_candidate in (
-            f"{standard_stem}.metadata.json",
-            f"{standard_stem}.summary.json",
-        ):
-            if (OUTPUTS_DIR / metadata_candidate).is_file():
-                standard_metadata = metadata_candidate
-                break
-    review_file = result.get("reviewFileId")
-    conclusion = "unreviewable"
-    risk_count = 0
-    if review_file:
-        try:
-            review_text = read_text(OUTPUTS_DIR / Path(str(review_file)).name)
-            conclusion = detect_verdict_text(review_text)
-            risk_count = int(collect_review_stats(review_text).get("fail") or 0)
-        except OSError:
-            pass
-    done_items = [item for item in items if item.get("status") in {"done", "pass", "fail"}]
-    failed_items = [item for item in items if item.get("status") in {"error", "skip"}]
-    if items:
-        conclusions = [
-            detect_verdict_text(str(item.get("raw") or ""))
-            for item in done_items
-            if item.get("raw")
-        ]
-        if conclusions and all(value == "pass" for value in conclusions):
-            conclusion = "pass"
-        elif any(value == "fail" for value in conclusions):
-            conclusion = "fail"
-        elif failed_items:
-            conclusion = "unreviewable"
-        risk_count = sum(
-            int((item.get("summary") or {}).get("fail") or 0)
-            for item in items
-        )
-    source = {
-        "batch": "batch",
-        "regression": "validation",
-        "review-mode-experiment": "experiment",
-        "phase1": "single",
-        "phase2": "single",
-    }.get(task_type, task_type or "single")
-    created = float(task.get("created") or time.time())
-    updated = float(task.get("updated") or created)
-    progress = {
-        "total": len(items) if items else 1,
-        "completed": len(done_items) if items else int(task.get("status") == "done"),
-        "failed": len(failed_items) if items else int(task.get("status") == "error"),
-    }
-    return {
-        "recordId": f"task-{task.get('id')}",
-        "id": task.get("id"),
-        "taskId": task.get("id"),
-        "taskType": task_type,
-        "parentTaskId": task.get("parentTaskId"),
-        "clientId": task.get("clientId") or "",
-        "status": status,
-        "context": context,
-        "progress": progress,
-        "title": _task_record_title(task),
-        "factorName": context.get("factorName") or _task_record_title(task),
-        "source": source,
-        "taskStatus": status,
-        "conclusion": conclusion,
-        "riskCount": risk_count,
-        "createdAt": datetime.fromtimestamp(created, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
-        "updatedAt": datetime.fromtimestamp(updated, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
-        "archived": False,
-        "summary": progress,
-        "standardArtifacts": {
-            **({"md": standard_file} if standard_file else {}),
-            **({"json": standard_metadata} if standard_metadata else {}),
-        },
-        "reviewArtifacts": {"md": review_file} if review_file else {},
-        "items": items,
-    }
-
-
-def _artifact_conclusion(file_name: str | None) -> tuple[str, int]:
-    if not file_name:
-        return "unreviewable", 0
-    try:
-        text = read_text(OUTPUTS_DIR / Path(str(file_name)).name)
-    except OSError:
-        return "unreviewable", 0
-    return detect_verdict_text(text), int(collect_review_stats(text).get("fail") or 0)
-
-
-def _load_json_list(path: Path) -> list[dict]:
-    if not path.is_file():
-        return []
-    try:
-        data = json.loads(read_text(path))
-    except Exception:
-        return []
-    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
-
-
-def _external_review_records() -> list[dict]:
-    records: list[dict] = []
-    for run in _load_json_list(SCHEDULED_RUNS_PATH):
-        status = str(run.get("status") or "")
-        if status in {"queued", "running", "cancelling"}:
-            continue
-        items = []
-        conclusions = []
-        risk_count = 0
-        for item in run.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            review_file = item.get("reviewFile")
-            conclusion, item_risk = _artifact_conclusion(review_file)
-            if review_file:
-                conclusions.append(conclusion)
-            risk_count += item_risk
-            items.append({
-                **item,
-                "standardFileId": item.get("standardFile"),
-                "reviewFileId": review_file,
-                "conclusion": conclusion,
-                "riskCount": item_risk,
-            })
-        conclusion = (
-            "fail" if "fail" in conclusions
-            else "pass" if conclusions and all(value == "pass" for value in conclusions)
-            else "unreviewable"
-        )
-        task_status = (
-            "cancelled" if status == "cancelled"
-            else "error" if status == "failed"
-            else "done"
-        )
-        records.append({
-            "recordId": f"scheduled-{run.get('runId')}",
-            "taskId": run.get("runId"),
-            "title": run.get("taskName") or "定时评审",
-            "factorName": run.get("taskName") or "定时评审",
-            "source": "scheduled",
-            "taskStatus": task_status,
-            "conclusion": conclusion,
-            "riskCount": risk_count,
-            "createdAt": run.get("createdAt") or run.get("startedAt") or _iso_time(),
-            "updatedAt": run.get("finishedAt") or run.get("startedAt") or _iso_time(),
-            "archived": False,
-            "summary": {
-                "total": int(run.get("total") or len(items)),
-                "completed": int(run.get("success") or 0),
-                "failed": int(run.get("failed") or 0),
-            },
-            "standardArtifacts": {},
-            "reviewArtifacts": {},
-            "items": items,
-        })
-
-    validation_groups: dict[str, list[dict]] = {}
-    for run in _load_json_list(VALIDATION_RUNS_PATH):
-        status = str(run.get("status") or "")
-        if status in {"pending", "queued", "running", "cancelling"}:
-            continue
-        validation_groups.setdefault(str(run.get("groupId") or run.get("runId")), []).append(run)
-    for group_id, runs in validation_groups.items():
-        items = []
-        conclusions = []
-        risk_count = 0
-        for run in runs:
-            review_file = run.get("reviewFile")
-            conclusion = str(run.get("actualConclusion") or "")
-            item_risk = 0
-            if review_file:
-                detected, item_risk = _artifact_conclusion(review_file)
-                conclusion = conclusion or detected
-            if conclusion:
-                conclusions.append(conclusion)
-            risk_count += item_risk
-            items.append({
-                **run,
-                "factorName": run.get("caseName"),
-                "standardFileId": run.get("standardFile"),
-                "standardMetadataFileId": run.get("standardMetadataFile"),
-                "reviewFileId": review_file,
-                "conclusion": conclusion or "unreviewable",
-                "riskCount": item_risk,
-            })
-        failed = sum(1 for item in runs if item.get("status") in {"failed", "cancelled"})
-        conclusion = (
-            "fail" if "fail" in conclusions
-            else "pass" if conclusions and all(value == "pass" for value in conclusions)
-            else "unreviewable"
-        )
-        created_at = min((str(item.get("startedAt") or item.get("createdAt") or "") for item in runs), default="")
-        updated_at = max((str(item.get("finishedAt") or item.get("startedAt") or "") for item in runs), default="")
-        records.append({
-            "recordId": f"validation-{group_id}",
-            "taskId": group_id,
-            "title": f"质量验证 · {group_id[:12]}",
-            "factorName": "质量验证",
-            "source": "validation",
-            "taskStatus": "error" if failed == len(runs) else "done",
-            "conclusion": conclusion,
-            "riskCount": risk_count,
-            "createdAt": created_at or _iso_time(),
-            "updatedAt": updated_at or created_at or _iso_time(),
-            "archived": False,
-            "summary": {
-                "total": len(runs),
-                "completed": len(runs) - failed,
-                "failed": failed,
-            },
-            "standardArtifacts": {},
-            "reviewArtifacts": {},
-            "items": items,
-        })
-    return records
-
-
 def sync_terminal_tasks_to_review_records() -> None:
+    """Persist newly terminal in-memory tasks without duplicating existing records."""
     with TASK_LOCK:
         snapshots = [dict(task) for task in TASKS.values()]
     generated = [
@@ -728,6 +207,7 @@ def sync_terminal_tasks_to_review_records() -> None:
 
 
 def review_history_records(include_archived: bool = False) -> list[dict]:
+    """Merge live tasks, persisted records, and orphan artifacts into one history view."""
     sync_terminal_tasks_to_review_records()
     with TASK_LOCK:
         active_tasks = [
@@ -815,6 +295,7 @@ def normalize_task_record_view(record: dict) -> dict:
 
 
 def _timestamp_from_iso(value: object) -> float:
+    """Convert an ISO timestamp to epoch seconds for stable cross-source sorting."""
     text = str(value or "").strip()
     if not text:
         return 0.0
@@ -858,6 +339,7 @@ def review_record_to_task(record: dict) -> dict:
 
 
 def find_persisted_task(task_id: str) -> dict | None:
+    """Find a task that has already been evicted from the in-memory registry."""
     for record in review_history_records(include_archived=True):
         if str(record.get("taskId") or "") == task_id:
             return review_record_to_task(record)
@@ -865,6 +347,7 @@ def find_persisted_task(task_id: str) -> dict | None:
 
 
 def query_review_records(query: dict[str, list[str]]) -> dict:
+    """Filter and paginate persisted review records for the history page."""
     archived_only = (query.get("archived") or ["false"])[0].lower() == "true"
     records = review_history_records(include_archived=True)
     records = [item for item in records if bool(item.get("archived")) == archived_only]
@@ -917,6 +400,7 @@ def query_review_records(query: dict[str, list[str]]) -> dict:
 
 
 def archive_review_record(record_id: str, archived: bool) -> dict:
+    """Toggle a record's archived state without touching its artifacts."""
     sync_terminal_tasks_to_review_records()
     with REVIEW_RECORDS_LOCK:
         records = parse_review_records()
@@ -942,6 +426,7 @@ def archive_review_record(record_id: str, archived: bool) -> dict:
 
 
 def delete_review_history_record(record_id: str) -> dict:
+    """Delete a terminal history record and artifacts not referenced elsewhere."""
     record = next(
         (
             item
@@ -985,628 +470,8 @@ def delete_review_history_record(record_id: str) -> dict:
     return {"recordId": record_id, "deletedFiles": deleted_files}
 
 
-def parse_examples():
-    if EXAMPLES_PATH.exists():
-        try:
-            data = json.loads(read_text(EXAMPLES_PATH))
-            return data if isinstance(data, list) else []
-        except Exception:
-            return []
-    examples = parse_examples_from_validation_set()
-    save_examples(examples)
-    return examples
-
-
-def save_examples(examples: list[dict]):
-    DATA_DIR.mkdir(exist_ok=True)
-    atomic_write_text(EXAMPLES_PATH, json.dumps(examples, ensure_ascii=False, indent=2))
-
-
-def parse_examples_from_validation_set():
-    if not VALIDATION_SET_PATH.exists():
-        return []
-    text = read_text(VALIDATION_SET_PATH)
-    examples = []
-    pattern = re.compile(
-        r"## Case (?P<num>\d{2}) (?P<kind>\S+).*?```text\n(?P<input>.*?)\n```.*?### 期望结论\n\n(?P<expected>.*?)(?=\n\n###|\Z)",
-        re.S,
-    )
-    for match in pattern.finditer(text):
-        raw_input = match.group("input").strip()
-        examples.append(
-            {
-                "id": f"case-{match.group('num')}",
-                "title": f"Case {match.group('num')} {match.group('kind')}",
-                "kind": match.group("kind"),
-                "expected": re.sub(r"\s+", " ", match.group("expected").strip()),
-                **split_example_input(raw_input),
-            }
-        )
-    return examples
-
-
-def split_example_input(raw_input: str):
-    def section(name: str):
-        m = re.search(rf"【{re.escape(name)}】\s*(.*?)(?=\n【[^】]+】|\Z)", raw_input, re.S)
-        return m.group(1).strip() if m else ""
-
-    factor_name = section("因子名")
-    api_line = section("接口文档")
-    requirement = section("需求内容")
-    draft_match = re.search(r"【待评审准出内容】\s*(.*)\Z", raw_input, re.S)
-    draft = draft_match.group(1).strip() if draft_match else ""
-    def draft_section(name: str):
-        m = re.search(rf"【{re.escape(name)}】\s*(.*?)(?=\n【[^】]+】|\Z)", draft, re.S)
-        return m.group(1).strip() if m else ""
-    api_names = [x.strip() for x in re.split(r"[、,，\n]+", api_line) if x.strip()]
-    return {
-        "factorName": factor_name,
-        "apiNames": api_names,
-        "requirement": requirement,
-        "paramFields": draft_section("因子加工输入字段"),
-        "procLogic": draft_section("加工逻辑"),
-        "defaultValues": draft_section("默认值"),
-        "draft": draft,
-    }
-
-
-def example_version() -> str:
-    return uuid.uuid4().hex[:12]
-
-
-def validate_example(example: dict) -> list[str]:
-    errors = []
-    if not (example.get("title") or "").strip():
-        errors.append("案例标题不能为空")
-    if not (example.get("factorName") or "").strip():
-        errors.append("因子名不能为空")
-    if not (example.get("requirement") or "").strip():
-        errors.append("需求内容不能为空")
-    if not example.get("apiNames"):
-        errors.append("接口文档不能为空")
-    if not (example.get("draft") or "").strip():
-        errors.append("待评审内容不能为空")
-    return errors
-
-
-def normalize_example(payload: dict, existing_id: str | None = None) -> dict:
-    example_id = existing_id or (payload.get("id") or f"case-{uuid.uuid4().hex[:8]}")
-    api_names = payload.get("apiNames") or []
-    if isinstance(api_names, str):
-        api_names = [x.strip() for x in re.split(r"[、,，\n]+", api_names) if x.strip()]
-    else:
-        api_names = [str(x).strip() for x in api_names if str(x).strip()]
-    param_fields = (payload.get("paramFields") or "").strip()
-    proc_logic = (payload.get("procLogic") or "").strip()
-    default_values = "字段缺失、格式错误或数据异常时返回默认值"
-    draft = (payload.get("draft") or "").strip()
-    if not draft:
-        draft_parts = []
-        if param_fields:
-            draft_parts.append(f"【因子加工输入字段】\n{param_fields}")
-        if proc_logic:
-            draft_parts.append(f"【加工逻辑】\n{proc_logic}")
-        if draft_parts:
-            draft_parts.append(f"【默认值】\n{default_values}")
-        draft = "\n\n".join(draft_parts)
-    return {
-        "id": str(example_id),
-        "title": (payload.get("title") or "").strip() or str(example_id),
-        "kind": (payload.get("kind") or "").strip(),
-        "factorName": (payload.get("factorName") or "").strip(),
-        "apiNames": api_names,
-        "requirement": (payload.get("requirement") or "").strip(),
-        "paramFields": param_fields,
-        "procLogic": proc_logic,
-        "defaultValues": default_values,
-        "draft": draft,
-        "expected": (payload.get("expected") or "").strip(),
-        "expectedIssuePatterns": _string_list(payload.get("expectedIssuePatterns")),
-        "forbiddenIssuePatterns": _string_list(payload.get("forbiddenIssuePatterns")),
-        "maxIssueCount": _optional_nonnegative_int(payload.get("maxIssueCount")),
-        "version": example_version(),
-        "updatedAt": int(time.time()),
-    }
-
-
-def _string_list(value) -> list[str]:
-    if isinstance(value, str):
-        return [item.strip() for item in re.split(r"[\n,，、]+", value) if item.strip()]
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return []
-
-
-def _optional_nonnegative_int(value) -> int | None:
-    if value in (None, ""):
-        return None
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 0 else None
-
-
-def validation_expected_code(value: str | None) -> str:
-    source = str(value or "").strip()
-    if re.search(r"不通过|不符合|失败|fail", source, re.I):
-        return "fail"
-    if re.search(r"无法评审|unreviewable", source, re.I):
-        return "unreviewable"
-    if re.search(r"通过|符合|pass", source, re.I):
-        return "pass"
-    return source or "unreviewable"
-
-
-def _iso_time(epoch_value=None) -> str:
-    try:
-        epoch = float(epoch_value) if epoch_value is not None else time.time()
-    except (TypeError, ValueError):
-        epoch = time.time()
-    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
-
-
-def parse_validation_runs() -> list[dict]:
-    if not VALIDATION_RUNS_PATH.exists():
-        return []
-    try:
-        data = json.loads(read_text(VALIDATION_RUNS_PATH))
-        return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
-        return []
-
-
-def query_validation_run_groups(query: dict[str, list[str]]) -> dict:
-    with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-    grouped: dict[str, list[dict]] = {}
-    for run in runs:
-        grouped.setdefault(str(run.get("groupId") or run.get("runId")), []).append(run)
-    items = []
-    for group_id, group_runs in grouped.items():
-        terminal = [
-            item for item in group_runs
-            if str(item.get("status") or "") in {"success", "failed", "cancelled"}
-        ]
-        matched = sum(1 for item in terminal if item.get("matched") is True)
-        mismatched = sum(
-            1 for item in terminal
-            if item.get("status") == "success" and item.get("matched") is False
-        )
-        failed = sum(1 for item in terminal if item.get("status") in {"failed", "cancelled"})
-        running = any(
-            str(item.get("status") or "") in {"pending", "queued", "running"}
-            for item in group_runs
-        )
-        started_at = min((str(item.get("startedAt") or "") for item in group_runs), default="")
-        finished_at = max((str(item.get("finishedAt") or "") for item in group_runs), default="")
-        items.append({
-            "groupId": group_id,
-            "runs": group_runs,
-            "startedAt": started_at,
-            "finishedAt": finished_at,
-            "total": len(group_runs),
-            "matched": matched,
-            "mismatched": mismatched,
-            "failed": failed,
-            "status": "running" if running else "error" if failed == len(group_runs) else "done",
-            "agreementRate": round(matched / len(group_runs) * 100, 1) if group_runs else 0,
-        })
-    items.sort(
-        key=lambda item: str(item.get("finishedAt") or item.get("startedAt") or ""),
-        reverse=True,
-    )
-    try:
-        page = max(1, int((query.get("page") or ["1"])[0]))
-        page_size = max(1, min(100, int((query.get("pageSize") or ["20"])[0])))
-    except ValueError:
-        page, page_size = 1, 20
-    start = (page - 1) * page_size
-    return {
-        "items": items[start:start + page_size],
-        "page": page,
-        "pageSize": page_size,
-        "total": len(items),
-    }
-
-
-def save_validation_runs(runs: list[dict]):
-    VALIDATION_RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    trimmed = sorted(
-        runs,
-        key=lambda item: item.get("finishedAt") or item.get("startedAt") or "",
-        reverse=True,
-    )[:1000]
-    atomic_write_text(VALIDATION_RUNS_PATH, json.dumps(trimmed, ensure_ascii=False, indent=2))
-
-
-def batch_delete_validation_run_groups(group_ids: list[str]) -> dict:
-    ordered_group_ids = list(dict.fromkeys(str(item).strip() for item in group_ids if str(item).strip()))
-    with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-        grouped: dict[str, list[dict]] = {}
-        for run in runs:
-            group_id = str(run.get("groupId") or run.get("runId") or "")
-            if group_id:
-                grouped.setdefault(group_id, []).append(run)
-
-        removable: set[str] = set()
-        items: list[dict] = []
-        for group_id in ordered_group_ids:
-            group_runs = grouped.get(group_id)
-            if not group_runs:
-                items.append({"id": group_id, "success": False, "error": "验证批次不存在"})
-                continue
-            if any(
-                str(run.get("status") or "") in {"pending", "queued", "running", "cancelling"}
-                for run in group_runs
-            ):
-                items.append({"id": group_id, "success": False, "error": "执行中的验证批次不能删除"})
-                continue
-            removable.add(group_id)
-            items.append({"id": group_id, "success": True})
-
-        if removable:
-            save_validation_runs([
-                run
-                for run in runs
-                if str(run.get("groupId") or run.get("runId") or "") not in removable
-            ])
-
-    success_count = sum(1 for item in items if item["success"])
-    return {
-        "total": len(items),
-        "success": success_count,
-        "failed": len(items) - success_count,
-        "items": items,
-    }
-
-
-def recover_stale_validation_runs():
-    with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-        changed = False
-        for run in runs:
-            if run.get("status") not in ("pending", "running"):
-                continue
-            run.update({
-                "status": "failed",
-                "finishedAt": _iso_time(),
-                "error": "后端服务已重启，原执行任务无法继续，请重新运行该案例",
-            })
-            changed = True
-        if changed:
-            save_validation_runs(runs)
-
-
-def cancel_validation_runs_for_task(task_id: str):
-    with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-        changed = False
-        for run in runs:
-            if run.get("taskId") != task_id or run.get("status") not in ("pending", "running"):
-                continue
-            run.update({
-                "status": "cancelled",
-                "finishedAt": _iso_time(),
-                "error": "验证任务已终止",
-            })
-            changed = True
-        if changed:
-            save_validation_runs(runs)
-
-
-def upsert_validation_run(run: dict) -> dict:
-    with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-        run_id = str(run.get("runId") or "")
-        for index, current in enumerate(runs):
-            if current.get("runId") == run_id:
-                runs[index] = {**current, **run}
-                saved = runs[index]
-                break
-        else:
-            runs.append(run)
-            saved = run
-        save_validation_runs(runs)
-    return saved
-
-
-def get_validation_run(run_id: str) -> dict | None:
-    with VALIDATION_RUNS_LOCK:
-        return next((item for item in parse_validation_runs() if item.get("runId") == run_id), None)
-
-
-def latest_validation_runs_by_case() -> dict[str, dict]:
-    latest = {}
-    with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-    for run in runs:
-        case_id = str(run.get("caseId") or "")
-        if not case_id:
-            continue
-        current = latest.get(case_id)
-        current_time = (current or {}).get("finishedAt") or (current or {}).get("startedAt") or ""
-        candidate_time = run.get("finishedAt") or run.get("startedAt") or ""
-        if current is None or candidate_time > current_time:
-            latest[case_id] = run
-    return latest
-
-
-def parse_review_mode_experiments() -> list[dict]:
-    if not REVIEW_MODE_EXPERIMENTS_PATH.exists():
-        return []
-    try:
-        data = json.loads(read_text(REVIEW_MODE_EXPERIMENTS_PATH))
-        return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
-        return []
-
-
-def save_review_mode_experiments(experiments: list[dict]):
-    REVIEW_MODE_EXPERIMENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    trimmed = sorted(
-        experiments,
-        key=lambda item: item.get("createdAt") or "",
-        reverse=True,
-    )[:200]
-    atomic_write_text(
-        REVIEW_MODE_EXPERIMENTS_PATH,
-        json.dumps(trimmed, ensure_ascii=False, indent=2),
-    )
-
-
-def upsert_review_mode_experiment(experiment: dict) -> dict:
-    with REVIEW_MODE_EXPERIMENTS_LOCK:
-        experiments = parse_review_mode_experiments()
-        experiment_id = str(experiment.get("experimentId") or "")
-        for index, current in enumerate(experiments):
-            if current.get("experimentId") == experiment_id:
-                experiments[index] = {**current, **experiment}
-                saved = experiments[index]
-                break
-        else:
-            experiments.append(experiment)
-            saved = experiment
-        save_review_mode_experiments(experiments)
-    return saved
-
-
-def get_review_mode_experiment(experiment_id: str) -> dict | None:
-    with REVIEW_MODE_EXPERIMENTS_LOCK:
-        return next(
-            (
-                item
-                for item in parse_review_mode_experiments()
-                if item.get("experimentId") == experiment_id
-            ),
-            None,
-        )
-
-
-def recover_stale_review_mode_experiments():
-    with REVIEW_MODE_EXPERIMENTS_LOCK:
-        experiments = parse_review_mode_experiments()
-        changed = False
-        for experiment in experiments:
-            if experiment.get("status") not in ("queued", "running", "cancelling"):
-                continue
-            experiment.update({
-                "status": "error",
-                "finishedAt": _iso_time(),
-                "error": "后端服务已重启，原对比实验无法继续，请重新执行",
-            })
-            changed = True
-        if changed:
-            save_review_mode_experiments(experiments)
-
-
-def validation_case_from_example(example: dict, latest_run: dict | None = None) -> dict:
-    tags = _string_list(example.get("tags"))
-    kind = str(example.get("kind") or "").strip()
-    if kind and kind not in tags:
-        tags.insert(0, kind)
-    created_at = example.get("createdAt") or example.get("updatedAt")
-    result = {
-        "caseId": str(example.get("id") or ""),
-        "caseName": str(example.get("title") or example.get("id") or ""),
-        "factorName": str(example.get("factorName") or ""),
-        "requirement": str(example.get("requirement") or ""),
-        "reviewContent": str(example.get("reviewContent") or example.get("draft") or example.get("procLogic") or ""),
-        "expectedConclusion": validation_expected_code(example.get("expected")),
-        "expectedIssuePatterns": _string_list(example.get("expectedIssuePatterns")),
-        "forbiddenIssuePatterns": _string_list(example.get("forbiddenIssuePatterns")),
-        "maxIssueCount": _optional_nonnegative_int(example.get("maxIssueCount")),
-        "apiDocIds": _string_list(example.get("apiNames")),
-        "businessRuleIds": _string_list(example.get("businessRuleIds")),
-        "tags": tags,
-        "remark": str(example.get("remark") or ""),
-        "createdAt": _iso_time(created_at) if created_at else None,
-        "updatedAt": _iso_time(example.get("updatedAt")) if example.get("updatedAt") else None,
-    }
-    if latest_run:
-        result.update({
-            "lastRunAt": latest_run.get("finishedAt") or latest_run.get("startedAt"),
-            "lastActualConclusion": latest_run.get("actualConclusion"),
-            "lastMatched": latest_run.get("matched"),
-            "lastRunId": latest_run.get("runId"),
-            "lastRunStatus": latest_run.get("status"),
-        })
-    return result
-
-
-def validation_cases() -> list[dict]:
-    latest_runs = latest_validation_runs_by_case()
-    with EXAMPLES_LOCK:
-        examples = parse_examples()
-    return [validation_case_from_example(item, latest_runs.get(str(item.get("id") or ""))) for item in examples]
-
-
-def normalize_validation_case_payload(payload: dict, existing: dict | None = None) -> dict:
-    current = existing or {}
-    review_content = (
-        payload.get("reviewContent")
-        if "reviewContent" in payload
-        else current.get("reviewContent") or current.get("draft") or ""
-    )
-    api_doc_ids = payload.get("apiDocIds") if "apiDocIds" in payload else current.get("apiNames")
-    expected = (
-        payload.get("expectedConclusion")
-        if "expectedConclusion" in payload
-        else current.get("expected")
-    )
-    tags = _string_list(payload.get("tags") if "tags" in payload else current.get("tags"))
-    kind = str(current.get("kind") or "").strip()
-    if not kind and tags:
-        kind = tags[0]
-    normalized = normalize_example(
-        {
-            "id": current.get("id"),
-            "title": payload.get("caseName") if "caseName" in payload else current.get("title"),
-            "kind": kind,
-            "factorName": payload.get("factorName") if "factorName" in payload else current.get("factorName"),
-            "apiNames": api_doc_ids,
-            "requirement": payload.get("requirement") if "requirement" in payload else current.get("requirement"),
-            "paramFields": current.get("paramFields") or "",
-            "procLogic": current.get("procLogic") or "",
-            "draft": review_content,
-            "expected": validation_expected_code(expected),
-            "expectedIssuePatterns": (
-                payload.get("expectedIssuePatterns")
-                if "expectedIssuePatterns" in payload
-                else current.get("expectedIssuePatterns")
-            ),
-            "forbiddenIssuePatterns": (
-                payload.get("forbiddenIssuePatterns")
-                if "forbiddenIssuePatterns" in payload
-                else current.get("forbiddenIssuePatterns")
-            ),
-            "maxIssueCount": (
-                payload.get("maxIssueCount")
-                if "maxIssueCount" in payload
-                else current.get("maxIssueCount")
-            ),
-        },
-        existing_id=str(current.get("id")) if current.get("id") else None,
-    )
-    normalized.update({
-        "businessRuleIds": _string_list(
-            payload.get("businessRuleIds")
-            if "businessRuleIds" in payload
-            else current.get("businessRuleIds")
-        ),
-        "tags": tags,
-        "remark": str(payload.get("remark") if "remark" in payload else current.get("remark") or "").strip(),
-        "expectedIssuePatterns": _string_list(
-            payload.get("expectedIssuePatterns")
-            if "expectedIssuePatterns" in payload
-            else current.get("expectedIssuePatterns")
-        ),
-        "forbiddenIssuePatterns": _string_list(
-            payload.get("forbiddenIssuePatterns")
-            if "forbiddenIssuePatterns" in payload
-            else current.get("forbiddenIssuePatterns")
-        ),
-        "maxIssueCount": _optional_nonnegative_int(
-            payload.get("maxIssueCount")
-            if "maxIssueCount" in payload
-            else current.get("maxIssueCount")
-        ),
-        "createdAt": current.get("createdAt") or int(time.time()),
-    })
-    return normalized
-
-
-def validate_validation_case(example: dict) -> list[str]:
-    return validate_example(example)
-
-
-def import_validation_rows(file_name: str, rows: list[list]) -> dict:
-    if not rows:
-        return {"fileName": file_name, "totalRows": 0, "success": 0, "failed": 0, "items": [], "errors": [], "columns": []}
-    columns = [str(cell or "").strip() for cell in rows[0]]
-    aliases = {
-        "caseName": ["案例名称", "案例名", "caseName", "title"],
-        "factorName": ["因子名称", "因子名", "factorName"],
-        "requirement": ["需求内容", "需求", "requirement"],
-        "reviewContent": ["待评审内容", "准出内容", "reviewContent", "draft"],
-        "expectedConclusion": ["期望结论", "expectedConclusion", "expected"],
-        "apiDocIds": ["接口文档", "关联接口文档", "apiDocIds", "apiNames"],
-        "businessRuleIds": ["业务规则ID", "业务规则 ID", "businessRuleIds"],
-        "tags": ["标签", "tags"],
-        "remark": ["备注", "remark"],
-        "expectedIssuePatterns": ["期望问题关键词", "expectedIssuePatterns"],
-        "forbiddenIssuePatterns": ["禁止问题关键词", "forbiddenIssuePatterns"],
-        "maxIssueCount": ["最大问题数", "maxIssueCount"],
-        "paramFields": ["因子加工输入字段", "paramFields"],
-        "procLogic": ["加工逻辑", "procLogic"],
-        "defaultValues": ["默认值", "defaultValues"],
-    }
-    index_map = {}
-    for key, names in aliases.items():
-        index = next((columns.index(name) for name in names if name in columns), None)
-        if index is not None:
-            index_map[key] = index
-
-    items = []
-    errors = []
-    with EXAMPLES_LOCK:
-        examples = parse_examples()
-        for row_number, row in enumerate(rows[1:], start=2):
-            values = {
-                key: str(row[index] or "").strip() if index < len(row) else ""
-                for key, index in index_map.items()
-            }
-            if not any(values.values()):
-                continue
-            review_content = values.get("reviewContent") or ""
-            if not review_content and (values.get("paramFields") or values.get("procLogic")):
-                parts = []
-                if values.get("paramFields"):
-                    parts.append(f"【因子加工输入字段】\n{values['paramFields']}")
-                if values.get("procLogic"):
-                    parts.append(f"【加工逻辑】\n{values['procLogic']}")
-                parts.append("【默认值】\n字段缺失、格式错误或数据异常时返回默认值")
-                review_content = "\n\n".join(parts)
-            example = normalize_validation_case_payload({
-                "caseName": values.get("caseName") or values.get("factorName"),
-                "factorName": values.get("factorName"),
-                "requirement": values.get("requirement"),
-                "reviewContent": review_content,
-                "expectedConclusion": values.get("expectedConclusion"),
-                "apiDocIds": _string_list(values.get("apiDocIds")),
-                "businessRuleIds": _string_list(values.get("businessRuleIds")),
-                "tags": _string_list(values.get("tags")),
-                "remark": values.get("remark"),
-                "expectedIssuePatterns": _string_list(values.get("expectedIssuePatterns")),
-                "forbiddenIssuePatterns": _string_list(values.get("forbiddenIssuePatterns")),
-                "maxIssueCount": _optional_nonnegative_int(values.get("maxIssueCount")),
-            })
-            validation_errors = validate_validation_case(example)
-            if validation_errors:
-                errors.append({
-                    "rowNumber": row_number,
-                    "caseName": values.get("caseName"),
-                    "factorName": values.get("factorName"),
-                    "error": "；".join(validation_errors),
-                })
-                continue
-            examples.append(example)
-            items.append(validation_case_from_example(example))
-        if items:
-            save_examples(examples)
-    return {
-        "fileName": file_name,
-        "totalRows": max(0, len(rows) - 1),
-        "success": len(items),
-        "failed": len(errors),
-        "items": items,
-        "errors": errors,
-        "columns": columns,
-    }
-
-
 def decorate_task(task: dict) -> dict:
+    """Add queue and progress metadata to an in-memory task snapshot."""
     snapshot = dict(task)
     task_id = str(snapshot.get("id") or "")
     snapshot.update(GLOBAL_TASK_POOL.group_info(task_id))
@@ -1635,6 +500,7 @@ def decorate_task(task: dict) -> dict:
 
 
 def task_history(*, include_history: bool = False):
+    """Return recent live tasks and, optionally, persisted historical tasks."""
     sync_terminal_tasks_to_review_records()
     gc_tasks()
     with TASK_LOCK:
@@ -1656,6 +522,7 @@ def task_history(*, include_history: bool = False):
 
 
 def delete_task_record(task_id: str) -> dict:
+    """Delete a terminal task through its corresponding review-history record."""
     with TASK_LOCK:
         task = TASKS.get(task_id)
         if task and not _is_terminal_status(str(task.get("status") or "")):
@@ -1677,6 +544,7 @@ def delete_task_record(task_id: str) -> dict:
 
 
 def task_log(task_id: str, message: str):
+    """Append a timestamped user-facing execution log to a task."""
     with TASK_LOCK:
         task = TASKS.get(task_id)
         if not task:
@@ -1686,6 +554,7 @@ def task_log(task_id: str, message: str):
 
 
 def task_debug_log(task_id: str, stream: str, message: str):
+    """Append Claude stdin/stdout text when task-level debugging is enabled."""
     with TASK_LOCK:
         task = TASKS.get(task_id)
         if not task:
@@ -1699,6 +568,7 @@ def task_debug_log(task_id: str, stream: str, message: str):
 
 
 def task_cancel_requested(task_id: str) -> bool:
+    """Return whether cancellation was requested in the registry or global pool."""
     with TASK_LOCK:
         current_id = task_id
         visited = set()
@@ -1712,6 +582,7 @@ def task_cancel_requested(task_id: str) -> bool:
 
 
 def mark_task_cancelled(task_id: str, message: str):
+    """Move a task to its terminal cancelled state and record the reason."""
     with TASK_LOCK:
         task = TASKS.get(task_id)
         if not task:
@@ -1727,6 +598,7 @@ def mark_task_cancelled(task_id: str, message: str):
 
 
 def terminate_task_process(task_id: str):
+    """Terminate the Claude process group currently associated with a task."""
     with RUNNING_PROCS_LOCK:
         proc = RUNNING_PROCS.get(task_id)
     if not proc or proc.poll() is not None:
@@ -1751,6 +623,7 @@ def terminate_task_process(task_id: str):
 
 
 def request_task_cancel(task_id: str) -> bool:
+    """Cancel queued work or signal a running task and its validation records."""
     with TASK_LOCK:
         task = TASKS.get(task_id)
         child_ids = {tid for tid in TASKS if tid == task_id or tid.startswith(f"{task_id}-")}
@@ -1808,6 +681,7 @@ def request_task_cancel(task_id: str) -> bool:
 
 
 def claude_health():
+    """Probe the configured Claude executable and report command availability."""
     command = os.environ.get("RISK_REVIEW_CLAUDE_CMD", "claude")
     info = {
         "command": command,
@@ -1831,6 +705,7 @@ def claude_health():
 
 
 def file_health(path: Path) -> dict:
+    """Return existence and basic metadata for a required project file."""
     try:
         display_path = path.relative_to(ROOT).as_posix()
     except ValueError:
@@ -1843,6 +718,7 @@ def file_health(path: Path) -> dict:
 
 
 def outputs_health() -> dict:
+    """Check output-directory readability, writability, and artifact count."""
     try:
         display_path = OUTPUTS_DIR.relative_to(ROOT).as_posix()
     except ValueError:
@@ -1862,6 +738,7 @@ def outputs_health() -> dict:
 
 
 def api_docs_health() -> dict:
+    """Summarize whether configured API documents can be discovered."""
     try:
         docs = list_api_docs()
     except Exception as exc:
@@ -1874,6 +751,7 @@ def api_docs_health() -> dict:
 
 
 def system_health() -> dict:
+    """Build the aggregate backend self-check response used by the UI."""
     runtime_settings = get_runtime_settings()
     required = [
         PHASE1_SKILL_PATH,
@@ -1913,12 +791,14 @@ def system_health() -> dict:
 
 
 def claude_cmd(default_args: str):
+    """Build the Claude command from environment overrides and safe defaults."""
     command = os.environ.get("RISK_REVIEW_CLAUDE_CMD", "claude")
     args = os.environ.get("RISK_REVIEW_CLAUDE_ARGS", default_args)
     return [command, *shlex.split(args)]
 
 
 def test_claude_print():
+    """Run a minimal Claude command for diagnostics without starting review work."""
     cmd = claude_cmd("-p --output-format text")
     started = time.time()
     try:
@@ -1986,6 +866,7 @@ def claude_failure_stderr(stdout: str, stderr: str, returncode: int | None) -> s
 
 
 def create_phase1_isolated_workspace(task_id: str, payload: dict) -> Path:
+    """Create a Phase 1 workspace containing only files allowed by the stage boundary."""
     workspace = Path(tempfile.mkdtemp(prefix=f"risk-review-phase1-{task_id[:8]}-"))
     try:
         allowed_sources = [PHASE1_SKILL_PATH, PHASE1_PROCESSING_SPEC_PATH, BUSINESS_RULES_PATH]
@@ -2022,6 +903,7 @@ def create_phase1_isolated_workspace(task_id: str, payload: dict) -> Path:
 
 
 def create_phase2_isolated_workspace(task_id: str) -> Path:
+    """Create a Phase 2 workspace containing only its Skill and review specification."""
     workspace = Path(tempfile.mkdtemp(prefix=f"risk-review-phase2-{task_id[:8]}-"))
     try:
         staged_files = []
@@ -2045,6 +927,7 @@ def create_phase2_isolated_workspace(task_id: str) -> Path:
 
 
 def isolated_read_tool_rules(workspace: Path) -> str:
+    """Build Claude read-tool policy rules restricted to the isolated workspace."""
     pattern = f"{workspace.resolve().as_posix()}/**"
     return ",".join([
         f"Read({pattern})",
@@ -2060,6 +943,7 @@ def run_claude_prompt(
     *,
     isolated_workspace: Path | None = None,
 ) -> tuple[str, dict]:
+    """Execute one Claude prompt, capture debug streams, and support cancellation."""
     cmd = [*claude_cmd("-p --output-format text")]
     command_cwd = ROOT
     if isolated_workspace is not None:
@@ -2157,6 +1041,7 @@ def run_claude_prompt(
 
 
 def prepare_phase2_context(payload: dict) -> dict:
+    """Load and sanitize the frozen Phase 1 standard required by Phase 2."""
     standard_text, std_path = read_phase1_standard(payload)
     requirement = (payload.get("requirement") or "").strip()
     if not requirement:
@@ -2182,6 +1067,7 @@ def run_generation(
     prompt: str,
     isolated_workspace: Path | None = None,
 ) -> tuple[str, dict, str]:
+    """Run one generation attempt and enforce non-empty output and cancellation checks."""
     raw_output = ""
     if task_cancel_requested(task_id):
         return "cancelled", {"stdout": "", "stderr": f"{phase_label} 已取消。", "returncode": 130}, raw_output
@@ -2510,6 +1396,7 @@ def run_claude_phase2(payload: dict, task_id: str):
         TASKS[task_id]["updated"] = time.time()
 
 def build_batch_draft(row: dict) -> str:
+    """Assemble the canonical three-section review draft for one batch row."""
     parts = []
     param_list = batch_param_fields(row)
     if param_list:
@@ -2522,80 +1409,8 @@ def build_batch_draft(row: dict) -> str:
 
 
 def batch_param_fields(row: dict) -> str:
+    """Return the batch row's declared factor-processing input fields."""
     return str(row.get("paramFields") or "").strip()
-
-
-def detect_verdict_text(text: str) -> str:
-    source = str(text or "")
-    overall = re.search(r"\|\s*总体结论\s*\|\s*([^|]+?)\s*\|", source)
-    target = overall.group(1) if overall else source
-    if re.search(r"❌\s*不通过", target):
-        return "fail"
-    if re.search(r"⛔\s*无法评审|无法评审", target):
-        return "unreviewable"
-    if re.search(r"✅\s*(通过|符合)", target):
-        return "pass"
-    return "unreviewable"
-
-
-def collect_review_stats(text: str) -> dict:
-    source = str(text or "")
-    stats_match = re.search(r"\|\s*问题统计\s*\|\s*([^|]+?)\s*\|", source)
-    if stats_match:
-        stats_text = stats_match.group(1)
-        fail_match = re.search(r"不符合\s*(\d+)\s*项", stats_text)
-        if fail_match:
-            return {"fail": int(fail_match.group(1))}
-    issue_rows = re.findall(r"^\|\s*I-\d+\s*\|", source, re.M)
-    return {"fail": len(issue_rows)}
-
-
-def normalize_issue_match_text(value: str | None) -> str:
-    """Ignore presentation-only whitespace when matching expected issue text."""
-    return re.sub(r"\s+", "", str(value or "")).casefold()
-
-
-def evaluate_issue_expectations(example: dict, report: str) -> dict:
-    expected_patterns = _string_list(example.get("expectedIssuePatterns"))
-    forbidden_patterns = _string_list(example.get("forbiddenIssuePatterns"))
-    max_issue_count = _optional_nonnegative_int(example.get("maxIssueCount"))
-    source = normalize_issue_match_text(report)
-    missing_patterns = [
-        pattern for pattern in expected_patterns
-        if normalize_issue_match_text(pattern) not in source
-    ]
-    forbidden_hits = [
-        pattern for pattern in forbidden_patterns
-        if normalize_issue_match_text(pattern) in source
-    ]
-    stats = collect_review_stats(report)
-    issue_count = int(stats.get("fail") or 0)
-    count_matched = max_issue_count is None or issue_count <= max_issue_count
-    configured = bool(expected_patterns or forbidden_patterns or max_issue_count is not None)
-    return {
-        "configured": configured,
-        "matched": not missing_patterns and not forbidden_hits and count_matched,
-        "expectedIssuePatterns": expected_patterns,
-        "forbiddenIssuePatterns": forbidden_patterns,
-        "missingIssuePatterns": missing_patterns,
-        "forbiddenIssueHits": forbidden_hits,
-        "maxIssueCount": max_issue_count,
-        "actualIssueCount": issue_count,
-    }
-
-
-def expected_matches_verdict(example: dict, verdict: str) -> bool:
-    expected = str(example.get("expected") or "")
-    if not expected.strip():
-        return True
-    expected_code = validation_expected_code(expected)
-    if expected_code == "fail":
-        return verdict == "fail"
-    if expected_code == "unreviewable":
-        return verdict == "unreviewable"
-    if expected_code == "pass":
-        return verdict == "pass"
-    return True
 
 
 def validation_run_for_example(
@@ -2605,6 +1420,7 @@ def validation_run_for_example(
     run_id: str | None = None,
     status: str = "pending",
 ) -> dict:
+    """Create the initial persisted run record for one validation case."""
     return {
         "groupId": task_id,
         "taskId": task_id,
@@ -2630,6 +1446,7 @@ def validation_run_for_example(
 
 
 def prepare_validation_runs(task_id: str, examples: list[dict]) -> dict[str, str]:
+    """Pre-create run records and index their IDs by validation case."""
     run_ids = {}
     for example in examples:
         run = validation_run_for_example(task_id, example)
@@ -2639,6 +1456,7 @@ def prepare_validation_runs(task_id: str, examples: list[dict]) -> dict[str, str
 
 
 def run_regression_validation(payload: dict, task_id: str):
+    """Execute selected validation cases sequentially inside one global-pool worker."""
     requested_ids = set(str(x) for x in (payload.get("exampleIds") or []) if str(x).strip())
     examples = parse_examples()
     if requested_ids:
@@ -2803,6 +1621,7 @@ def run_regression_validation(payload: dict, task_id: str):
 
 
 def summarize_regression_items(items: list[dict], total: int | None = None) -> dict:
+    """Build progress counters and current-item metadata for a regression task."""
     running_items = [item for item in items if item.get("status") == "running"]
     current = running_items[-1] if running_items else None
     return {
@@ -2819,6 +1638,7 @@ def summarize_regression_items(items: list[dict], total: int | None = None) -> d
 
 
 def experiment_mode_result(example: dict, report: str, *, duration_ms: int, **artifacts) -> dict:
+    """Evaluate one experiment-mode report against the case's frozen expectations."""
     verdict = detect_verdict_text(report)
     conclusion_matched = expected_matches_verdict(example, verdict)
     issue_evaluation = evaluate_issue_expectations(example, report)
@@ -2838,6 +1658,7 @@ def experiment_mode_result(example: dict, report: str, *, duration_ms: int, **ar
 
 
 def summarize_experiment_mode(items: list[dict], mode: str) -> dict:
+    """Aggregate accuracy, errors, and latency for one experiment mode."""
     results = [
         item.get(mode) or {}
         for item in items
@@ -2871,6 +1692,7 @@ def summarize_experiment_mode(items: list[dict], mode: str) -> dict:
 
 
 def summarize_review_mode_experiment(items: list[dict], total: int) -> dict:
+    """Combine direct and two-phase metrics into the experiment summary."""
     direct = summarize_experiment_mode(items, "direct")
     two_stage = summarize_experiment_mode(items, "twoStage")
     winner = "tie"
@@ -2893,6 +1715,7 @@ def summarize_review_mode_experiment(items: list[dict], total: int) -> dict:
 
 
 def mock_direct_review_report(example: dict) -> str:
+    """Generate a deterministic direct-review report for Mock experiments."""
     expected = validation_expected_code(example.get("expected"))
     expected_patterns = _string_list(example.get("expectedIssuePatterns"))
     if expected == "fail":
@@ -2931,6 +1754,8 @@ def run_direct_experiment_review(
     *,
     mock: bool | None = None,
 ) -> tuple[str, str]:
+    """Run one direct-review experiment item and persist its child-task state."""
+
     child_id = f"{parent_task_id}-{item_index}-direct"
     create_task_record(
         child_id,
@@ -2990,6 +1815,7 @@ def run_direct_experiment_review(
 
 
 def run_review_mode_experiment(payload: dict, task_id: str):
+    """Compare direct review with the two-phase pipeline across selected cases."""
     experiment_id = str(payload.get("experimentId") or task_id)
     requested_ids = {
         str(value)
@@ -3151,6 +1977,7 @@ def create_task_record(
     group_concurrency: int | None = None,
     context: dict | None = None,
 ):
+    """Create the canonical in-memory task record shared by every submission path."""
     with TASK_LOCK:
         parent_cancelled = bool(
             parent_task_id
@@ -3182,6 +2009,7 @@ def create_task_record(
 
 
 def submit_regression_task(payload: dict, examples: list[dict]) -> tuple[str, dict, dict[str, str]]:
+    """Create validation-run records and enqueue their parent regression task."""
     task_id = str(uuid.uuid4())
     create_task_record(
         task_id,
@@ -3217,6 +2045,7 @@ def submit_regression_task(payload: dict, examples: list[dict]) -> tuple[str, di
 
 
 def submit_review_mode_experiment(payload: dict, examples: list[dict]) -> tuple[str, dict]:
+    """Persist and enqueue a direct-versus-two-phase comparison experiment."""
     task_id = str(uuid.uuid4())
     experiment_id = f"experiment-{task_output_token(task_id)}"
     repetitions = max(1, min(3, int(payload.get("repetitions") or 1)))
@@ -3279,6 +2108,8 @@ def run_review_pipeline(
     should_stop=None,
     on_phase1_done=None,
 ) -> dict:
+    """Run the direct-review arm of an experiment and persist its report artifact."""
+    """Run Phase 1 then Phase 2 in-process, honoring cancellation between stages."""
     factor_name = (phase1_payload.get("factorName") or f"row-{index + 1}").strip()
     api_names = phase1_payload.get("apiNames") or []
     if not factor_name or not phase1_payload.get("requirement") or not api_names or not draft:
@@ -3343,6 +2174,7 @@ def run_review_pipeline(
 
 
 def run_review_pair(row: dict, payload: dict, task_id: str, index: int) -> dict:
+    """Execute the configured review stages for one batch or scheduled item."""
     factor_name = (row.get("factorName") or f"row-{index + 1}").strip()
     api_names = row.get("apiNames") or [x.strip() for x in re.split(r"[、,，]+", row.get("apiDocs") or "") if x.strip()]
     draft = row.get("draft") or build_batch_draft(row)
@@ -3413,6 +2245,7 @@ def run_review_pair(row: dict, payload: dict, task_id: str, index: int) -> dict:
 
 
 def run_batch_factor_job(row: dict, payload: dict, task_id: str, index: int, items: list[dict]) -> dict:
+    """Run one batch item and return its result without mutating sibling items."""
     with TASK_LOCK:
         if task_id in TASKS and index < len(items):
             items[index]["status"] = "running"
@@ -3421,6 +2254,7 @@ def run_batch_factor_job(row: dict, payload: dict, task_id: str, index: int, ite
 
 
 def finish_batch_factor(task_id: str, index: int, items: list[dict], future):
+    """Merge a completed batch future and finalize the parent when all items end."""
     try:
         item = future.result()
     except CancelledError:
@@ -3453,6 +2287,7 @@ def finish_batch_factor(task_id: str, index: int, items: list[dict], future):
 
 
 def run_scheduled_phase1(payload: dict, task_id: str) -> dict:
+    """Execute Phase 1 for the scheduled-task service and return its result payload."""
     create_task_record(task_id, task_type="scheduled-phase1", parent_task_id=task_id.rsplit("-p1-", 1)[0])
     run_claude_phase1(payload, task_id)
     with TASK_LOCK:
@@ -3461,6 +2296,7 @@ def run_scheduled_phase1(payload: dict, task_id: str) -> dict:
 
 
 def run_scheduled_phase2(payload: dict, task_id: str) -> dict:
+    """Execute Phase 2 for the scheduled-task service and return its result payload."""
     create_task_record(task_id, task_type="scheduled-phase2", parent_task_id=task_id.rsplit("-p2-", 1)[0])
     run_claude_phase2(payload, task_id)
     with TASK_LOCK:
@@ -3469,6 +2305,7 @@ def run_scheduled_phase2(payload: dict, task_id: str) -> dict:
 
 
 def get_scheduled_task_service():
+    """Lazily construct the process-wide scheduled-task service singleton."""
     global SCHEDULED_TASK_SERVICE
     if SCHEDULED_TASK_SERVICE is None:
         SCHEDULED_TASK_SERVICE = build_scheduled_task_service(
@@ -3482,6 +2319,7 @@ def get_scheduled_task_service():
 
 
 def start_batch_review(payload: dict, task_id: str):
+    """Submit each batch item fairly through the shared global task pool."""
     rows = payload.get("rows") or []
     concurrency = get_runtime_settings()["batchConcurrency"]
     with TASK_LOCK:
@@ -3528,98 +2366,45 @@ def start_batch_review(payload: dict, task_id: str):
 
 
 class Handler(BaseHTTPRequestHandler):
+    """HTTP adapter that delegates domain endpoints to route modules and services."""
     def log_message(self, fmt, *args):
+        """Suppress BaseHTTPRequestHandler's duplicate access-log output."""
         return
 
     def read_json_body(self):
+        """Decode the request body as JSON, returning an empty object when absent."""
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         return json.loads(body.decode("utf-8")) if body else {}
 
     def do_GET(self):
+        """Dispatch read requests across system, validation, task, and static routes."""
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
-        if path == "/":
-            react_index = STATIC_DIR / "dist" / "index.html"
-            self.serve_static("dist/index.html" if react_index.exists() else "index.html")
-        elif path in ("/legacy", "/legacy/"):
-            self.serve_static("index.html")
-        elif path == "/favicon.ico":
-            text_response(self, 204, b"", "image/x-icon")
-        elif path == "/api/apis":
-            json_response(self, 200, {"apis": list_api_docs(include_content=False)})
-        elif path == "/api/api-doc":
-            query = parse_qs(parsed.query)
-            doc = get_api_doc((query.get("name") or query.get("path") or [""])[0])
-            if not doc:
-                json_response(self, 404, {"error": "api doc not found"})
-                return
-            json_response(self, 200, {"api": doc})
-        elif path == "/api/outputs":
-            json_response(self, 200, {"outputs": list_outputs()})
-        elif path == "/api/review-history":
+        if scheduled_routes.handle_get(self, path, get_scheduled_task_service):
+            return
+        if system_routes.handle_get(
+            self,
+            path,
+            parsed.query,
+            list_outputs=list_outputs,
+            pool_snapshot=GLOBAL_TASK_POOL.snapshot,
+            system_health=system_health,
+            claude_test=test_claude_print,
+        ):
+            return
+        if static_routes.handle_get(self, path, STATIC_DIR, OUTPUTS_DIR):
+            return
+        if validation_routes.handle_get(self, path, parsed.query):
+            return
+        if path == "/api/review-history":
             success_response(self, review_history_records())
         elif path == "/api/review-records":
             success_response(self, query_review_records(parse_qs(parsed.query)))
-        elif path == "/api/validation-cases":
-            success_response(self, validation_cases())
-        elif path.startswith("/api/validation-cases/"):
-            case_id = unquote(path.split("/")[-1])
-            latest_runs = latest_validation_runs_by_case()
-            with EXAMPLES_LOCK:
-                example = next((item for item in parse_examples() if item.get("id") == case_id), None)
-            if not example:
-                error_response(self, 404, "验证案例不存在")
-                return
-            success_response(self, validation_case_from_example(example, latest_runs.get(case_id)))
-        elif path == "/api/validation-runs":
-            case_id = (parse_qs(parsed.query).get("caseId") or [""])[0]
-            with VALIDATION_RUNS_LOCK:
-                runs = parse_validation_runs()
-            if case_id:
-                runs = [item for item in runs if item.get("caseId") == case_id]
-            runs.sort(key=lambda item: item.get("finishedAt") or item.get("startedAt") or "", reverse=True)
-            success_response(self, runs)
-        elif path == "/api/validation-run-groups":
-            success_response(self, query_validation_run_groups(parse_qs(parsed.query)))
-        elif path.startswith("/api/validation-runs/"):
-            run_id = unquote(path.split("/")[-1])
-            run = get_validation_run(run_id)
-            if not run:
-                error_response(self, 404, "验证运行记录不存在")
-                return
-            success_response(self, run)
-        elif path == "/api/review-mode-experiments":
-            with REVIEW_MODE_EXPERIMENTS_LOCK:
-                experiments = parse_review_mode_experiments()
-            experiments.sort(key=lambda item: item.get("createdAt") or "", reverse=True)
-            success_response(self, experiments)
-        elif path.startswith("/api/review-mode-experiments/"):
-            experiment_id = unquote(path.split("/")[-1])
-            experiment = get_review_mode_experiment(experiment_id)
-            if not experiment:
-                error_response(self, 404, "对比实验不存在")
-                return
-            success_response(self, experiment)
         elif path == "/api/examples":
             json_response(self, 200, {"examples": parse_examples()})
         elif path == "/api/business-rules":
             json_response(self, 200, {"rules": parse_business_rules()})
-        elif path == "/api/factor-processing-spec":
-            success_response(self, {
-                "phase1": {
-                    "spec": load_phase1_processing_spec(),
-                    "markdown": read_text(PHASE1_PROCESSING_SPEC_DOC_PATH)
-                    if PHASE1_PROCESSING_SPEC_DOC_PATH.exists()
-                    else "",
-                },
-                "phase2": {
-                    "spec": load_phase2_review_spec(),
-                    "markdown": read_text(PHASE2_REVIEW_SPEC_DOC_PATH)
-                    if PHASE2_REVIEW_SPEC_DOC_PATH.exists()
-                    else "",
-                },
-            })
         elif path == "/api/tasks":
             query = parse_qs(parsed.query)
             include_history = (query.get("scope") or ["active"])[0].lower() == "all"
@@ -3627,31 +2412,6 @@ class Handler(BaseHTTPRequestHandler):
                 "tasks": task_history(include_history=include_history),
                 "pool": GLOBAL_TASK_POOL.snapshot(),
             })
-        elif path == "/api/pool/status":
-            json_response(self, 200, {"pool": GLOBAL_TASK_POOL.snapshot()})
-        elif path == "/api/runtime-settings":
-            success_response(self, get_runtime_settings())
-        elif path in ("/api/health", "/api/self-check"):
-            json_response(self, 200, system_health())
-        elif path == "/api/claude-test":
-            json_response(self, 200, test_claude_print())
-        elif path == "/api/scheduled-tasks":
-            success_response(self, get_scheduled_task_service().list_tasks())
-        elif path.startswith("/api/scheduled-tasks/") and path.endswith("/runs"):
-            task_id = unquote(path.split("/")[-2])
-            success_response(self, get_scheduled_task_service().list_runs(task_id))
-        elif path.startswith("/api/scheduled-tasks/"):
-            task_id = unquote(path.split("/")[-1])
-            try:
-                success_response(self, get_scheduled_task_service().get_task(task_id))
-            except ScheduledTaskError as exc:
-                error_response(self, 404, str(exc))
-        elif path.startswith("/api/scheduled-runs/"):
-            run_id = unquote(path.split("/")[-1])
-            try:
-                success_response(self, get_scheduled_task_service().get_run(run_id))
-            except ScheduledTaskError as exc:
-                error_response(self, 404, str(exc))
         elif path.startswith("/api/tasks/"):
             task_id = unquote(path.split("/")[-1])
             with TASK_LOCK:
@@ -3667,27 +2427,21 @@ class Handler(BaseHTTPRequestHandler):
                 "task": decorate_task(task),
                 "pool": GLOBAL_TASK_POOL.snapshot(),
             })
-        elif path.startswith("/outputs/"):
-            self.serve_output(path[len("/outputs/") :])
-        elif any(path.startswith(prefix) for prefix in ("/review/", "/quality/", "/records", "/system/")):
-            react_index = STATIC_DIR / "dist" / "index.html"
-            self.serve_static("dist/index.html" if react_index.exists() else "index.html")
         else:
-            self.serve_static(path.lstrip("/"))
+            static_routes.serve_static(self, STATIC_DIR, path.lstrip("/"))
 
     def do_POST(self):
+        """Dispatch creation, control, import, and review-submission requests."""
         parsed = urlparse(self.path)
-        if parsed.path == "/api/validation-run-groups/batch-delete":
-            try:
-                payload = self.read_json_body()
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-                return
-            group_ids = [str(item) for item in payload.get("groupIds") or [] if str(item).strip()]
-            if not group_ids:
-                error_response(self, 400, "请至少选择一个验证批次")
-                return
-            success_response(self, batch_delete_validation_run_groups(group_ids))
+        if scheduled_routes.handle_post(self, parsed.path, get_scheduled_task_service):
+            return
+        if validation_routes.handle_post(
+            self,
+            parsed.path,
+            submit_regression=submit_regression_task,
+            submit_experiment=submit_review_mode_experiment,
+            validation_run_factory=validation_run_for_example,
+        ):
             return
         if parsed.path.startswith("/api/review-records/") and parsed.path.endswith("/archive"):
             record_id = unquote(parsed.path.split("/")[-2])
@@ -3697,57 +2451,6 @@ class Handler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 error_response(self, 400, "invalid json")
             except FileNotFoundError as exc:
-                error_response(self, 404, str(exc))
-            return
-        if parsed.path == "/api/scheduled-tasks/import-preview":
-            try:
-                payload = self.read_json_body()
-                result = get_scheduled_task_service().preview_import(
-                    payload.get("name", ""),
-                    payload.get("data", ""),
-                    mode=payload.get("mode"),
-                    task_standard_file=payload.get("standardFile"),
-                )
-                success_response(self, result)
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-            except ScheduledTaskError as exc:
-                error_response(self, 400, str(exc))
-            return
-        if parsed.path == "/api/scheduled-tasks":
-            try:
-                success_response(self, get_scheduled_task_service().create_task(self.read_json_body()), status=201)
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-            except (ScheduledTaskError, TypeError, ValueError) as exc:
-                error_response(self, 400, str(exc))
-            return
-        if parsed.path.startswith("/api/scheduled-tasks/") and parsed.path.endswith("/enable"):
-            task_id = unquote(parsed.path.split("/")[-2])
-            try:
-                success_response(self, get_scheduled_task_service().set_enabled(task_id, True))
-            except ScheduledTaskError as exc:
-                error_response(self, 404 if "不存在" in str(exc) else 400, str(exc))
-            return
-        if parsed.path.startswith("/api/scheduled-tasks/") and parsed.path.endswith("/disable"):
-            task_id = unquote(parsed.path.split("/")[-2])
-            try:
-                success_response(self, get_scheduled_task_service().set_enabled(task_id, False))
-            except ScheduledTaskError as exc:
-                error_response(self, 404 if "不存在" in str(exc) else 400, str(exc))
-            return
-        if parsed.path.startswith("/api/scheduled-tasks/") and parsed.path.endswith("/run-now"):
-            task_id = unquote(parsed.path.split("/")[-2])
-            try:
-                success_response(self, get_scheduled_task_service().submit_task_run(task_id, trigger="manual"), status=202)
-            except ScheduledTaskError as exc:
-                error_response(self, 404 if "不存在" in str(exc) else 409, str(exc))
-            return
-        if parsed.path.startswith("/api/scheduled-runs/") and parsed.path.endswith("/cancel"):
-            run_id = unquote(parsed.path.split("/")[-2])
-            try:
-                success_response(self, get_scheduled_task_service().cancel_run(run_id))
-            except ScheduledTaskError as exc:
                 error_response(self, 404, str(exc))
             return
         if parsed.path == "/api/parse-excel":
@@ -3777,140 +2480,6 @@ class Handler(BaseHTTPRequestHandler):
                 except UnicodeDecodeError:
                     rows = parse_csv_rows(raw.decode("gb18030"))
             json_response(self, 200, {"rows": rows, "items": normalize_batch_rows_from_table(rows), "name": name})
-            return
-        if parsed.path == "/api/validation-cases":
-            try:
-                payload = self.read_json_body()
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-                return
-            with EXAMPLES_LOCK:
-                examples = parse_examples()
-                example = normalize_validation_case_payload(payload)
-                errors = validate_validation_case(example)
-                if errors:
-                    error_response(self, 400, "；".join(errors), errors)
-                    return
-                examples.append(example)
-                save_examples(examples)
-            success_response(self, validation_case_from_example(example), status=201)
-            return
-        if parsed.path == "/api/validation-cases/import":
-            try:
-                payload = self.read_json_body()
-                file_name = str(payload.get("name") or "validation-cases.csv")
-                encoded = str(payload.get("data") or "")
-                if not encoded:
-                    raise ValueError("导入文件内容为空")
-                raw = base64.b64decode(encoded)
-                if file_name.lower().endswith((".xlsx", ".xls")):
-                    rows = parse_xlsx(raw)
-                else:
-                    try:
-                        rows = parse_csv_rows(raw.decode("utf-8-sig"))
-                    except UnicodeDecodeError:
-                        rows = parse_csv_rows(raw.decode("gb18030"))
-                success_response(self, import_validation_rows(file_name, rows))
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-            except (ValueError, TypeError, binascii.Error) as exc:
-                error_response(self, 400, str(exc))
-            return
-        if parsed.path == "/api/validation-cases/batch-delete":
-            try:
-                payload = self.read_json_body()
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-                return
-            case_ids = [str(item) for item in payload.get("caseIds") or [] if str(item).strip()]
-            selected = set(case_ids)
-            with EXAMPLES_LOCK:
-                examples = parse_examples()
-                existing_ids = {str(item.get("id") or "") for item in examples}
-                save_examples([item for item in examples if str(item.get("id") or "") not in selected])
-            items = [
-                {"id": case_id, "success": case_id in existing_ids, **({} if case_id in existing_ids else {"error": "验证案例不存在"})}
-                for case_id in case_ids
-            ]
-            success_response(self, {
-                "total": len(items),
-                "success": len([item for item in items if item["success"]]),
-                "failed": len([item for item in items if not item["success"]]),
-                "items": items,
-            })
-            return
-        if parsed.path == "/api/validation-cases/batch-run":
-            try:
-                payload = self.read_json_body()
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-                return
-            selected = {str(item) for item in payload.get("caseIds") or [] if str(item).strip()}
-            with EXAMPLES_LOCK:
-                examples = [item for item in parse_examples() if str(item.get("id") or "") in selected]
-            if not examples:
-                error_response(self, 400, "没有可验证的案例")
-                return
-            task_id, _task, run_ids = submit_regression_task(payload, examples)
-            items = []
-            for example in examples:
-                case_id = str(example.get("id") or "")
-                items.append({
-                    "id": case_id,
-                    "success": True,
-                    "run": get_validation_run(run_ids[case_id]),
-                })
-            success_response(self, {
-                "groupId": task_id,
-                "total": len(items),
-                "success": len(items),
-                "failed": 0,
-                "unreviewable": 0,
-                "mismatched": 0,
-                "items": items,
-            }, status=202)
-            return
-        if parsed.path == "/api/review-mode-experiments":
-            try:
-                payload = self.read_json_body()
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-                return
-            selected = {
-                str(item)
-                for item in payload.get("caseIds") or []
-                if str(item).strip()
-            }
-            with EXAMPLES_LOCK:
-                examples = [
-                    item for item in parse_examples()
-                    if str(item.get("id") or "") in selected
-                ]
-            if not examples:
-                error_response(self, 400, "请至少选择一个验证案例")
-                return
-            try:
-                experiment_id, task = submit_review_mode_experiment(payload, examples)
-            except (TypeError, ValueError) as exc:
-                error_response(self, 400, str(exc))
-                return
-            success_response(self, {
-                "experimentId": experiment_id,
-                "taskId": task.get("id"),
-                "task": task,
-            }, status=202)
-            return
-        if parsed.path.startswith("/api/validation-cases/") and parsed.path.endswith("/run"):
-            case_id = unquote(parsed.path.split("/")[-2])
-            with EXAMPLES_LOCK:
-                example = next((item for item in parse_examples() if item.get("id") == case_id), None)
-            if not example:
-                error_response(self, 404, "验证案例不存在")
-                return
-            payload = {"exampleIds": [case_id]}
-            task_id, _task, run_ids = submit_regression_task(payload, [example])
-            run = get_validation_run(run_ids[case_id]) or validation_run_for_example(task_id, example)
-            success_response(self, run, status=202)
             return
         if parsed.path == "/api/examples":
             try:
@@ -3976,23 +2545,6 @@ class Handler(BaseHTTPRequestHandler):
             start_batch_review(payload, task_id)
             with TASK_LOCK:
                 task = decorate_task(TASKS[task_id])
-            json_response(self, 202, {"taskId": task_id, "task": task})
-            return
-        if parsed.path == "/api/validation/regression":
-            try:
-                payload = self.read_json_body()
-            except json.JSONDecodeError:
-                json_response(self, 400, {"error": "invalid json"})
-                return
-            examples = parse_examples()
-            selected_ids = payload.get("exampleIds") or []
-            if selected_ids:
-                selected = {str(x) for x in selected_ids}
-                examples = [item for item in examples if item.get("id") in selected]
-            if not examples:
-                json_response(self, 400, {"error": "没有可验证的用例。"})
-                return
-            task_id, task, _run_ids = submit_regression_task(payload, examples)
             json_response(self, 202, {"taskId": task_id, "task": task})
             return
         if parsed.path.startswith("/api/tasks/") and parsed.path.endswith("/cancel"):
@@ -4074,7 +2626,12 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def do_PUT(self):
+        """Dispatch updates for settings, validation cases, rules, and examples."""
         parsed = urlparse(self.path)
+        if scheduled_routes.handle_put(self, parsed.path, get_scheduled_task_service):
+            return
+        if validation_routes.handle_put(self, parsed.path):
+            return
         if parsed.path == "/api/runtime-settings":
             try:
                 success_response(self, update_runtime_settings(self.read_json_body()))
@@ -4082,38 +2639,6 @@ class Handler(BaseHTTPRequestHandler):
                 error_response(self, 400, "invalid json")
             except (TypeError, ValueError) as exc:
                 error_response(self, 400, str(exc))
-            return
-        if parsed.path.startswith("/api/validation-cases/"):
-            case_id = unquote(parsed.path.split("/")[-1])
-            try:
-                payload = self.read_json_body()
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-                return
-            with EXAMPLES_LOCK:
-                examples = parse_examples()
-                for index, item in enumerate(examples):
-                    if item.get("id") != case_id:
-                        continue
-                    updated = normalize_validation_case_payload(payload, item)
-                    errors = validate_validation_case(updated)
-                    if errors:
-                        error_response(self, 400, "；".join(errors), errors)
-                        return
-                    examples[index] = updated
-                    save_examples(examples)
-                    success_response(self, validation_case_from_example(updated, latest_validation_runs_by_case().get(case_id)))
-                    return
-            error_response(self, 404, "验证案例不存在")
-            return
-        if parsed.path.startswith("/api/scheduled-tasks/"):
-            task_id = unquote(parsed.path.split("/")[-1])
-            try:
-                success_response(self, get_scheduled_task_service().update_task(task_id, self.read_json_body()))
-            except json.JSONDecodeError:
-                error_response(self, 400, "invalid json")
-            except (ScheduledTaskError, TypeError, ValueError) as exc:
-                error_response(self, 404 if "不存在" in str(exc) else 400, str(exc))
             return
         if parsed.path.startswith("/api/business-rules/"):
             rule_id = unquote(parsed.path.split("/")[-1])
@@ -4168,7 +2693,12 @@ class Handler(BaseHTTPRequestHandler):
         json_response(self, 404, {"error": "example not found"})
 
     def do_DELETE(self):
+        """Dispatch deletion requests while preserving active-task safety checks."""
         parsed = urlparse(self.path)
+        if scheduled_routes.handle_delete(self, parsed.path, get_scheduled_task_service):
+            return
+        if validation_routes.handle_delete(self, parsed.path):
+            return
         if parsed.path.startswith("/api/tasks/"):
             task_id = unquote(parsed.path.split("/")[-1])
             try:
@@ -4186,25 +2716,6 @@ class Handler(BaseHTTPRequestHandler):
                 error_response(self, 404, str(exc))
             except (OSError, ValueError) as exc:
                 error_response(self, 400, str(exc))
-            return
-        if parsed.path.startswith("/api/validation-cases/"):
-            case_id = unquote(parsed.path.split("/")[-1])
-            with EXAMPLES_LOCK:
-                examples = parse_examples()
-                filtered = [item for item in examples if item.get("id") != case_id]
-                if len(filtered) == len(examples):
-                    error_response(self, 404, "验证案例不存在")
-                    return
-                save_examples(filtered)
-            success_response(self, None)
-            return
-        if parsed.path.startswith("/api/scheduled-tasks/"):
-            task_id = unquote(parsed.path.split("/")[-1])
-            try:
-                get_scheduled_task_service().delete_task(task_id)
-                success_response(self, None)
-            except ScheduledTaskError as exc:
-                error_response(self, 404, str(exc))
             return
         if parsed.path.startswith("/api/business-rules/"):
             rule_id = unquote(parsed.path.split("/")[-1])
@@ -4230,38 +2741,8 @@ class Handler(BaseHTTPRequestHandler):
             save_examples(filtered)
         json_response(self, 200, {"examples": filtered})
 
-    def serve_static(self, name: str):
-        name = name or "index.html"
-        safe = Path(name)
-        if safe.is_absolute() or ".." in safe.parts:
-            json_response(self, 403, {"error": "forbidden"})
-            return
-        path = STATIC_DIR / safe
-        if not path.exists() or not path.is_file():
-            json_response(self, 404, {"error": "not found"})
-            return
-        ctype = "text/html; charset=utf-8"
-        if path.suffix == ".css":
-            ctype = "text/css; charset=utf-8"
-        elif path.suffix == ".js":
-            ctype = "application/javascript; charset=utf-8"
-        elif path.suffix == ".svg":
-            ctype = "image/svg+xml"
-        text_response(self, 200, path.read_bytes(), ctype)
-
-    def serve_output(self, name: str):
-        safe = Path(name)
-        if safe.is_absolute() or ".." in safe.parts:
-            json_response(self, 403, {"error": "forbidden"})
-            return
-        path = OUTPUTS_DIR / safe
-        if not path.exists() or not path.is_file():
-            json_response(self, 404, {"error": "not found"})
-            return
-        text_response(self, 200, path.read_bytes(), "text/markdown; charset=utf-8")
-
-
 def main():
+    """Recover persisted state, start scheduling, and serve the local application."""
     recover_stale_validation_runs()
     recover_stale_review_mode_experiments()
     scheduled_service = get_scheduled_task_service()

@@ -1,22 +1,14 @@
-import { DeleteOutlined, EditOutlined, EyeOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, StopOutlined, UploadOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, EyeOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
 import {
   Alert,
   App as AntdApp,
   Button,
   Card,
-  Col,
-  Descriptions,
-  Drawer,
   Empty,
   Form,
   Input,
-  InputNumber,
-  Modal,
-  Progress,
-  Row,
   Select,
   Space,
-  Statistic,
   Table,
   Tag,
   Tooltip,
@@ -43,7 +35,30 @@ import {
   runRegression,
 } from '../api/reviewApi'
 import { HeaderActions, usePageActive, type PageKey } from '../components/AppLayout'
-import { MarkdownViewer } from '../components/MarkdownViewer'
+import {
+  ALL_VALUE,
+  REGRESSION_TASK_STORAGE_KEY,
+  RegressionTaskCard,
+  RegressionResultDrawer,
+  ValidationCaseDetailDrawer,
+  ValidationCaseEditorDrawer,
+  ValidationCaseWorkspace,
+  ValidationImportResultModal,
+  ValidationRunDrawer,
+  ValidationStats,
+  conclusionColor,
+  conclusionLabel,
+  formatDate,
+  isTerminalRun,
+  isTerminalTask,
+  joinValues,
+  normalizeConclusion,
+  runMatched,
+  selectRegressionTask,
+  splitText,
+  type RegressionDocumentType,
+  type CaseFormValues,
+} from '../features/validation-set'
 import type {
   AppNotice,
   CreateValidationCaseRequest,
@@ -60,155 +75,6 @@ interface ValidationSetProps {
   headerPage?: PageKey
   examples: ExampleItem[]
   onNotice: (notice: AppNotice) => void
-}
-
-type CaseFormValues = CreateValidationCaseRequest & {
-  apiDocIdsText?: string
-  businessRuleIdsText?: string
-  tagsText?: string
-  expectedIssuePatternsText?: string
-  forbiddenIssuePatternsText?: string
-}
-
-function formatDate(value?: string) {
-  if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
-}
-
-function conclusionColor(value?: string) {
-  const normalized = normalizeConclusion(value)
-  if (normalized.includes('|')) return 'processing'
-  if (normalized === 'pass') return 'success'
-  if (normalized === 'fail') return 'error'
-  if (normalized === 'unreviewable') return 'warning'
-  return 'default'
-}
-
-function splitText(value?: string) {
-  return String(value || '')
-    .split(/[\n,，、]/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-function joinValues(value?: string[]) {
-  return (value || []).join('\n')
-}
-
-function CompactDateStat({ title, value }: { title: string; value?: string }) {
-  return (
-    <div className="compact-date-stat">
-      <div className="compact-date-stat-title">{title}</div>
-      <div className="compact-date-stat-value" title={formatDate(value)}>{formatDate(value)}</div>
-    </div>
-  )
-}
-
-const ALL_VALUE = '__all__'
-const REGRESSION_TASK_STORAGE_KEY = 'risk-review-validation-regression-task-id'
-const TERMINAL_TASK_STATUSES = new Set(['done', 'error', 'cancelled'])
-type RegressionDocumentType = 'review' | 'standard'
-
-function isTerminalTask(task?: TaskRecord) {
-  return TERMINAL_TASK_STATUSES.has(String(task?.status || '').toLowerCase())
-}
-
-function selectRegressionTask(
-  tasks: TaskRecord[],
-  storedTask: TaskRecord<RegressionTaskResult> | undefined,
-  clientId: string,
-) {
-  const regressions = tasks
-    .filter((item) => item.taskType === 'regression')
-    .sort((left, right) => (right.created || 0) - (left.created || 0)) as TaskRecord<RegressionTaskResult>[]
-  const activeRegressions = regressions.filter((item) => !isTerminalTask(item))
-
-  if (storedTask && !isTerminalTask(storedTask)) return storedTask
-  return activeRegressions.find((item) => item.clientId === clientId)
-    || activeRegressions[0]
-    || storedTask
-    || regressions.find((item) => item.clientId === clientId)
-    || regressions[0]
-}
-
-function taskStatusLabel(value?: string) {
-  const labels: Record<string, string> = {
-    queued: '排队中',
-    running: '执行中',
-    cancelling: '取消中',
-    cancelled: '已取消',
-    done: '已完成',
-    error: '执行失败',
-  }
-  return labels[String(value || '').toLowerCase()] || value || '未知'
-}
-
-function taskStatusColor(value?: string) {
-  const status = String(value || '').toLowerCase()
-  if (status === 'done') return 'success'
-  if (status === 'error' || status === 'cancelled') return 'error'
-  if (status === 'queued' || status === 'running' || status === 'cancelling') return 'processing'
-  return 'default'
-}
-
-function normalizeConclusion(value?: string) {
-  const source = String(value || 'unreviewable').trim()
-  const candidates: string[] = []
-  if (/✅|\bpass\b|通过/.test(source) && !/不通过/.test(source)) candidates.push('pass')
-  if (/❌|\bfail\b|不通过|不符合/.test(source)) candidates.push('fail')
-  if (/⛔|无法评审|\bunreviewable\b|\bunknown\b/.test(source)) candidates.push('unreviewable')
-  if (candidates.length) return [...new Set(candidates)].join('|')
-  const normalized = source.toLowerCase()
-  if (normalized === 'unknown') return 'unreviewable'
-  return normalized || 'unreviewable'
-}
-
-function conclusionLabel(value?: string) {
-  const labels: Record<string, string> = {
-    pass: '通过',
-    fail: '不通过',
-    unreviewable: '无法评审',
-  }
-  const normalized = normalizeConclusion(value)
-  if (normalized.includes('|')) {
-    return normalized.split('|').map((item) => labels[item] || item).join(' / ')
-  }
-  return labels[normalized] || normalized
-}
-
-function conclusionIncludes(expected?: string, actual?: string) {
-  const expectedValues = normalizeConclusion(expected)
-    .split('|')
-    .map((item) => item.trim())
-    .filter(Boolean)
-  return expectedValues.includes(normalizeConclusion(actual))
-}
-
-function isTerminalRun(run?: ValidationRun) {
-  return ['success', 'failed', 'partial_success'].includes(String(run?.status || ''))
-}
-
-function runMatched(run?: ValidationRun) {
-  if (!run || !isTerminalRun(run)) return undefined
-  if (typeof run.matched === 'boolean') return run.matched
-  if (run.status === 'success' && run.actualConclusion) {
-    return conclusionIncludes(run.expectedConclusion, run.actualConclusion)
-  }
-  return run.matched
-}
-
-function runAlertType(run?: ValidationRun): 'success' | 'info' | 'warning' | 'error' {
-  if (!run) return 'info'
-  if (!isTerminalRun(run)) return 'info'
-  if (run.status !== 'success') return 'error'
-  return runMatched(run) ? 'success' : 'warning'
-}
-
-function runDescription(run: ValidationRun) {
-  if (run.error) return run.error
-  const comparison = `期望 ${conclusionLabel(run.expectedConclusion)}，实际 ${conclusionLabel(run.actualConclusion)}`
-  if (!isTerminalRun(run)) return `${comparison}，执行中，尚未形成最终一致性判断`
-  return `${comparison}，${runMatched(run) ? '符合预期' : '不符合预期'}`
 }
 
 function matchTag(run?: ValidationRun) {
@@ -410,15 +276,6 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
   }, [runs])
 
   const regressionActive = Boolean(regressionTask && !isTerminalTask(regressionTask))
-  const regressionItems = regressionTask?.result?.items || []
-  const regressionSummary = regressionTask?.result?.summary
-  const regressionTotal = regressionSummary?.total ?? regressionTask?.caseIds?.length ?? regressionItems.length
-  const regressionCompleted = (regressionSummary?.pass || 0)
-    + (regressionSummary?.fail || 0)
-    + (regressionSummary?.error || 0)
-    + (regressionSummary?.skip || 0)
-  const regressionProgress = regressionTotal ? Math.min(100, Math.round((regressionCompleted / regressionTotal) * 100)) : 0
-
   const stats = useMemo(() => {
     const latest = cases.map((item) => latestRunByCase.get(item.caseId)).filter(Boolean) as ValidationRun[]
     const completed = latest.filter(isTerminalRun)
@@ -760,112 +617,18 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
         </Space>
       </HeaderActions>
 
-      <Row gutter={[12, 12]}>
-        <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="案例总数" value={stats.total} /></Card></Col>
-        <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="最近通过" value={stats.passed} /></Card></Col>
-        <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="最近失败" value={stats.failed} /></Card></Col>
-        <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="无法评审" value={stats.unreviewable} /></Card></Col>
-        <Col xs={24} sm={12} xl={4}><Card className="compact-card"><Statistic title="一致率" value={stats.agreementRate ?? '暂无'} suffix={stats.agreementRate == null ? undefined : '%'} precision={1} /></Card></Col>
-        <Col xs={24} sm={12} xl={4}><Card className="compact-card"><CompactDateStat title="最近执行时间" value={stats.recent} /></Card></Col>
-      </Row>
+      <ValidationStats value={stats} />
 
-      {regressionTask || regressionRecovering ? (
-        <Card
-          className="compact-card"
-          title="最近一次回归验证任务"
-          extra={(
-            <Space size={8}>
-              <Button
-                danger
-                size="small"
-                icon={<StopOutlined />}
-                loading={regressionCancelling}
-                disabled={!regressionTaskId || !regressionActive}
-                onClick={terminateRegression}
-              >
-                终止执行
-              </Button>
-              <Button
-                size="small"
-                icon={<ReloadOutlined />}
-                loading={regressionRecovering}
-                disabled={!regressionTaskId}
-                onClick={() => void refreshRegressionSnapshot()}
-              >
-                刷新进度
-              </Button>
-            </Space>
-          )}
-        >
-          {regressionTask ? (
-            <Space direction="vertical" size={12} style={{ width: '100%' }}>
-              <Alert
-                showIcon
-                type={regressionTask.status === 'error' ? 'error' : isTerminalTask(regressionTask) ? 'success' : 'info'}
-                message={(
-                  <Space wrap>
-                    <span>任务状态</span>
-                    <Tag color={taskStatusColor(regressionTask.status)}>{taskStatusLabel(regressionTask.status)}</Tag>
-                    <Typography.Text type="secondary">{regressionSummary?.currentTitle || ''}</Typography.Text>
-                  </Space>
-                )}
-                description={regressionTask.result?.stderr || (regressionActive ? '任务仍在后端执行，离开页面不会中断；返回验证集页面会自动恢复。' : '任务结果已保留，可查看每条案例的实际结论和报告。')}
-              />
-              <Descriptions bordered column={{ xs: 1, sm: 2, lg: 4 }} size="small">
-                <Descriptions.Item label="Task ID">{regressionTask.id || '-'}</Descriptions.Item>
-                <Descriptions.Item label="总数">{regressionTotal}</Descriptions.Item>
-                <Descriptions.Item label="通过">{regressionSummary?.pass || 0}</Descriptions.Item>
-                <Descriptions.Item label="未通过">{(regressionSummary?.fail || 0) + (regressionSummary?.error || 0)}</Descriptions.Item>
-              </Descriptions>
-              <Progress
-                percent={regressionProgress}
-                status={regressionTask.status === 'error' ? 'exception' : regressionTask.status === 'done' ? 'success' : 'active'}
-                format={() => `${regressionCompleted} / ${regressionTotal}`}
-              />
-              <Table<RegressionTaskItem>
-                rowKey={(record, index) => record.id || `regression-${index}`}
-                className="compact-table"
-                size="small"
-                pagination={{ pageSize: 5, size: 'small' }}
-                dataSource={regressionItems}
-                columns={[
-                  { title: '案例', dataIndex: 'title', ellipsis: true, render: (value?: string, record?: RegressionTaskItem) => value || record?.id || '-' },
-                  {
-                    title: '实际结论',
-                    dataIndex: 'verdict',
-                    width: 110,
-                    render: (value?: string) => value ? conclusionLabel(value) : '-',
-                  },
-                  {
-                    title: '期望匹配',
-                    width: 130,
-                    render: (_value, record) => {
-                      const status = String(record.status || '').toLowerCase()
-                      if (status === 'running') return <Tag color="processing">执行中</Tag>
-                      if (status === 'error') return <Tag color="error">执行失败</Tag>
-                      if (status === 'skip') return <Tag>已取消</Tag>
-                      if (record.expectedOk || status === 'pass') return <Tag color="success">符合预期</Tag>
-                      if (status === 'fail') return <Tag color="error">不符合预期</Tag>
-                      return <Tag>待执行</Tag>
-                    },
-                  },
-                  {
-                    title: '结果',
-                    width: 100,
-                    render: (_value, record) => (
-                      <Button type="link" size="small" disabled={!record.raw && !record.reviewFileId} onClick={() => openRegressionResult(record)}>
-                        查看
-                      </Button>
-                    ),
-                  },
-                ]}
-              />
-            </Space>
-          ) : (
-            <Typography.Text type="secondary">正在恢复最近一次验证任务...</Typography.Text>
-          )}
-        </Card>
-      ) : null}
+      <RegressionTaskCard
+        task={regressionTask}
+        taskId={regressionTaskId}
+        recovering={regressionRecovering}
+        cancelling={regressionCancelling}
+        active={regressionActive}
+        onTerminate={terminateRegression}
+        onRefresh={() => void refreshRegressionSnapshot()}
+        onOpenResult={openRegressionResult}
+      />
 
       {loadError ? (
         <Alert
@@ -877,328 +640,73 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
         />
       ) : null}
 
-      <Card className="compact-card" title="操作栏">
-        <Space className="responsive-filters" wrap size={8} style={{ width: '100%' }}>
-          <Input.Search
-            className="responsive-filter-search responsive-filter-search-wide"
-            allowClear
-            placeholder="搜索案例名称 / 因子 / 标签 / 备注"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          <Select
-            className="responsive-filter-select"
-            value={conclusionFilter}
-            onChange={setConclusionFilter}
-            options={[
-              { label: '全部期望结论', value: ALL_VALUE },
-              { label: '通过', value: 'pass' },
-              { label: '不通过', value: 'fail' },
-              { label: '无法评审', value: 'unreviewable' },
-            ]}
-          />
-          <Select
-            className="responsive-filter-select"
-            value={matchFilter}
-            onChange={setMatchFilter}
-            options={[
-              { label: '全部一致性', value: ALL_VALUE },
-              { label: '一致', value: 'matched' },
-              { label: '不一致', value: 'mismatched' },
-              { label: '无法评审', value: 'unreviewable' },
-              { label: '未执行', value: 'unrun' },
-            ]}
-          />
-          <Tooltip title={selectedRowKeys.length ? `将执行已选 ${selectedRowKeys.length} 条案例` : '请先选择验证案例'}>
-            <span><Button size="small" disabled={!selectedRowKeys.length || regressionActive} loading={regressionActive} onClick={executeBatch}>批量执行</Button></span>
-          </Tooltip>
-          <Tooltip title={selectedRowKeys.length ? `将删除已选 ${selectedRowKeys.length} 条案例，删除会二次确认` : '请先选择验证案例'}>
-            <span><Button size="small" danger disabled={!selectedRowKeys.length} onClick={confirmBatchDelete}>批量删除</Button></span>
-          </Tooltip>
-          <Typography.Text type="secondary">已选 {selectedRowKeys.length} 条，当前显示 {filteredCases.length} / {cases.length} 条</Typography.Text>
-        </Space>
-      </Card>
+      <ValidationCaseWorkspace
+        query={query}
+        conclusionFilter={conclusionFilter}
+        matchFilter={matchFilter}
+        selectedRowKeys={selectedRowKeys}
+        filteredCases={filteredCases}
+        totalCases={cases.length}
+        sourceExampleCount={examples.length}
+        loading={loading}
+        regressionActive={regressionActive}
+        columns={columns}
+        currentPage={casePage}
+        pageSize={casePageSize}
+        onQueryChange={setQuery}
+        onConclusionFilterChange={setConclusionFilter}
+        onMatchFilterChange={setMatchFilter}
+        onSelectionChange={setSelectedRowKeys}
+        onBatchRun={() => void executeBatch()}
+        onBatchDelete={confirmBatchDelete}
+        onOpenCase={setDetailCase}
+        onPageChange={(nextPage, nextPageSize) => {
+          setCasePage(nextPageSize !== casePageSize ? 1 : nextPage)
+          setCasePageSize(nextPageSize)
+        }}
+      />
 
-      <Card className="compact-card" title="验证案例列表">
-        {filteredCases.length || loading ? (
-          <Table
-            rowKey="caseId"
-            className="compact-table"
-            loading={loading}
-            columns={columns}
-            dataSource={filteredCases}
-            size="small"
-            rowSelection={{
-              selectedRowKeys,
-              onChange: setSelectedRowKeys,
-              renderCell: (_checked, _record, _index, originNode) => (
-                <span onClick={(event) => event.stopPropagation()}>{originNode}</span>
-              ),
-            }}
-            onRow={(record) => ({
-              onClick: () => setDetailCase(record),
-            })}
-            pagination={{
-              current: casePage,
-              pageSize: casePageSize,
-              size: 'small',
-              showSizeChanger: true,
-              showTotal: (total) => `共 ${total} 条`,
-              onChange: (nextPage, nextPageSize) => {
-                setCasePage(nextPageSize !== casePageSize ? 1 : nextPage)
-                setCasePageSize(nextPageSize)
-              },
-            }}
-            scroll={{ x: 1460 }}
-          />
-        ) : cases.length ? (
-          <Empty description="没有符合筛选条件的验证案例" />
-        ) : (
-          <Empty description={examples.length ? '暂无验证案例，可点击新增案例创建。' : '暂无验证集数据'} />
-        )}
-      </Card>
+      <ValidationCaseDetailDrawer
+        active={pageActive}
+        validationCase={detailCase}
+        latestRun={detailRun}
+        onClose={() => setDetailCase(null)}
+        onOpenRun={openRunResult}
+      />
 
-      <Drawer className="drawer-compact" title={detailCase?.caseName || '案例详情'} width="min(820px, 90vw)" open={pageActive && !!detailCase} mask={false} onClose={() => setDetailCase(null)}>
-        {detailCase ? (
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Descriptions bordered column={1} size="small">
-              <Descriptions.Item label="案例 ID">{detailCase.caseId}</Descriptions.Item>
-              <Descriptions.Item label="因子名称">{detailCase.factorName}</Descriptions.Item>
-              <Descriptions.Item label="期望结论">{conclusionLabel(detailCase.expectedConclusion)}</Descriptions.Item>
-              <Descriptions.Item label="期望问题关键词">{detailCase.expectedIssuePatterns?.join('、') || '-'}</Descriptions.Item>
-              <Descriptions.Item label="禁止问题关键词">{detailCase.forbiddenIssuePatterns?.join('、') || '-'}</Descriptions.Item>
-              <Descriptions.Item label="最大问题数">{detailCase.maxIssueCount ?? '-'}</Descriptions.Item>
-              <Descriptions.Item label="标签">{detailCase.tags?.length ? detailCase.tags.join('、') : '-'}</Descriptions.Item>
-              <Descriptions.Item label="接口文档">{detailCase.apiDocIds?.join('、') || '-'}</Descriptions.Item>
-              <Descriptions.Item label="业务规则">{detailCase.businessRuleIds?.join('、') || '-'}</Descriptions.Item>
-              <Descriptions.Item label="备注">{detailCase.remark || '-'}</Descriptions.Item>
-            </Descriptions>
-            <Card className="compact-card" title="需求内容"><Typography.Paragraph style={{ whiteSpace: 'pre-wrap' }}>{detailCase.requirement}</Typography.Paragraph></Card>
-            <Card className="compact-card" title="待评审内容"><Typography.Paragraph style={{ whiteSpace: 'pre-wrap' }}>{detailCase.reviewContent}</Typography.Paragraph></Card>
-            <Card className="compact-card" title="最近执行结果">
-              {detailRun ? (
-                <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                  <Alert
-                    showIcon
-                    type={runAlertType(detailRun)}
-                    message={`执行状态：${detailRun.status}`}
-                    description={runDescription(detailRun)}
-                  />
-                  <Descriptions bordered column={2} size="small">
-                    <Descriptions.Item label="Run ID">{detailRun.runId}</Descriptions.Item>
-                    <Descriptions.Item label="开始时间">{formatDate(detailRun.startedAt)}</Descriptions.Item>
-                    <Descriptions.Item label="结束时间">{formatDate(detailRun.finishedAt)}</Descriptions.Item>
-                    <Descriptions.Item label="标准文件">{detailRun.standardFile || '-'}</Descriptions.Item>
-                    <Descriptions.Item label="报告文件">{detailRun.reviewFile || '-'}</Descriptions.Item>
-                    <Descriptions.Item label="结论匹配">{detailRun.conclusionMatched == null ? '-' : detailRun.conclusionMatched ? '一致' : '不一致'}</Descriptions.Item>
-                    <Descriptions.Item label="问题匹配">{detailRun.issuesMatched == null ? '-' : detailRun.issuesMatched ? '一致' : '不一致'}</Descriptions.Item>
-                  </Descriptions>
-                  <Button size="small" icon={<EyeOutlined />} onClick={() => openRunResult(detailRun)}>
-                    打开运行详情
-                  </Button>
-                </Space>
-              ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该案例尚未执行验证" />
-              )}
-            </Card>
-          </Space>
-        ) : null}
-      </Drawer>
-
-      <Drawer
-        title={editingCase ? '编辑验证案例' : '新增验证案例'}
-        className="drawer-compact"
-        width="min(820px, 90vw)"
-        open={pageActive && editorOpen}
-        mask={false}
+      <ValidationCaseEditorDrawer
+        active={pageActive}
+        editingCase={editingCase}
+        open={editorOpen}
+        form={form}
         onClose={() => setEditorOpen(false)}
-        extra={<Space><Button onClick={() => setEditorOpen(false)}>取消</Button><Button type="primary" onClick={saveCase}>保存</Button></Space>}
-      >
-        <Form form={form} layout="vertical">
-          <Form.Item name="caseName" label="案例名称" rules={[{ required: true, message: '请输入案例名称' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="factorName" label="因子名称" rules={[{ required: true, message: '请输入因子名称' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="expectedConclusion" label="期望结论">
-            <Select
-              options={[
-                { label: '通过', value: 'pass' },
-                { label: '不通过', value: 'fail' },
-                { label: '无法评审', value: 'unreviewable' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="expectedIssuePatternsText" label="期望问题关键词">
-            <Input.TextArea rows={2} placeholder="可选，每行一个；评审报告需全部包含" />
-          </Form.Item>
-          <Form.Item name="forbiddenIssuePatternsText" label="禁止问题关键词">
-            <Input.TextArea rows={2} placeholder="可选，每行一个；评审报告不得出现" />
-          </Form.Item>
-          <Form.Item name="maxIssueCount" label="最大问题数">
-            <InputNumber min={0} precision={0} placeholder="可选" style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="apiDocIdsText" label="关联接口文档" rules={[{ required: true, message: '请输入至少一个接口文档' }]}>
-            <Input.TextArea rows={2} placeholder="每行一个，或用逗号分隔" />
-          </Form.Item>
-          <Form.Item name="businessRuleIdsText" label="业务规则 ID">
-            <Input.TextArea rows={2} placeholder="可选，每行一个" />
-          </Form.Item>
-          <Form.Item name="requirement" label="需求内容" rules={[{ required: true, message: '请输入需求内容' }]}>
-            <Input.TextArea rows={4} />
-          </Form.Item>
-          <Form.Item name="reviewContent" label="待评审内容" rules={[{ required: true, message: '请输入待评审内容' }]}>
-            <Input.TextArea rows={6} />
-          </Form.Item>
-          <Form.Item name="tagsText" label="标签">
-            <Input.TextArea rows={2} placeholder="可选，每行一个" />
-          </Form.Item>
-          <Form.Item name="remark" label="备注">
-            <Input.TextArea rows={3} />
-          </Form.Item>
-        </Form>
-      </Drawer>
+        onSave={() => void saveCase()}
+      />
 
-      <Drawer className="drawer-compact" title="验证结果详情" width="min(860px, 90vw)" open={pageActive && resultOpen} mask={false} onClose={() => setResultOpen(false)}>
-        {activeRun ? (
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Alert
-              showIcon
-              type={runAlertType(activeRun)}
-              message={`执行状态：${activeRun.status}`}
-              description={runDescription(activeRun)}
-            />
-            <Descriptions bordered column={1} size="small">
-              <Descriptions.Item label="Run ID">{activeRun.runId}</Descriptions.Item>
-              <Descriptions.Item label="案例 ID">{activeRun.caseId}</Descriptions.Item>
-              <Descriptions.Item label="开始时间">{formatDate(activeRun.startedAt)}</Descriptions.Item>
-              <Descriptions.Item label="结束时间">{formatDate(activeRun.finishedAt)}</Descriptions.Item>
-              <Descriptions.Item label="标准文件">{activeRun.standardFile || '-'}</Descriptions.Item>
-              <Descriptions.Item label="报告文件">{activeRun.reviewFile || '-'}</Descriptions.Item>
-            </Descriptions>
-            <Space wrap>
-              <Button
-                type={activeRunDocument === 'review' ? 'primary' : 'default'}
-                disabled={!activeRun.reviewFile}
-                onClick={() => setActiveRunDocument('review')}
-              >
-                查看评审结果
-              </Button>
-              <Button
-                type={activeRunDocument === 'standard' ? 'primary' : 'default'}
-                disabled={!activeRun.standardFile}
-                onClick={() => setActiveRunDocument('standard')}
-              >
-                查看标准
-              </Button>
-            </Space>
-            <Card className="compact-card" title={activeRunDocument === 'review' ? '评审结果' : '标准'}>
-              {loadingRegressionFile === activeRunFileId ? (
-                <Typography.Text type="secondary">正在读取文档...</Typography.Text>
-              ) : (
-                <MarkdownViewer
-                  content={activeRunContent || activeRun.error || '暂无文档内容'}
-                  fileName={activeRunFileId || (activeRunDocument === 'review' ? '评审结果.md' : '标准.md')}
-                />
-              )}
-            </Card>
-          </Space>
-        ) : null}
-      </Drawer>
+      <ValidationRunDrawer
+        active={pageActive}
+        open={resultOpen}
+        run={activeRun}
+        documentType={activeRunDocument}
+        fileId={activeRunFileId}
+        content={activeRunContent}
+        loadingFile={loadingRegressionFile}
+        onClose={() => setResultOpen(false)}
+        onDocumentChange={setActiveRunDocument}
+      />
 
-      <Drawer
-        className="drawer-compact"
-        title={activeRegressionItem?.title || activeRegressionItem?.id || '回归结果详情'}
-        width="min(900px, 92vw)"
-        open={pageActive && !!activeRegressionItem}
-        mask={false}
+      <RegressionResultDrawer
+        active={pageActive}
+        item={activeRegressionItem}
+        documentType={activeRegressionDocument}
+        fileId={activeRegressionFileId}
+        content={activeRegressionContent}
+        loadingFile={loadingRegressionFile}
         onClose={() => setActiveRegressionItem(null)}
-      >
-        {activeRegressionItem ? (
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Alert
-              showIcon
-              type={activeRegressionItem.status === 'pass' ? 'success' : activeRegressionItem.status === 'running' ? 'info' : 'error'}
-              message={`执行状态：${activeRegressionItem.status || '未知'}`}
-              description={activeRegressionItem.expectedOk ? '实际结论与期望一致' : activeRegressionItem.status === 'running' ? '案例仍在执行' : '实际结论与期望不一致或执行失败'}
-            />
-            <Descriptions bordered column={1} size="small">
-              <Descriptions.Item label="案例 ID">{activeRegressionItem.id || '-'}</Descriptions.Item>
-              <Descriptions.Item label="期望结论">{activeRegressionItem.expected || '-'}</Descriptions.Item>
-              <Descriptions.Item label="实际结论">{activeRegressionItem.verdict ? conclusionLabel(activeRegressionItem.verdict) : '-'}</Descriptions.Item>
-              <Descriptions.Item label="标准文件">{activeRegressionItem.standardFileId || '-'}</Descriptions.Item>
-              <Descriptions.Item label="报告文件">{activeRegressionItem.reviewFileId || '-'}</Descriptions.Item>
-            </Descriptions>
-            <Space wrap>
-              <Button
-                type={activeRegressionDocument === 'review' ? 'primary' : 'default'}
-                disabled={!activeRegressionItem.raw && !activeRegressionItem.reportPreview && !activeRegressionItem.reviewFileId}
-                onClick={() => setActiveRegressionDocument('review')}
-              >
-                查看评审结果
-              </Button>
-              <Button
-                type={activeRegressionDocument === 'standard' ? 'primary' : 'default'}
-                disabled={!activeRegressionItem.standardText && !activeRegressionItem.standardFileId}
-                onClick={() => setActiveRegressionDocument('standard')}
-              >
-                查看标准
-              </Button>
-            </Space>
-            <Card
-              className="compact-card"
-              title={activeRegressionDocument === 'review' ? '评审结果' : '标准'}
-            >
-              {loadingRegressionFile === activeRegressionFileId ? (
-                <Typography.Text type="secondary">正在读取文档...</Typography.Text>
-              ) : (
-                <MarkdownViewer
-                  content={activeRegressionContent || '暂无文档内容'}
-                  fileName={activeRegressionFileId || (activeRegressionDocument === 'review' ? '评审结果.md' : '标准.md')}
-                />
-              )}
-            </Card>
-          </Space>
-        ) : null}
-      </Drawer>
+        onDocumentChange={setActiveRegressionDocument}
+      />
 
-      <Modal
-        title="案例导入结果"
-        open={pageActive && !!importResult}
-        maskClosable={false}
-        onCancel={() => setImportResult(null)}
-        footer={<Button type="primary" onClick={() => setImportResult(null)}>关闭</Button>}
-        width="min(900px, 90vw)"
-      >
-        {importResult ? (
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Alert
-              showIcon
-              type={importResult.failed ? 'warning' : 'success'}
-              message={`文件 ${importResult.fileName}：共 ${importResult.totalRows} 条，成功 ${importResult.success} 条，失败 ${importResult.failed} 条`}
-              description="案例名称为空时自动使用因子名称；分列填写的因子加工输入字段、加工逻辑和默认值会自动合并为待评审内容。"
-            />
-            {importResult.errors.length ? (
-              <Table
-                rowKey={(record) => `${record.rowNumber}-${record.caseId || record.factorName || ''}`}
-                className="compact-table"
-                size="small"
-                pagination={false}
-                dataSource={importResult.errors}
-                columns={[
-                  { title: '行号', dataIndex: 'rowNumber', width: 80 },
-                  { title: '案例名称', dataIndex: 'caseName', ellipsis: true, render: (value?: string) => value || '-' },
-                  { title: '因子名称', dataIndex: 'factorName', ellipsis: true, render: (value?: string) => value || '-' },
-                  { title: '失败原因', dataIndex: 'error', ellipsis: true },
-                ]}
-              />
-            ) : (
-              <Typography.Text type="secondary">全部案例导入成功。</Typography.Text>
-            )}
-          </Space>
-        ) : null}
-      </Modal>
+      <ValidationImportResultModal active={pageActive} result={importResult} onClose={() => setImportResult(null)} />
 
     </Space>
   )

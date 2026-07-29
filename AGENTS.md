@@ -9,6 +9,8 @@
 ## 2. 主要文件与职责
 
 - 后端入口：`risk_review_web/server_v2.py`
+- HTTP 路由分组：`risk_review_web/routes/`
+- 无状态解析、持久化与领域服务：`risk_review_web/services/`
 - 全局任务池：`risk_review_web/task_pool.py`
 - 定时任务调度与持久化：`risk_review_web/scheduled_tasks.py`
 - 标准与报告校验：`risk_review_web/artifacts.py`
@@ -20,6 +22,8 @@
 - Phase 1 因子加工开发规范：`risk_review_web/prompts/risk-review-skill/spec/phase1_processing_spec.json`
 - Phase 2 因子加工评审规范：`risk_review_web/prompts/risk-review-skill/spec/phase2_review_spec.json`
 - React 前端源码：`risk_review_web/web/src/`
+- 单因子评审功能模块：`risk_review_web/web/src/features/single-review/`
+- 验证集功能模块：`risk_review_web/web/src/features/validation-set/`
 - React 前端构建配置：`risk_review_web/web/vite.config.ts`
 - React 前端构建产物：`risk_review_web/static/dist/`
 - 原有功能台页面：`risk_review_web/static/index.html`

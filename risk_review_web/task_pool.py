@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 @dataclass
 class _WorkItem:
+    """Store one queued callable and its scheduling metadata."""
+
     job_id: str
     group_id: str
     fn: Callable[..., Any]
@@ -72,6 +74,8 @@ class GlobalTaskPool:
         group_limit: int | None = None,
         **kwargs: Any,
     ) -> Future:
+        """Queue a uniquely identified job under a fair-scheduling group."""
+
         future = Future()
         limit = max(1, min(self.max_workers, int(group_limit or self.max_workers)))
         with self._condition:
@@ -110,6 +114,8 @@ class GlobalTaskPool:
         return True
 
     def cancel_group(self, group_id: str) -> list[str]:
+        """Cancel every queued job in a group and return their identifiers."""
+
         with self._condition:
             cancelled = []
             cancelled_items = []
@@ -125,6 +131,8 @@ class GlobalTaskPool:
         return cancelled
 
     def job_info(self, job_id: str) -> dict:
+        """Return the pool status and global queue position of one job."""
+
         with self._condition:
             if job_id in self._active_by_id:
                 return {"poolStatus": "running", "queuePosition": 0}
@@ -136,12 +144,16 @@ class GlobalTaskPool:
             return {"poolStatus": "queued", "queuePosition": position}
 
     def group_info(self, group_id: str) -> dict:
+        """Return queued and active job counts for one scheduling group."""
+
         with self._condition:
             queued = sum(1 for item in self._queued_by_id.values() if item.group_id == group_id)
             active = self._active_by_group.get(group_id, 0)
             return {"poolQueued": queued, "poolActive": active}
 
     def snapshot(self) -> dict:
+        """Return an immutable summary of current worker and queue state."""
+
         with self._condition:
             queued = sorted(self._queued_by_id.values(), key=lambda value: value.sequence)
             return {

@@ -69,10 +69,12 @@ SCHEDULED_RUN_MAX_COUNT = max(10, int(os.environ.get("RISK_REVIEW_SCHEDULED_RUN_
 
 
 class ScheduledTaskError(ValueError):
+    """User-facing validation or lifecycle error raised by scheduled tasks."""
     pass
 
 
 def enrich_error_metadata(payload: JsonDict) -> JsonDict:
+    """Attach normalized task-error metadata to a scheduled-run item."""
     error = str(payload.get("error") or "").strip()
     if error:
         payload.update(classify_task_error(error))
@@ -204,6 +206,7 @@ def _safe_month_replace(base: datetime, day: int) -> datetime:
 
 
 def compute_next_run_at(task: JsonDict, *, now: datetime | None = None, from_time: datetime | None = None) -> str | None:
+    """Compute the next local execution time for a normalized schedule."""
     current = now or _now()
     base = from_time or current
     schedule_type = task.get("scheduleType")
@@ -250,6 +253,7 @@ def compute_next_run_at(task: JsonDict, *, now: datetime | None = None, from_tim
 
 
 def compute_next_run_from_cron(cron_text: str, now: datetime) -> datetime:
+    """Resolve the next timestamp for the supported five-field cron subset."""
     parts = cron_text.split()
     if len(parts) != 5:
         raise ScheduledTaskError("cron 仅支持标准 5 段表达式。")
@@ -365,6 +369,7 @@ def _normalize_import_rows(rows: list[list[str]]) -> tuple[list[JsonDict], list[
 
 
 def parse_csv_rows(text: str) -> list[list[str]]:
+    """Parse and trim non-empty CSV records used by scheduled imports."""
     rows: list[list[str]] = []
     for row in csv.reader(StringIO(text.lstrip("\ufeff"))):
         if any(str(cell).strip() for cell in row):
@@ -373,6 +378,7 @@ def parse_csv_rows(text: str) -> list[list[str]]:
 
 
 def parse_xlsx_rows(data: bytes) -> list[list[str]]:
+    """Parse the first worksheet from an XLSX payload using the standard library."""
     rows: list[list[str]] = []
     ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
     try:
@@ -425,6 +431,7 @@ def parse_xlsx_rows(data: bytes) -> list[list[str]]:
 
 
 def decode_import_rows(name: str, data_base64: str) -> list[list[str]]:
+    """Decode an uploaded CSV/XLSX payload into tabular rows."""
     if not data_base64:
         raise ScheduledTaskError("上传文件内容为空。")
     try:
@@ -444,6 +451,7 @@ def decode_import_rows(name: str, data_base64: str) -> list[list[str]]:
 
 
 def preview_import(name: str, data_base64: str, mode: str | None = None, task_standard_file: str | None = None) -> JsonDict:
+    """Normalize an import file and return row-level validation without persisting it."""
     rows = decode_import_rows(name, data_base64)
     items, base_errors = _normalize_import_rows(rows)
     mode_value = (mode or "").strip() or "phase1_phase2"
@@ -470,6 +478,7 @@ def preview_import(name: str, data_base64: str, mode: str | None = None, task_st
 
 
 def validate_item(item: JsonDict, *, mode: str, task_standard_file: str | None = None) -> list[str]:
+    """Validate one scheduled factor against the selected execution mode."""
     errors: list[str] = []
     factor_name = str(item.get("factorName") or "").strip()
     requirement = str(item.get("requirement") or "").strip()
@@ -489,6 +498,7 @@ def validate_item(item: JsonDict, *, mode: str, task_standard_file: str | None =
 
 
 def resolve_api_names(item: JsonDict) -> list[str]:
+    """Resolve imported API identifiers to names accepted by Phase 1."""
     api_ids = _normalize_id_list(item.get("apiDocIds"))
     if not api_ids:
         return []
@@ -506,6 +516,7 @@ def resolve_api_names(item: JsonDict) -> list[str]:
 
 
 def build_item_draft(item: JsonDict) -> str:
+    """Build a scheduled item's review draft from explicit sections when needed."""
     review_content = str(item.get("reviewContent") or "").strip()
     if review_content:
         return review_content
@@ -521,6 +532,7 @@ def build_item_draft(item: JsonDict) -> str:
 
 
 def summarize_run_status(items: list[JsonDict]) -> tuple[str, int, int, int]:
+    """Derive parent status and counters from scheduled item results."""
     success = sum(1 for item in items if item.get("status") == "success")
     failed = sum(1 for item in items if item.get("status") == "failed")
     unknown = sum(1 for item in items if item.get("status") not in {"success", "failed"})
@@ -538,6 +550,7 @@ def summarize_run_status(items: list[JsonDict]) -> tuple[str, int, int, int]:
 
 
 def detect_review_conclusion(markdown: str) -> str:
+    """Extract the normalized verdict from a generated review report."""
     source = str(markdown or "")
     overall = re.search(r"\|\s*总体结论\s*\|\s*([^|]+?)\s*\|", source)
     target = overall.group(1) if overall else source
@@ -552,12 +565,14 @@ def detect_review_conclusion(markdown: str) -> str:
 
 @dataclass
 class SchedulerDependencies:
+    """Execution callbacks supplied by the application to the scheduler."""
     run_review_pair: RunItemExecutor
     run_phase1: Phase1Executor
     run_phase2: Phase2Executor
 
 
 class ScheduledTaskStore:
+    """Thread-safe JSON persistence for scheduled tasks and run history."""
     def __init__(self, tasks_path: Path = SCHEDULED_TASKS_PATH, runs_path: Path = SCHEDULED_RUNS_PATH) -> None:
         self.tasks_path = tasks_path
         self.runs_path = runs_path
@@ -571,22 +586,26 @@ class ScheduledTaskStore:
                 _atomic_write_json(path, [])
 
     def list_tasks(self) -> list[JsonDict]:
+        """Return persisted tasks ordered from newest to oldest."""
         with self.lock:
             tasks = _read_json_list(self.tasks_path)
         tasks.sort(key=lambda item: item.get("createdAt") or "", reverse=True)
         return tasks
 
     def get_task(self, task_id: str) -> JsonDict | None:
+        """Return one persisted task by identifier."""
         for task in self.list_tasks():
             if task.get("taskId") == task_id:
                 return task
         return None
 
     def save_tasks(self, tasks: list[JsonDict]) -> None:
+        """Replace the persisted task collection atomically."""
         with self.lock:
             _atomic_write_json(self.tasks_path, tasks)
 
     def list_runs(self, task_id: str | None = None) -> list[JsonDict]:
+        """Return run history, optionally restricted to one scheduled task."""
         with self.lock:
             runs = _read_json_list(self.runs_path)
         if task_id:
@@ -595,17 +614,20 @@ class ScheduledTaskStore:
         return runs
 
     def get_run(self, run_id: str) -> JsonDict | None:
+        """Return one persisted scheduled run by identifier."""
         for run in self.list_runs():
             if run.get("runId") == run_id:
                 return run
         return None
 
     def save_runs(self, runs: list[JsonDict]) -> None:
+        """Replace the persisted scheduled-run collection atomically."""
         with self.lock:
             _atomic_write_json(self.runs_path, runs)
 
 
 class ScheduledTaskService:
+    """Own scheduled-task validation, dispatch, cancellation, and timer scanning."""
     def __init__(
         self,
         *,
@@ -629,6 +651,7 @@ class ScheduledTaskService:
         self._recover_interrupted_runs()
 
     def start_scheduler(self) -> None:
+        """Start the single timer-scanning thread when not already running."""
         if self.scheduler_thread and self.scheduler_thread.is_alive():
             return
         self.stop_event.clear()
@@ -636,6 +659,7 @@ class ScheduledTaskService:
         self.scheduler_thread.start()
 
     def stop_scheduler(self) -> None:
+        """Request shutdown and briefly join the timer-scanning thread."""
         self.stop_event.set()
         if self.scheduler_thread and self.scheduler_thread is not threading.current_thread():
             self.scheduler_thread.join(timeout=2)
@@ -649,6 +673,7 @@ class ScheduledTaskService:
             self.stop_event.wait(SCHEDULER_POLL_INTERVAL_SECONDS)
 
     def scan_and_run_due_tasks(self) -> None:
+        """Submit every due, enabled, non-running task to the global pool."""
         now = _now()
         for task in self.store.list_tasks():
             if not task.get("enabled"):
@@ -685,6 +710,7 @@ class ScheduledTaskService:
                 _atomic_write_json(self.store.runs_path, runs)
 
     def list_tasks(self) -> list[JsonDict]:
+        """Return tasks enriched with item counts and latest-run status."""
         tasks = self.store.list_tasks()
         runs = self.store.list_runs()
         latest_by_task: dict[str, JsonDict] = {}
@@ -704,9 +730,11 @@ class ScheduledTaskService:
         return enriched
 
     def preview_import(self, name: str, data_base64: str, *, mode: str | None = None, task_standard_file: str | None = None) -> JsonDict:
+        """Validate an uploaded factor file without creating a task."""
         return preview_import(name, data_base64, mode=mode, task_standard_file=task_standard_file)
 
     def get_task(self, task_id: str) -> JsonDict:
+        """Return one task together with its complete run history."""
         task = self.store.get_task(task_id)
         if not task:
             raise ScheduledTaskError("任务不存在。")
@@ -716,6 +744,7 @@ class ScheduledTaskService:
         }
 
     def create_task(self, payload: JsonDict) -> JsonDict:
+        """Validate and persist a new scheduled task."""
         task = self._normalize_task_payload(payload)
         task["taskId"] = payload.get("taskId") or f"task-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
         now_text = _iso_now()
@@ -730,6 +759,7 @@ class ScheduledTaskService:
         return task
 
     def update_task(self, task_id: str, payload: JsonDict) -> JsonDict:
+        """Merge, validate, and persist an existing scheduled task."""
         with self.store.lock:
             tasks = _read_json_list(self.store.tasks_path)
             for index, existing in enumerate(tasks):
@@ -747,6 +777,7 @@ class ScheduledTaskService:
         raise ScheduledTaskError("任务不存在。")
 
     def delete_task(self, task_id: str) -> None:
+        """Delete a non-running task and its persisted run history."""
         with self.execution_lock:
             if task_id in self.running_task_ids:
                 raise ScheduledTaskError("任务正在执行，请先取消对应运行。")
@@ -760,6 +791,7 @@ class ScheduledTaskService:
                 _atomic_write_json(self.store.runs_path, [run for run in runs if run.get("taskId") != task_id])
 
     def set_enabled(self, task_id: str, enabled: bool) -> JsonDict:
+        """Enable or disable a task and recompute its next execution time."""
         with self.store.lock:
             tasks = _read_json_list(self.store.tasks_path)
             for task in tasks:
@@ -776,9 +808,11 @@ class ScheduledTaskService:
         raise ScheduledTaskError("任务不存在。")
 
     def list_runs(self, task_id: str) -> list[JsonDict]:
+        """Return all runs belonging to one scheduled task."""
         return self.store.list_runs(task_id)
 
     def get_run(self, run_id: str) -> JsonDict:
+        """Return one run enriched with conclusions from report artifacts."""
         run = self.store.get_run(run_id)
         if not run:
             raise ScheduledTaskError("执行记录不存在。")
@@ -810,6 +844,7 @@ class ScheduledTaskService:
         return {**run, "items": enriched_items}
 
     def cancel_run(self, run_id: str) -> JsonDict:
+        """Request cancellation for a pending or running execution."""
         run = self.get_run(run_id)
         if run.get("status") not in {"pending", "running"}:
             return run
@@ -822,6 +857,7 @@ class ScheduledTaskService:
         return self.get_run(run_id)
 
     def run_task_now(self, task_id: str, *, trigger: str = "manual") -> JsonDict:
+        """Submit a task and block until its run reaches a terminal state."""
         run = self.submit_task_run(task_id, trigger=trigger)
         deadline = time.time() + 300
         while time.time() < deadline:
@@ -832,6 +868,7 @@ class ScheduledTaskService:
         raise ScheduledTaskError("任务执行超时。")
 
     def submit_task_run(self, task_id: str, *, trigger: str = "manual") -> JsonDict:
+        """Create and asynchronously submit one non-reentrant scheduled run."""
         with self.execution_lock:
             task = self.store.get_task(task_id)
             if not task:
@@ -1251,6 +1288,7 @@ def build_service(
     log: LogFn | None = None,
     cancel_execution: CancelExecutionFn | None = None,
 ) -> ScheduledTaskService:
+    """Construct the scheduler with application execution callbacks."""
     return ScheduledTaskService(
         store=ScheduledTaskStore(),
         dependencies=SchedulerDependencies(

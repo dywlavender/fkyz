@@ -4,6 +4,7 @@ import re
 
 
 def classify_task_error(message: str) -> dict[str, str]:
+    """Map a raw execution error to the platform's stable error categories."""
     text = str(message or "").strip()
     rules = (
         (r"缺少要素|不能为空|请填写|至少选择|未找到|无法映射|输入冲突", "INPUT_INVALID", "输入缺少必要要素或存在冲突", "检查需求内容、接口文档和待评审内容后重新提交。"),
@@ -24,6 +25,7 @@ def classify_task_error(message: str) -> dict[str, str]:
 
 
 def attach_error_metadata(result: dict, fallback: str = "") -> dict:
+    """Attach normalized error metadata to a task result in place."""
     message = str(result.get("stderr") or result.get("error") or fallback or "").strip()
     result.update(classify_task_error(message))
     return result

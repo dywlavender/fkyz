@@ -12,15 +12,21 @@ PHASE2_SPEC_MD_PATH = SKILL_ROOT / "spec" / "phase2_review_spec.md"
 
 
 def read_text(path: Path) -> str:
+    """Read a UTF-8 text file and remove surrounding whitespace."""
+
     return path.read_text(encoding="utf-8").strip()
 
 
 def write_text(path: Path, text: str) -> None:
+    """Write normalized UTF-8 text, creating its parent directory if needed."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text.strip() + "\n", encoding="utf-8")
 
 
 def render_phase1_rule(rule: dict) -> list[str]:
+    """Render one Phase 1 rule as a Markdown subsection."""
+
     lines = [
         f"### {rule['rule_id']} {rule['name']}",
         "",
@@ -31,6 +37,8 @@ def render_phase1_rule(rule: dict) -> list[str]:
 
 
 def render_phase1_spec_markdown(spec: dict) -> str:
+    """Render the Phase 1 rule JSON as the derived human-readable spec."""
+
     rules_by_id = {rule["rule_id"]: rule for rule in spec["rules"]}
     sections = spec["sections"]
     processing = sections["processing_logic"]
@@ -79,6 +87,8 @@ def render_phase1_spec_markdown(spec: dict) -> str:
 
 
 def render_phase2_rule(rule: dict) -> list[str]:
+    """Render one Phase 2 review rule as a Markdown subsection."""
+
     lines = [
         f"### {rule['rule_id']} {rule['name']}",
         "",
@@ -93,6 +103,8 @@ def render_phase2_rule(rule: dict) -> list[str]:
 
 
 def render_phase2_spec_markdown(spec: dict) -> str:
+    """Render the Phase 2 rule JSON as the derived human-readable spec."""
+
     scopes = spec["review_scopes"]
     processing = scopes["processing_logic"]
     lines = [
@@ -123,6 +135,8 @@ def render_phase2_spec_markdown(spec: dict) -> str:
 
 
 def build() -> None:
+    """Regenerate both phase display documents from their JSON sources."""
+
     phase1_spec = json.loads(PHASE1_SPEC_JSON_PATH.read_text(encoding="utf-8"))
     phase2_spec = json.loads(PHASE2_SPEC_JSON_PATH.read_text(encoding="utf-8"))
     phase1_spec_markdown = render_phase1_spec_markdown(phase1_spec)

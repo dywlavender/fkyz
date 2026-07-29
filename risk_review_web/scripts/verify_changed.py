@@ -109,7 +109,12 @@ def main() -> int:
         phase1 = phase2 = True
 
     backend_smoke = args.all or any(
-        path in {
+        path.startswith((
+            "risk_review_web/routes/",
+            "risk_review_web/services/",
+            "risk_review_web/tests/",
+        ))
+        or path in {
             "risk_review_web/server_v2.py",
             "risk_review_web/artifacts.py",
             "risk_review_web/prompt_builder.py",
@@ -157,6 +162,12 @@ def main() -> int:
     ran = False
     if python_files:
         run("Python 编译", [sys.executable, "-m", "py_compile", *python_files])
+        ran = True
+    if backend_smoke:
+        run(
+            "评审结论解析回归",
+            [sys.executable, "-m", "unittest", "risk_review_web.tests.test_review_evaluation"],
+        )
         ran = True
     if legacy:
         run("原有功能台语法检查", ["node", "--check", "risk_review_web/static/app.js"])

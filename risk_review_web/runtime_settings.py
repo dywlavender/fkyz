@@ -63,6 +63,7 @@ def _normalize_settings(value: dict[str, Any]) -> dict[str, int]:
 
 
 def get_runtime_settings() -> dict[str, int]:
+    """Load normalized concurrency settings and apply them to the global pool."""
     with RUNTIME_SETTINGS_LOCK:
         try:
             settings = _normalize_settings(_read_settings())
@@ -73,6 +74,7 @@ def get_runtime_settings() -> dict[str, int]:
 
 
 def update_runtime_settings(value: dict[str, Any]) -> dict[str, int]:
+    """Validate, persist, and activate updated concurrency settings."""
     with RUNTIME_SETTINGS_LOCK:
         current = get_runtime_settings()
         settings = _normalize_settings({**current, **value})

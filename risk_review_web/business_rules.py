@@ -35,10 +35,12 @@ BUSINESS_RULE_TYPES = {
 
 
 def rule_version() -> str:
+    """Generate an optimistic-lock version token for a business rule."""
     return uuid.uuid4().hex[:12]
 
 
 def parse_business_rules():
+    """Load business rules and normalize legacy shapes for current consumers."""
     if not BUSINESS_RULES_PATH.exists():
         return []
     try:
@@ -63,11 +65,13 @@ def parse_business_rules():
 
 
 def save_business_rules(rules: list[dict]):
+    """Persist the complete business-rule collection atomically."""
     DATA_DIR.mkdir(exist_ok=True)
     BUSINESS_RULES_PATH.write_text(json.dumps(rules, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def normalize_business_rule(payload: dict, existing_id: str | None = None) -> dict:
+    """Normalize a payload into the persisted business-rule schema."""
     rule_id = existing_id or (payload.get("id") or f"rule-{uuid.uuid4().hex[:8]}")
     rule_type = (payload.get("type") or payload.get("ruleType") or "business_mandatory").strip()
     if rule_type not in BUSINESS_RULE_TYPES:
@@ -84,6 +88,7 @@ def normalize_business_rule(payload: dict, existing_id: str | None = None) -> di
 
 
 def validate_business_rule(rule: dict) -> list[str]:
+    """Return all user-correctable validation errors for a business rule."""
     errors = []
     if rule.get("type") not in BUSINESS_RULE_TYPES:
         errors.append("规则类型无效")
@@ -93,6 +98,7 @@ def validate_business_rule(rule: dict) -> list[str]:
 
 
 def business_rules_fingerprint() -> list[dict]:
+    """Return stable rule identity data used by prompt checksums."""
     return [
         {
             "id": rule.get("id", ""),

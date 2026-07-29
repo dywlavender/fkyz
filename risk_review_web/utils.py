@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 def read_text(path: Path) -> str:
+    """Read UTF-8 text from a filesystem path."""
     return path.read_text(encoding="utf-8")
 
 
@@ -29,6 +30,7 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 
 def parse_frontmatter(text: str) -> dict:
+    """Parse the simple frontmatter format used by project Markdown files."""
     meta = {}
     match = re.search(r"^---\n(.+?)\n---", text, re.S)
     if not match:

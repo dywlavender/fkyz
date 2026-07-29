@@ -12,6 +12,7 @@ API_DOC_LOCK = threading.Lock()
 
 
 def infer_api_category(rel_path: str) -> str:
+    """Infer the UI category from an API document's repository-relative path."""
     parts = str(rel_path or "").split("/")
     if len(parts) >= 3 and parts[0] == "raw" and parts[1] == "api":
         if parts[2] in {"本系统接口", "外部接口"}:
@@ -20,6 +21,7 @@ def infer_api_category(rel_path: str) -> str:
 
 
 def api_docs_signature():
+    """Build the filesystem signature used to invalidate the API-document cache."""
     if not RAW_API_DIR.exists():
         return []
     return [
@@ -29,6 +31,7 @@ def api_docs_signature():
 
 
 def load_api_docs_cached():
+    """Load API documents until their filesystem signature changes."""
     signature = api_docs_signature()
     with API_DOC_LOCK:
         if API_DOC_CACHE.get("signature") == signature:
@@ -61,6 +64,7 @@ def load_api_docs_cached():
 
 
 def list_api_docs(include_content: bool = False):
+    """Return API metadata, optionally including full Markdown content."""
     docs = []
     for doc in load_api_docs_cached():
         item = dict(doc)
@@ -71,6 +75,7 @@ def list_api_docs(include_content: bool = False):
 
 
 def get_api_doc(identifier: str):
+    """Find one API document by display name or repository-relative path."""
     identifier = (identifier or "").strip()
     for doc in load_api_docs_cached():
         if doc.get("name") == identifier or doc.get("path") == identifier:

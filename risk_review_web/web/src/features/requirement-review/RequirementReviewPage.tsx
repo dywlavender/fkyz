@@ -41,7 +41,7 @@ function RequirementExecutionLogModal({ active, open, logs, onClose }: { active:
         },
         {
           key: 'debug',
-          label: `Claude 输入/输出（${debugLogs.length}）`,
+          label: `模型输入/输出/工具调用（${debugLogs.length}）`,
           children: <div className="execution-log-modal-body">{renderLogs(debugLogs)}</div>,
         },
       ]} />
@@ -94,12 +94,12 @@ export function RequirementReviewPage({ apiDocs, onNotice }: RequirementReviewPa
     }))
     const debug = (task.debugLogs || []).map((item, index) => {
       const stream = String(item.stream || '').toLowerCase()
-      const labels: Record<string, string> = { prompt: 'Claude 实际输入', stdout: 'Claude 原始输出', stderr: 'Claude 错误输出' }
+      const labels: Record<string, string> = { prompt: '模型实际输入', stdout: '模型最终输出', stderr: '模型错误输出' }
       return {
         id: `${currentTaskId}-debug-${item.time ?? index}-${index}`,
         time: taskLogTime(item),
         level: (stream === 'stderr' && item.message ? 'error' : 'info') as RequirementExecutionLog['level'],
-        message: labels[stream] || 'Claude 交互',
+        message: labels[stream] || 'Agent 交互',
         detail: item.message || '',
         stream,
         isDebug: true,
@@ -223,7 +223,7 @@ export function RequirementReviewPage({ apiDocs, onNotice }: RequirementReviewPa
             <div className="surface-heading">
               <div>
                 <Typography.Title level={5}>评审输入</Typography.Title>
-                <Typography.Text type="secondary">选择接口文档并输入待评审需求。</Typography.Text>
+                <Typography.Text type="secondary">检查需求目标、核心业务口径及数据来源是否存在阻断问题。</Typography.Text>
               </div>
               <Button size="small" danger disabled={loading} onClick={clearPage}>清空</Button>
             </div>
@@ -232,7 +232,7 @@ export function RequirementReviewPage({ apiDocs, onNotice }: RequirementReviewPa
                 <Select disabled={loading} mode="multiple" showSearch optionFilterProp="label" placeholder="搜索并选择接口文档" options={apiDocs.map((item) => ({ label: `${item.name}${item.category ? ` · ${item.category}` : ''}`, value: item.name }))} />
               </Form.Item>
               <Form.Item name="requirement" label="需求内容" rules={[{ required: true, whitespace: true, message: '请输入需求内容' }]}>
-                <Input.TextArea disabled={loading} rows={9} showCount maxLength={50000} placeholder="输入完整需求内容，包括业务口径、字段使用、枚举含义、边界条件和异常处理要求" />
+                <Input.TextArea disabled={loading} rows={9} showCount maxLength={50000} placeholder="输入需求目标、核心加工对象、统计范围和主要判断规则；实现细节可由后续标准生成阶段补充" />
               </Form.Item>
               <div className="single-primary-actions">
                 <Button size="large" type="primary" loading={loading && !stopping} disabled={stopping} onClick={() => void startReview()}>{loading ? '评审中...' : '开始评审'}</Button>

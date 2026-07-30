@@ -1,75 +1,55 @@
 {
   "schema": "risk_requirement_review_spec_v1",
-  "spec_version": "1.2.0",
+  "spec_version": "1.3.0",
   "conclusions": ["✅ 通过", "❌ 不通过，需修改"],
   "decision_policy": {
-    "pass": "需求不存在影响实现或验收结果的歧义，且需求引用的关键接口事实均能由指定接口文档证明并保持一致。",
-    "fail": "存在任一影响实现或验收结果的问题，或关键接口事实缺少指定接口文档证据。"
+    "pass": "需求的加工目标可以识别，核心业务口径不存在必须由需求提出方确认的歧义或冲突，且指定接口具备实现目标所需的核心数据。",
+    "fail": "仅当加工目标无法识别、核心业务口径必须由需求提出方确认，或指定接口缺少实现目标所需的核心数据时判定不通过。"
+  },
+  "review_scope": {
+    "stage": "requirement_admission",
+    "stage_description": "本阶段只判断需求是否具备进入标准加工规范生成阶段的基础，不要求需求达到可直接开发或测试的详细程度。",
+    "blocking_principle": "只有无法通过接口文档或后续规范化处理解决、必须返回需求提出方确认的问题才构成阻断。",
+    "non_blocking_missing_details": [
+      "默认值",
+      "输出类型",
+      "精度与舍入",
+      "一般边界处理",
+      "异常与空值处理",
+      "日期换算细节",
+      "排序与去重方式",
+      "分页、超时与重试",
+      "验收案例"
+    ]
   },
   "interface_document_policy": {
     "default_role": "input_data_contract",
-    "default_role_description": "指定接口文档默认是需求输入信息的数据契约，用于核验字段名称、层级、类型、格式、枚举、单位、空值和业务含义。",
+    "default_role_description": "指定接口文档默认是需求输入信息的数据契约，用于确认实现需求目标所需的核心字段是否存在、业务含义是否匹配。",
     "invocation_evidence": "只有需求正文明确要求系统主动调用、请求或查询指定接口，才将该文档视为调用契约。",
     "forbid_inferred_invocation": true
   },
   "issue_types": [
     {
-      "id": "definition_missing",
-      "name": "关键定义缺失",
-      "check": "关键业务概念、对象或结果含义是否有确定定义。"
+      "id": "processing_goal_unclear",
+      "name": "加工目标不明确",
+      "check": "是否无法识别需求最终要计算、筛选、判断或输出什么。仅缺少实现细节时不得命中。"
     },
     {
-      "id": "scope_ambiguous",
-      "name": "范围不明确",
-      "check": "适用对象、数据范围、统计范围和排除范围是否明确。"
+      "id": "core_business_rule_ambiguous_or_conflicting",
+      "name": "核心业务口径不明确或冲突",
+      "check": "会改变需求本意的加工范围、对象、统计指标、计算方式或记录选择方式是否存在歧义或冲突，并且必须由需求提出方确认。普通边界、精度、默认值、异常处理和实现方式缺失不得单独命中。"
     },
     {
-      "id": "boundary_ambiguous",
-      "name": "边界不明确",
-      "check": "时间、数值、条件和包含关系的边界是否明确。"
-    },
-    {
-      "id": "condition_conflict",
-      "name": "条件冲突",
-      "check": "需求内部的条件、分支、优先级和结果是否存在冲突。"
-    },
-    {
-      "id": "field_missing",
-      "name": "接口字段不存在",
-      "check": "需求引用的字段是否存在于指定接口文档，且字段层级和所属接口是否正确。"
-    },
-    {
-      "id": "field_contract_conflict",
-      "name": "字段契约冲突",
-      "check": "字段类型、格式、单位、是否可空和数据结构是否支持需求中的使用方式。"
-    },
-    {
-      "id": "enum_conflict",
-      "name": "枚举或码值冲突",
-      "check": "需求使用的枚举、状态、返回码及其业务含义是否与指定接口文档一致。"
-    },
-    {
-      "id": "interface_capability_missing",
-      "name": "接口调用能力不足",
-      "applicable_when": "需求正文明确要求系统主动调用、请求或查询指定接口。",
-      "check": "在适用时，检查请求参数、查询范围、分页、排序和返回内容是否足以支持需求。接口文档仅作为输入数据契约时，不执行本检查，不得因缺少请求参数、服务端筛选、分页或排序定义判定不通过。"
-    },
-    {
-      "id": "exception_missing",
-      "name": "异常处理缺失",
-      "check": "检查输入字段为空、无记录、无效值和业务错误的处理方式是否明确。只有需求明确要求主动调用接口时，才检查接口失败、超时等调用异常。"
-    },
-    {
-      "id": "acceptance_missing",
-      "name": "验收条件缺失",
-      "check": "需求是否足以构造确定的正常、边界和异常验收案例。"
+      "id": "core_data_unsupported",
+      "name": "核心数据不支持",
+      "check": "需求依赖的关键字段是否不存在、业务含义是否明显不符，或指定接口是否缺少完成核心目标所需的数据。字段类型、格式、枚举、单位或空值定义不完整，只有导致核心目标无法实现时才命中。"
     }
   ],
   "evidence_policy": {
     "require_requirement_quote": true,
     "require_interface_evidence_for_interface_claims": true,
-    "missing_evidence_is_failure": true,
-    "missing_evidence_scope": "仅限需求实际引用或依赖的接口事实；不得将需求未声明的接口调用能力视为缺少证据。",
+    "missing_evidence_is_failure": false,
+    "missing_evidence_scope": "缺少接口证据本身不直接判定不通过；只有无法证明核心数据存在并支持需求目标时，才按核心数据不支持处理。不得将需求未声明的接口调用能力视为缺少证据。",
     "forbid_invented_interface_facts": true
   },
   "required_headings": ["总体结论", "问题清单"]

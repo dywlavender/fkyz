@@ -77,7 +77,7 @@ const items: MenuProps['items'] = [
 
 const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
   'single-review': { title: '评审中心', subtitle: '提交加工逻辑并获得确定的评审结论' },
-  'requirement-review': { title: '需求评审', subtitle: '依据指定接口文档检查需求是否准确、完整且可验收' },
+  'requirement-review': { title: '需求评审', subtitle: '检查需求目标、核心业务口径及数据来源是否存在阻断问题' },
   'batch-review': { title: '批量评审', subtitle: '批量导入、并发执行与结果回收' },
   'scheduled-tasks': { title: '定时评审', subtitle: '维护周期性任务与最近运行状态' },
   'validation-set': { title: '验证历史记录', subtitle: '查看验证批次、预期一致率与案例执行明细' },

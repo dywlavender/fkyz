@@ -560,6 +560,27 @@ export interface SystemHealth {
     mock_mode?: boolean
     note?: string
   }
+  modelRuntime?: {
+    selectedBackend?: 'claude' | 'agent'
+    selectedAvailable?: boolean
+    claude?: {
+      available?: boolean
+      command?: string
+      claude_path?: string | null
+      version?: string | null
+      note?: string
+    }
+    agent?: {
+      available?: boolean
+      python?: string
+      environment_available?: boolean
+      provider?: string
+      model?: string
+      api_key_configured?: boolean
+      langchain_version?: string | null
+      note?: string
+    }
+  }
   outputs?: {
     path?: string
     exists?: boolean
@@ -579,6 +600,7 @@ export interface RuntimeSettings {
   globalConcurrency: number
   batchConcurrency: number
   scheduledConcurrency: number
+  modelBackend: 'claude' | 'agent'
 }
 
 export interface AppNotice {

@@ -54,7 +54,7 @@ fi
 if [ -n "${RISK_REVIEW_CLAUDE_CMD:-}" ]; then
     echo "✓ Claude 命令: ${RISK_REVIEW_CLAUDE_CMD}"
 else
-    echo "⚠ 未找到 claude/claude.cmd；可设置 RISK_REVIEW_CLAUDE_CMD 后再启动"
+    echo "⚠ 当前 shell 未找到 claude/claude.cmd；如选择 Claude 后端，请在环境变量或项目 .env 中配置 RISK_REVIEW_CLAUDE_CMD"
 fi
 
 if command -v python >/dev/null 2>&1; then

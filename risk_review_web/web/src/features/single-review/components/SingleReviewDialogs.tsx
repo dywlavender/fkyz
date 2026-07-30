@@ -68,7 +68,7 @@ export function ExecutionLogModal({ active, open, logs, onClose }: { active: boo
     <Modal title="执行日志" open={active && open} maskClosable={false} width="min(960px, 92vw)" footer={null} onCancel={onClose}>
       <Tabs size="small" items={[
         { key: 'runtime', label: `运行日志（${runtimeLogs.length}）`, children: <div className="execution-log-modal-body"><ExecutionTimeline items={runtimeLogs} /></div> },
-        { key: 'debug', label: `Claude 输入/输出（${debugLogs.length}）`, children: <div className="execution-log-modal-body"><ExecutionTimeline items={debugLogs} /></div> },
+        { key: 'debug', label: `模型输入/输出/工具调用（${debugLogs.length}）`, children: <div className="execution-log-modal-body"><ExecutionTimeline items={debugLogs} /></div> },
       ]} />
     </Modal>
   )

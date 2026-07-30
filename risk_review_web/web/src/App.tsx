@@ -23,8 +23,10 @@ function detectMockMode(health?: SystemHealth | null) {
   return Boolean(health?.claude?.mock_mode)
 }
 
-function detectClaudeReady(health?: SystemHealth | null) {
-  return Boolean(health?.claude?.claude_path) || Boolean(health?.claude?.mock_mode)
+function detectModelReady(health?: SystemHealth | null) {
+  if (health?.claude?.mock_mode) return true
+  if (health?.modelRuntime) return Boolean(health.modelRuntime.selectedAvailable)
+  return Boolean(health?.claude?.claude_path)
 }
 
 function KeptPage({ active, children }: { active: boolean; children: ReactNode }) {
@@ -86,7 +88,7 @@ export default function App() {
   const [messageApi, contextHolder] = message.useMessage()
 
   const mockMode = useMemo(() => detectMockMode(health), [health])
-  const claudeReady = useMemo(() => detectClaudeReady(health), [health])
+  const modelReady = useMemo(() => detectModelReady(health), [health])
   const activeTaskCount = tasks.filter((task) => ['queued', 'running', 'cancelling'].includes(String(task.status || ''))).length
 
   const navigate = useCallback((target: PageKey, replace = false) => {
@@ -254,7 +256,11 @@ export default function App() {
 
         {keep('settings') ? (
           <KeptPage active={page === 'settings'}>
-            <Settings health={health} onNotice={handleNotice} />
+            <Settings
+              health={health}
+              onNotice={handleNotice}
+              onSettingsChanged={async () => setHealth(await fetchHealth())}
+            />
           </KeptPage>
         ) : null}
 
@@ -281,7 +287,7 @@ export default function App() {
           page={page}
           onNavigate={navigate}
           mockMode={mockMode}
-          claudeReady={claudeReady}
+          modelReady={modelReady}
           pool={pool}
           activeTaskCount={activeTaskCount}
           onOpenTaskCenter={() => setTaskCenterOpen(true)}

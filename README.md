@@ -1,6 +1,6 @@
 # 风控 AI 评审平台（Risk Review Web）
 
-基于 Claude Code 的风控因子加工逻辑评审平台。输入需求与接口文档后，Phase 1 生成唯一的「标准加工规范」，Phase 2 将待评审加工逻辑与该标准进行结果语义比较，输出通过、不通过或无法评审。
+支持 Claude Code CLI 与 LangChain Agent 双运行后端的风控因子加工逻辑评审平台。输入需求与接口文档后，Phase 1 生成唯一的「标准加工规范」，Phase 2 将待评审加工逻辑与该标准进行结果语义比较，输出通过、不通过或无法评审。
 
 > 本仓库根目录同时是「知识库」工作区，但 `risk_review_web/` 属于风控评审平台代码，不参与知识库的 INGEST / QUERY / LINT / REFLECT / MERGE 流程。详见 `AGENTS.md`。
 
@@ -51,6 +51,7 @@
 
 - Python 3（`python` 或 `python3`）
 - Claude Code CLI（`claude` 或 `claude.cmd`）—— Phase 1 / Phase 2 实际调用
+- 使用 Agent 时需要 conda 环境 `langchain1.2`（默认 Python 路径 `/opt/miniconda3/envs/langchain1.2/bin/python`）及对应模型 API 凭据
 - macOS / Linux / Git Bash（Windows）
 
 ### 2. 启动服务
@@ -76,7 +77,13 @@
 RISK_REVIEW_MOCK=1 ./start_v2.sh
 ```
 
-用于前端联调与冒烟测试，不实际调用 Claude。
+用于前端联调与冒烟测试，不实际调用模型。
+
+### 4. 模型运行后端
+
+复制 `.env.example` 为 `.env`，配置 Claude CLI 和 Agent 使用的模型。系统首次默认使用 Claude；启动后可在“系统管理 → 运行设置”切换 `Claude CLI` 或 `LangChain Agent`。切换只影响新任务，不修改标准缓存键、元数据或已有产物，因此相同业务输入仍会命中既有缓存。
+
+Agent 的最终响应正文直接作为 Markdown 结果交给现有校验与落盘链路；中间模型输入、模型输出、工具调用和工具结果写入每日运行日志，不混入业务结果。
 
 ## 配置项
 
@@ -87,15 +94,18 @@ RISK_REVIEW_MOCK=1 ./start_v2.sh
 | `RISK_REVIEW_CLAUDE_CMD` | `claude` / `claude.cmd` | Claude CLI 命令 |
 | `RISK_REVIEW_CLAUDE_TIMEOUT` | `600` | Claude 调用超时（秒） |
 | `RISK_REVIEW_REQUIRE_CLAUDE_HEALTH` | — | 设为 `1` 启动时检查 Claude 可用性 |
-| `RISK_REVIEW_GLOBAL_CONCURRENCY` | `3` | 单后端进程内全局 Claude 任务并发上限 |
+| `RISK_REVIEW_AGENT_PYTHON` | `/opt/miniconda3/envs/langchain1.2/bin/python` | Agent Worker Python |
+| `RISK_REVIEW_AGENT_PROVIDER` | `anthropic` | `anthropic` 或 OpenAI 兼容 Provider |
+| `RISK_REVIEW_AGENT_MODEL` | — | Agent 模型名（在 `.env` 中配置） |
+| `RISK_REVIEW_GLOBAL_CONCURRENCY` | `3` | 单后端进程内全局模型任务并发上限 |
 
 ## 数据流
 
 ```
-用户输入 → 前端验证 → 后端 API → Claude Code → 结果返回 → 前端渲染
+用户输入 → 前端验证 → 后端 API → 运行设置选择 Claude/Agent → 结果返回 → 前端渲染
 ```
 
-- **Phase 1**：`POST /api/review/phase1` → 在临时只读隔离目录中提供 Phase 1 Skill、Phase 1 开发规范、指定接口文档和公共业务规则 → 调用 `claude -p` → 写入标准 Markdown 与 `.metadata.json`。
+- **Phase 1**：`POST /api/review/phase1` → 在临时只读隔离目录中提供 Phase 1 Skill、Phase 1 开发规范、指定接口文档和公共业务规则 → 调用所选模型后端 → 写入标准 Markdown 与 `.metadata.json`。
 - **Phase 2**：`POST /api/review/phase2` → 在独立只读隔离目录中提供 Phase 2 Skill 和 Phase 2 评审规范，并通过 Prompt 提供冻结标准、原始需求和待评审逻辑 → 返回仅含总体结论和问题清单的 Markdown 报告。
 - **一键评审**：前端 `runFullReview()` 顺序调用 Phase 1 → Phase 2。
 
@@ -105,7 +115,7 @@ RISK_REVIEW_MOCK=1 ./start_v2.sh
 
 ## 开发约定
 
-- **Claude 调用契约**（见 `CLAUDE.md`）：Claude 只根据 Prompt 输出 Markdown 正文，**不得自行创建 / 修改 / 删除任何文件**；所有文件落盘由 Python 后端统一完成。
+- **模型调用契约**：Claude 或 Agent 的最终结果都是 Markdown 正文，**不得自行创建 / 修改 / 删除任何文件**；所有文件落盘由 Python 后端统一完成。Claude 细节见 `CLAUDE.md`。
 - **输出目录**：运行产物统一写入项目根目录 `outputs/`，不要写入 `wiki/outputs/`。
 - **后端入口**：`risk_review_web/server_v2.py`；**React 前端**：`risk_review_web/web/src/`；**原有功能台**：`static/index.html` / `static/app.js`。
 - **修改后至少执行**：Python 语法检查、前端 JS 语法检查、Mock 模式 Phase 1 / Phase 2 冒烟；如涉及验证集再跑一条回归验证。

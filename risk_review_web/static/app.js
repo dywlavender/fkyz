@@ -864,7 +864,7 @@ async function stopRegressionValidation() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "停止回归验证失败");
     state.stopRegressionPending = false;
-    setExampleStatus("已请求停止，正在中止当前 Claude 调用并停止后续执行。", "info");
+    setExampleStatus("已请求停止，正在中止当前模型调用并停止后续执行。", "info");
     addLog("已请求停止一键回归验证", "info");
   } catch (err) {
     if ($("#stopRegressionBtn")) {
@@ -1299,7 +1299,7 @@ async function stopCurrentReview() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "停止评审失败");
     state.stopReviewPending = false;
-    addLog("已请求停止当前评审，正在中止 Claude 调用", "info");
+    addLog("已请求停止当前评审，正在中止模型调用", "info");
   } catch (err) {
     state.stopReviewPending = false;
     setStopReviewVisible(true);

@@ -61,7 +61,7 @@ def handle_get(
     if path in ("/api/health", "/api/self-check"):
         json_response(handler, 200, system_health())
         return True
-    if path == "/api/claude-test":
+    if path in {"/api/model-test", "/api/claude-test"}:
         json_response(handler, 200, claude_test())
         return True
     return False

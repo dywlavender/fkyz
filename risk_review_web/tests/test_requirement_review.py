@@ -26,21 +26,29 @@ VALID_REPORT = """# 需求评审报告
 
 | 序号 | 核心问题 | 需求原文 | 修改建议 |
 |---|---|---|---|
-| 1 | 字段枚举与接口文档不一致 | “状态为 3” | 按接口文档修正枚举 |
+| 1 | 加工目标不明确 | “统计企业近期情况” | 明确需要统计的具体指标 |
 """
 
 
 class RequirementReviewArtifactTest(unittest.TestCase):
-    def test_spec_treats_api_document_as_input_contract_by_default(self):
+    def test_spec_only_blocks_requirement_admission_issues(self):
         spec = json.loads(REQUIREMENT_REVIEW_SPEC_PATH.read_text(encoding="utf-8"))
         policy = spec["interface_document_policy"]
         self.assertEqual(policy["default_role"], "input_data_contract")
         self.assertTrue(policy["forbid_inferred_invocation"])
-        capability_rule = next(
-            item for item in spec["issue_types"] if item["id"] == "interface_capability_missing"
+        self.assertEqual(
+            {item["id"] for item in spec["issue_types"]},
+            {
+                "processing_goal_unclear",
+                "core_business_rule_ambiguous_or_conflicting",
+                "core_data_unsupported",
+            },
         )
-        self.assertIn("明确要求系统主动调用", capability_rule["applicable_when"])
-        self.assertIn("不得因缺少请求参数", capability_rule["check"])
+        scope = spec["review_scope"]
+        self.assertEqual(scope["stage"], "requirement_admission")
+        self.assertIn("默认值", scope["non_blocking_missing_details"])
+        self.assertIn("验收案例", scope["non_blocking_missing_details"])
+        self.assertFalse(spec["evidence_policy"]["missing_evidence_is_failure"])
 
     def test_accepts_complete_report_and_extracts_binary_conclusion(self):
         validate_requirement_review_basic_output(VALID_REPORT)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -9,6 +11,20 @@ from risk_review_web.services.runtime_logging import DailyRuntimeLogger
 
 
 class DailyRuntimeLoggerTest(unittest.TestCase):
+    def test_can_flush_each_record_to_console_immediately(self):
+        with tempfile.TemporaryDirectory(prefix="risk-runtime-console-") as temp_dir:
+            logger = DailyRuntimeLogger(Path(temp_dir), retention_days=10)
+            console = io.StringIO()
+            with contextlib.redirect_stdout(console):
+                logger.write(
+                    level="INFO",
+                    module="agent",
+                    event="model_agent_tool_result",
+                    message="工具执行完成",
+                    mirror_to_console=True,
+                )
+                self.assertIn("工具执行完成", console.getvalue())
+
     def test_writes_one_daily_file_with_trace_and_single_line_message(self):
         with tempfile.TemporaryDirectory(prefix="risk-runtime-log-") as temp_dir:
             logger = DailyRuntimeLogger(Path(temp_dir), retention_days=10)

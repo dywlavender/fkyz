@@ -27,6 +27,7 @@ risk_review_web/.local/
 # Secrets
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 *.token

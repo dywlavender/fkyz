@@ -1,5 +1,6 @@
 {
   "globalConcurrency": 3,
   "batchConcurrency": 3,
-  "scheduledConcurrency": 3
+  "scheduledConcurrency": 3,
+  "modelBackend": "claude"
 }

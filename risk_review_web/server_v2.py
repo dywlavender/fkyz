@@ -21,6 +21,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from risk_review_web.environment import load_project_env
+
+load_project_env()
+
 from risk_review_web.artifacts import (
     STANDARD_SCHEMA_VERSION,
     compute_phase1_checksum,
@@ -126,6 +130,7 @@ from risk_review_web.services.requirement_review import (
     selected_api_documents,
 )
 from risk_review_web.services.runtime_logging import new_trace_id, runtime_log
+from risk_review_web.services.model_runtime import agent_health, run_agent_process
 
 TASKS = {}
 TASK_LOCK = threading.Lock()
@@ -577,7 +582,7 @@ def task_log(task_id: str, message: str):
 
 
 def task_debug_log(task_id: str, stream: str, message: str, *, memory: bool = True):
-    """Append Claude stdin/stdout in memory and to the same daily log file."""
+    """Append model interaction data in memory and to the same daily log file."""
     with TASK_LOCK:
         task = TASKS.get(task_id)
         if not task:
@@ -591,12 +596,12 @@ def task_debug_log(task_id: str, stream: str, message: str, *, memory: bool = Tr
             task["updated"] = time.time()
         trace_id = str(task.get("traceId") or "")
         task_type = str(task.get("taskType") or "task")
-    stream_name = str(stream or "claude_io").lower()
+    stream_name = str(stream or "model_io").lower()
     runtime_log(
         task_type,
         str(message or ""),
         level="ERROR" if stream_name == "stderr" and str(message or "").strip() else "INFO",
-        event=f"claude_{stream_name}",
+        event=f"model_{stream_name}",
         trace_id=trace_id,
         task_id=task_id,
     )
@@ -722,7 +727,7 @@ def request_task_cancel(task_id: str) -> bool:
     if task:
         task_log(
             task_id,
-            f"已请求停止任务：取消 {len(cancelled_pool_jobs) + int(queued_single_cancelled)} 个排队作业，并中止正在执行的 Claude 调用",
+            f"已请求停止任务：取消 {len(cancelled_pool_jobs) + int(queued_single_cancelled)} 个排队作业，并中止正在执行的模型调用",
         )
     return True
 
@@ -749,6 +754,36 @@ def claude_health():
     except Exception as exc:
         info["note"] = f"{command} --version failed: {exc}"
     return info
+
+
+def model_backend_for_task(task_id: str) -> str:
+    """Return the backend snapshot captured when the task was created."""
+    with TASK_LOCK:
+        configured = str((TASKS.get(task_id) or {}).get("modelBackend") or "")
+    if configured in {"claude", "agent"}:
+        return configured
+    return str(get_runtime_settings().get("modelBackend") or "claude")
+
+
+def model_runtime_health() -> dict:
+    """Report both runtimes while making only the selected one health-critical."""
+    settings = get_runtime_settings()
+    selected = str(settings.get("modelBackend") or "claude")
+    claude = claude_health()
+    agent = agent_health()
+    claude_available = bool(claude.get("claude_path"))
+    agent_available = bool(
+        agent.get("environment_available")
+        and agent.get("langchain_version")
+        and agent.get("model")
+        and agent.get("api_key_configured")
+    )
+    return {
+        "selectedBackend": selected,
+        "selectedAvailable": claude_available if selected == "claude" else agent_available,
+        "claude": {**claude, "available": claude_available},
+        "agent": {**agent, "available": agent_available},
+    }
 
 
 def file_health(path: Path) -> dict:
@@ -816,11 +851,13 @@ def system_health() -> dict:
         BUSINESS_RULES_PATH,
     ]
     files = {path.relative_to(ROOT).as_posix(): file_health(path) for path in required}
-    claude = claude_health()
+    model_runtime = model_runtime_health()
+    claude = model_runtime["claude"]
     checks = {
         "required_files": all(item["exists"] for item in files.values()),
         "outputs_writable": outputs_health()["writable"],
-        "claude_available": bool(claude.get("claude_path")) or os.environ.get("RISK_REVIEW_MOCK") == "1",
+        "model_available": bool(model_runtime.get("selectedAvailable"))
+        or os.environ.get("RISK_REVIEW_MOCK") == "1",
         "api_docs_loaded": api_docs_health()["count"] > 0,
     }
     return {
@@ -831,6 +868,7 @@ def system_health() -> dict:
         "working_dir": str(ROOT),
         "mock_mode": os.environ.get("RISK_REVIEW_MOCK") == "1",
         "claude": claude,
+        "modelRuntime": model_runtime,
         "files": files,
         "outputs": outputs_health(),
         "api_docs": api_docs_health(),
@@ -878,6 +916,34 @@ def test_claude_print():
         }
 
 
+def test_model_runtime():
+    """Test the currently selected model backend without creating business artifacts."""
+    if str(get_runtime_settings().get("modelBackend") or "claude") == "claude":
+        return {**test_claude_print(), "backend": "claude"}
+    started = time.time()
+    with tempfile.TemporaryDirectory(prefix="risk-review-agent-test-") as workspace:
+        process_holder: dict[str, subprocess.Popen[str]] = {}
+
+        def terminate() -> None:
+            proc = process_holder.get("proc")
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+
+        status, result = run_agent_process(
+            prompt="只回复 OK",
+            phase_label="Model Test",
+            workspace=Path(workspace),
+            timeout_seconds=int(os.environ.get("RISK_REVIEW_AGENT_TEST_TIMEOUT", "30")),
+            process_started=lambda proc: process_holder.__setitem__("proc", proc),
+            terminate=terminate,
+            cancelled=lambda: False,
+        )
+    return {
+        "ok": status == "done" and str(result.get("content") or "").strip() == "OK",
+        "backend": "agent",
+        "seconds": round(time.time() - started, 2),
+        **result,
+    }
 def build_prompt_phase1(payload: dict) -> str:
     """Build prompt for Phase 1 only (standard spec, no draft)."""
     requirement = (payload.get("requirement") or "").strip()
@@ -1098,6 +1164,80 @@ def run_claude_prompt(
             RUNNING_PROCS.pop(task_id, None)
 
 
+def run_agent_prompt(
+    task_id: str,
+    phase_label: str,
+    prompt: str,
+    *,
+    isolated_workspace: Path | None = None,
+) -> tuple[str, dict]:
+    """Execute the LangChain agent in its dedicated Conda Python process."""
+    if isolated_workspace is None:
+        return "error", {
+            "stdout": "",
+            "stderr": "Agent 调用必须提供隔离工作目录。",
+            "returncode": 1,
+        }
+    workspace = isolated_workspace.resolve()
+    with TASK_LOCK:
+        debug_enabled = bool((TASKS.get(task_id) or {}).get("debug_claude"))
+    task_log(task_id, f"调用 LangChain Agent（{phase_label}）")
+    task_log(task_id, f"Prompt 字符数：{len(prompt)}")
+    task_debug_log(task_id, "prompt", prompt, memory=debug_enabled)
+
+    def process_started(proc: subprocess.Popen[str]) -> None:
+        with RUNNING_PROCS_LOCK:
+            RUNNING_PROCS[task_id] = proc
+
+    def agent_event(event: str, payload: object) -> None:
+        rendered = json.dumps(payload, ensure_ascii=False, default=str)
+        task_debug_log(task_id, f"agent_{event}", rendered, memory=debug_enabled)
+
+    try:
+        status, result = run_agent_process(
+            prompt=prompt,
+            phase_label=phase_label,
+            workspace=workspace,
+            timeout_seconds=int(os.environ.get("RISK_REVIEW_AGENT_TIMEOUT", "600")),
+            process_started=process_started,
+            terminate=lambda: terminate_task_process(task_id),
+            cancelled=lambda: task_cancel_requested(task_id),
+            event_callback=agent_event,
+        )
+        task_debug_log(task_id, "response", str(result.get("content") or ""), memory=debug_enabled)
+        task_debug_log(task_id, "stderr", str(result.get("stderr") or ""), memory=debug_enabled)
+        task_log(task_id, f"LangChain Agent 返回，状态：{status}")
+        return status, result
+    finally:
+        with RUNNING_PROCS_LOCK:
+            RUNNING_PROCS.pop(task_id, None)
+
+
+def run_model_prompt(
+    task_id: str,
+    phase_label: str,
+    prompt: str,
+    *,
+    isolated_workspace: Path | None = None,
+) -> tuple[str, dict]:
+    """Dispatch one prompt through the backend snapshot attached to the task."""
+    backend = model_backend_for_task(task_id)
+    task_log(task_id, f"本任务模型调用方式：{backend}")
+    if backend == "agent":
+        return run_agent_prompt(
+            task_id,
+            phase_label,
+            prompt,
+            isolated_workspace=isolated_workspace,
+        )
+    return run_claude_prompt(
+        task_id,
+        phase_label,
+        prompt,
+        isolated_workspace=isolated_workspace,
+    )
+
+
 def prepare_phase2_context(payload: dict) -> dict:
     """Load and sanitize the frozen Phase 1 standard required by Phase 2."""
     standard_text, std_path = read_phase1_standard(payload)
@@ -1117,6 +1257,13 @@ def prepare_phase2_context(payload: dict) -> dict:
     }
 
 
+def model_response_content(result: dict) -> str:
+    """Read normalized model content without conflating Agent responses with stdout."""
+    if "content" in result:
+        return str(result.get("content") or "")
+    return str(result.get("stdout") or "")
+
+
 def run_generation(
     *,
     task_id: str,
@@ -1131,7 +1278,7 @@ def run_generation(
         return "cancelled", {"stdout": "", "stderr": f"{phase_label} 已取消。", "returncode": 130}, raw_output
 
     task_log(task_id, f"{phase_label} 开始生成")
-    status, result = run_claude_prompt(
+    status, result = run_model_prompt(
         task_id,
         phase_label,
         prompt,
@@ -1140,7 +1287,7 @@ def run_generation(
     if status != "done":
         return status, result, raw_output
 
-    raw_output = (result.get("stdout") or "").strip()
+    raw_output = model_response_content(result).strip()
     if not raw_output:
         result.update({"stderr": empty_error, "returncode": 1})
         return "error", result, raw_output
@@ -1287,7 +1434,7 @@ def run_claude_phase1(payload: dict, task_id: str):
         status, result, raw_output = run_generation(
             task_id=task_id,
             phase_label="Phase 1",
-            empty_error="Claude 未输出 Phase 1 标准加工规范正文",
+            empty_error="模型未输出 Phase 1 标准加工规范正文",
             prompt=build_prompt_phase1(payload),
             isolated_workspace=isolated_workspace,
         )
@@ -1298,7 +1445,7 @@ def run_claude_phase1(payload: dict, task_id: str):
     if status == "done":
         if not raw_output:
             status = "error"
-            result.update({"stderr": "Claude 未输出 Phase 1 标准加工规范正文", "returncode": 1})
+            result.update({"stderr": "模型未输出 Phase 1 标准加工规范正文", "returncode": 1})
         else:
             factor_name = (payload.get("factorName") or "factor").strip()
             slug = re.sub(r'[^a-zA-Z0-9]', '-', factor_name.lower()).strip('-') or 'factor'
@@ -1378,7 +1525,7 @@ def run_claude_requirement_review(payload: dict, task_id: str):
             status, result, raw_output = run_generation(
                 task_id=task_id,
                 phase_label="需求评审",
-                empty_error="Claude 未输出需求评审报告正文",
+                empty_error="模型未输出需求评审报告正文",
                 prompt=build_prompt_requirement_review(payload),
                 isolated_workspace=isolated_workspace,
             )
@@ -1495,7 +1642,7 @@ def run_claude_phase2(payload: dict, task_id: str):
         status, result, raw_output = run_generation(
             task_id=task_id,
             phase_label="Phase 2",
-            empty_error="Claude 未输出 Phase 2 评审报告正文",
+            empty_error="模型未输出 Phase 2 评审报告正文",
             prompt=build_prompt_phase2(payload),
             isolated_workspace=isolated_workspace,
         )
@@ -1506,7 +1653,7 @@ def run_claude_phase2(payload: dict, task_id: str):
     if status == "done":
         if not raw_output:
             status = "error"
-            result.update({"stderr": "Claude 未输出 Phase 2 评审报告正文", "returncode": 1})
+            result.update({"stderr": "模型未输出 Phase 2 评审报告正文", "returncode": 1})
         else:
             try:
                 validate_phase2_review_basic_output(raw_output)
@@ -1718,7 +1865,7 @@ def run_regression_validation(payload: dict, task_id: str):
             task_log(task_id, f"验证完成：{example.get('title') or example.get('id')}（{'通过' if expected_ok else '未通过'}）")
         except Exception as exc:
             if task_cancel_requested(task_id):
-                item.update({"status": "skip", "raw": "已停止：当前 Claude 调用已中止", "reportPreview": "已停止：当前 Claude 调用已中止", "time": int(time.time() * 1000)})
+                item.update({"status": "skip", "raw": "已停止：当前模型调用已中止", "reportPreview": "已停止：当前模型调用已中止", "time": int(time.time() * 1000)})
                 upsert_validation_run({
                     "runId": run_id,
                     "status": "cancelled",
@@ -1919,7 +2066,7 @@ def run_direct_experiment_review(
             draft=str(example.get("draft") or example.get("reviewContent") or ""),
         )
         with tempfile.TemporaryDirectory(prefix="risk-review-direct-") as workspace:
-            status, result = run_claude_prompt(
+            status, result = run_model_prompt(
                 child_id,
                 "Direct Review",
                 prompt,
@@ -1931,7 +2078,7 @@ def run_direct_experiment_review(
         TASKS[child_id]["updated"] = time.time()
     if status != "done":
         raise RuntimeError(result.get("stderr") or "直接评审失败")
-    report = str(result.get("stdout") or "").strip()
+    report = model_response_content(result).strip()
     if not report.startswith("# 直接评审报告"):
         raise ValueError("直接评审输出格式错误：必须以“# 直接评审报告”开头")
     safe_case = re.sub(r"[^a-zA-Z0-9_-]", "-", str(example.get("id") or "case")).strip("-") or "case"
@@ -2117,8 +2264,12 @@ def create_task_record(
     context: dict | None = None,
 ):
     """Create the canonical in-memory task record shared by every submission path."""
+    default_model_backend = str(get_runtime_settings().get("modelBackend") or "claude")
     with TASK_LOCK:
         parent = TASKS.get(parent_task_id) if parent_task_id else None
+        model_backend = str((parent or {}).get("modelBackend") or "")
+        if model_backend not in {"claude", "agent"}:
+            model_backend = default_model_backend
         trace_id = str((parent or {}).get("traceId") or "")
         if not trace_id and parent_task_id:
             trace_id = f"tr_{hashlib.sha256(parent_task_id.encode('utf-8')).hexdigest()[:16]}"
@@ -2135,6 +2286,7 @@ def create_task_record(
             "parentTaskId": parent_task_id,
             "clientId": client_id,
             "groupConcurrency": group_concurrency,
+            "modelBackend": model_backend,
             "context": dict(context or {}),
             "status": "cancelled" if parent_cancelled else "queued",
             "cancel_requested": parent_cancelled,
@@ -2634,7 +2786,7 @@ class Handler(BaseHTTPRequestHandler):
             list_outputs=list_outputs,
             pool_snapshot=GLOBAL_TASK_POOL.snapshot,
             system_health=system_health,
-            claude_test=test_claude_print,
+            claude_test=test_model_runtime,
         ):
             return
         if static_routes.handle_get(self, path, STATIC_DIR, OUTPUTS_DIR):

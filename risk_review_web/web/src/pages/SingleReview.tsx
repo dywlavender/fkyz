@@ -276,16 +276,16 @@ export function SingleReview(props: SingleReviewProps) {
       .map((log, index) => {
         const stream = String(log.stream || '').toLowerCase()
         const labels: Record<string, string> = {
-          prompt: 'Claude 实际输入',
-          stdout: 'Claude 原始输出',
-          stderr: 'Claude 错误输出',
+          prompt: '模型实际输入',
+          stdout: '模型最终输出',
+          stderr: '模型错误输出',
         }
         return {
           id: taskLogId(taskId, phase, 'debug', index, log),
           time: taskLogTime(log),
           phase,
           level: (stream === 'stderr' && log.message ? 'error' : 'info') as ExecutionLogItem['level'],
-          message: labels[stream] || 'Claude 交互',
+          message: labels[stream] || 'Agent 交互',
           detail: log.message || '',
           stream,
           isDebug: true,

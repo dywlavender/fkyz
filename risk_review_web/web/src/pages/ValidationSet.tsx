@@ -510,7 +510,7 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
     if (!regressionTaskId || !regressionActive || regressionCancelling) return
     modal.confirm({
       title: '确认终止本次回归验证？',
-      content: '排队中的案例会被取消，正在运行的 Claude 调用会被终止，已完成结果仍会保留。',
+      content: '排队中的案例会被取消，正在运行的模型调用会被终止，已完成结果仍会保留。',
       okText: '终止执行',
       okButtonProps: { danger: true },
       cancelText: '继续执行',

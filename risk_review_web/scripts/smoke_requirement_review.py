@@ -43,7 +43,7 @@ def main() -> int:
                 base_url,
                 "/api/requirement-review",
                 {
-                    "requirement": "读取授信申请接口的申请时间，并校验字段和枚举口径。",
+                    "requirement": "统计申请时点前近12个月的企业采购金额总和。",
                     "apiNames": ["授信申请接口"],
                 },
             )

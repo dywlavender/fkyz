@@ -8,15 +8,23 @@
       "授信申请接口",
       "ES_医药企业药品采购信息查询接口"
     ],
-    "requirement": "1、按药品采购金额中发票加工逻辑\n2、选取开票日期kpyf大于等于【进件时点-12个月】，小于等于【进件时点】的采购金额加工，计算总和",
+    "requirement": "1、取药品采购信息接口中的开票月份、采购金额，授信申请接口中的授信申请进件时点，转为年-月\n2、选取开票日期kpyf大于等于【进件时点-12个月】，小于等于【进件时点】的采购金额加工，计算总和",
     "paramFields": "授信申请接口.applyTime\nES_医药企业药品采购信息查询接口.content[].kpyf\nES_医药企业药品采购信息查询接口.content[].inputAmount",
     "procLogic": "1. 取授信申请接口中的 applyTime 作为进件时点，将 applyTime 转换为yyyy-MM格式后作为 endMonth。按endMonth - 12 个月得到窗口起点。\n2. 遍历 ES 接口返回的 content 明细，列表不为空时，按 kpyf 过滤在窗口内的记录。要求 `窗口起点 <= kpyf <= endMonth ` 的记录\n3. 对保留记录的 inputAmount 求和。求和结果单位为元，保留原始 精度\n4. 无符合记录时或者列表为空返回0",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n授信申请接口.applyTime\nES_医药企业药品采购信息查询接口.content[].kpyf\nES_医药企业药品采购信息查询接口.content[].inputAmount\n\n【加工逻辑】\n1. 取授信申请接口中的 applyTime 作为进件时点，将 applyTime 转换为yyyy-MM格式后作为 endMonth。按endMonth - 12 个月得到窗口起点。\n2. 遍历 ES 接口返回的 content 明细，列表不为空时，按 kpyf 过滤在窗口内的记录。要求 `窗口起点 <= kpyf <= endMonth ` 的记录\n3. 对保留记录的 inputAmount 求和。求和结果单位为元，保留原始 精度\n4. 无符合记录时或者列表为空返回0\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`✅ 通过`",
+    "expected": "pass",
+    "expectedIssuePatterns": [],
+    "forbiddenIssuePatterns": [],
     "maxIssueCount": 0,
-    "version": "e4065c2ab72f",
-    "updatedAt": 1784474153
+    "version": "d16613a6b261",
+    "updatedAt": 1785430843,
+    "businessRuleIds": [],
+    "tags": [
+      "正向"
+    ],
+    "remark": "",
+    "createdAt": 1785430794
   },
   {
     "id": "case-02",

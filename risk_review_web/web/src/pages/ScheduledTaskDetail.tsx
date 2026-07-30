@@ -125,7 +125,7 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
     try {
       const run = await cancelScheduledRun(targetRun.runId)
       if (selectedRun?.runId === targetRun.runId) setSelectedRun(run)
-      onNotice({ type: 'warning', message: '已请求终止：排队项已取消，正在运行的 Claude 调用正在停止。' })
+      onNotice({ type: 'warning', message: '已请求终止：排队项已取消，正在运行的模型调用正在停止。' })
       await loadRuns()
     } catch (caught) {
       setCancellingRunId(undefined)
@@ -238,7 +238,7 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
           <Descriptions.Item label="任务名称">{task.taskName}</Descriptions.Item>
           <Descriptions.Item label="状态">{task.enabled ? '启用' : '停用'}</Descriptions.Item>
           <Descriptions.Item label="执行模式">{task.mode}</Descriptions.Item>
-          <Descriptions.Item label="运行模式">{task.runtimeMode}</Descriptions.Item>
+          <Descriptions.Item label="运行模式">{task.runtimeMode === 'mock' ? 'Mock' : '真实模型（按系统运行设置）'}</Descriptions.Item>
           <Descriptions.Item label="执行周期">{task.scheduleType}</Descriptions.Item>
           <Descriptions.Item label="失败策略">{task.failurePolicy}</Descriptions.Item>
           <Descriptions.Item label="下次执行时间">{formatDate(task.nextRunAt)}</Descriptions.Item>

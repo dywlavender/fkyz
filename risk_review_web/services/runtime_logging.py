@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 import threading
 import uuid
 from datetime import date, datetime, timedelta
@@ -44,6 +46,7 @@ class DailyRuntimeLogger:
         trace_id: str = "",
         task_id: str = "",
         timestamp: datetime | None = None,
+        mirror_to_console: bool = False,
     ) -> Path:
         """Write exactly one physical line and return the selected daily file."""
         occurred_at = timestamp or datetime.now().astimezone()
@@ -65,6 +68,9 @@ class DailyRuntimeLogger:
             self.log_dir.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as stream:
                 stream.write(line)
+            if mirror_to_console:
+                sys.stdout.write(line)
+                sys.stdout.flush()
             if self._last_cleanup_date != day:
                 self._cleanup_expired(day)
                 self._last_cleanup_date = day
@@ -106,6 +112,8 @@ def runtime_log(
             message=message,
             trace_id=trace_id,
             task_id=task_id,
+            mirror_to_console=os.environ.get("RISK_REVIEW_LOG_TO_CONSOLE", "").strip().lower()
+            in {"1", "true", "yes", "on"},
         )
     except OSError:
         return

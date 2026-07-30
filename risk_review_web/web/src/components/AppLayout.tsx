@@ -31,7 +31,7 @@ interface AppLayoutProps {
   page: PageKey
   onNavigate: (page: PageKey) => void
   mockMode?: boolean
-  claudeReady?: boolean
+  modelReady?: boolean
   headerActions?: ReactNode
   pool?: GlobalPoolStatus | null
   activeTaskCount?: number
@@ -130,7 +130,7 @@ export function AppLayout(props: AppLayoutProps) {
     page,
     onNavigate,
     mockMode,
-    claudeReady,
+    modelReady,
     pool,
     activeTaskCount = 0,
     onOpenTaskCenter,
@@ -199,7 +199,7 @@ export function AppLayout(props: AppLayoutProps) {
             </div>
             <div className="sider-status-row">
               <span>服务状态</span>
-              <Badge status={claudeReady ? 'success' : 'warning'} text={claudeReady ? '就绪' : '待检查'} />
+              <Badge status={modelReady ? 'success' : 'warning'} text={modelReady ? '就绪' : '待检查'} />
             </div>
             <div className="sider-status-divider" />
             <div

@@ -1,4 +1,5 @@
 import {
+  AuditOutlined,
   DatabaseOutlined,
   FileSearchOutlined,
   HistoryOutlined,
@@ -14,6 +15,7 @@ import type { GlobalPoolStatus } from '../types/review'
 
 export type PageKey =
   | 'single-review'
+  | 'requirement-review'
   | 'batch-review'
   | 'scheduled-tasks'
   | 'validation-set'
@@ -38,6 +40,7 @@ interface AppLayoutProps {
 }
 
 const items: MenuProps['items'] = [
+    { key: 'requirement-review', icon: <AuditOutlined />, label: '需求评审' },
   {
     key: 'review-root',
     icon: <FileSearchOutlined />,
@@ -74,6 +77,7 @@ const items: MenuProps['items'] = [
 
 const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
   'single-review': { title: '评审中心', subtitle: '提交加工逻辑并获得确定的评审结论' },
+  'requirement-review': { title: '需求评审', subtitle: '依据指定接口文档检查需求是否准确、完整且可验收' },
   'batch-review': { title: '批量评审', subtitle: '批量导入、并发执行与结果回收' },
   'scheduled-tasks': { title: '定时评审', subtitle: '维护周期性任务与最近运行状态' },
   'validation-set': { title: '验证历史记录', subtitle: '查看验证批次、预期一致率与案例执行明细' },
@@ -87,7 +91,7 @@ const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
 }
 
 const PAGE_KEYS: PageKey[] = [
-  'single-review', 'batch-review', 'scheduled-tasks',
+  'single-review', 'batch-review', 'scheduled-tasks', 'requirement-review',
   'validation-set', 'validation-cases', 'review-mode-experiment',
   'history', 'api-docs', 'development-spec', 'settings', 'legacy',
 ]

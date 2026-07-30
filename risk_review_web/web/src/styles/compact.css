@@ -1745,6 +1745,28 @@ body {
   padding: 20px;
 }
 
+.requirement-review-input-surface,
+.requirement-review-result-surface {
+  padding: 20px;
+}
+
+.requirement-review-result-content {
+  display: flex;
+  min-height: 360px;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.requirement-review-result-content > * {
+  width: 100%;
+}
+
+.requirement-review-result-content > .ant-spin {
+  width: auto;
+  margin-top: 120px;
+}
+
+
 .single-primary-actions {
   position: static;
   display: flex;

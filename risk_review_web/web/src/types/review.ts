@@ -82,7 +82,24 @@ export interface TaskRecord<T = unknown> {
     factorName?: string
     requirement?: string
     standardFileId?: string
+    apiNames?: string[]
   }
+}
+
+export interface RequirementReviewRequest {
+  requirement: string
+  apiNames: string[]
+  clientId?: string
+}
+
+export interface RequirementReviewResponse extends TaskErrorMetadata {
+  returncode?: number
+  stdout?: string
+  stderr?: string
+  reviewFileId?: string
+  reviewMetadataFileId?: string
+  conclusion?: 'pass' | 'fail' | string
+  success?: boolean
 }
 
 export interface GlobalPoolStatus {

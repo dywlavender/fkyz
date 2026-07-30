@@ -59,11 +59,13 @@ python3 risk_review_web/prompts/risk-review-skill/build/build_prompt.py
 
 - `data/examples.json`、`data/business_rules.json` 是需要版本管理的案例和公共规则。
 - 任务、评审记录、验证运行、定时任务和运行设置保存在 `risk_review_web/.local/state/`，不进入 Git。
+- 运行日志按日写入 `risk_review_web/.local/logs/application-YYYY-MM-DD.log`，同一任务及其子任务通过 `traceId` 串联，自动保留最近 10 个自然日。
 - 首次启动会从旧 `data/` 状态文件复制一次；之后只读写独立状态目录。
-- 测试可通过 `RISK_REVIEW_STATE_DIR`、`RISK_REVIEW_OUTPUTS_DIR` 使用临时目录，并以 `RISK_REVIEW_STATE_SEED=0` 禁用历史数据种子。
+- 测试可通过 `RISK_REVIEW_STATE_DIR`、`RISK_REVIEW_OUTPUTS_DIR`、`RISK_REVIEW_LOG_DIR` 使用临时目录，并以 `RISK_REVIEW_STATE_SEED=0` 禁用历史数据种子。
 
 ## 页面
 
+- 需求评审：选择一个或多个接口文档、输入需求并执行独立的单阶段评审；页面展示执行日志和完整 Markdown 报告，不维护需求评审历史列表
 - 工作台：今日评审指标和常用入口
 - 单因子评审：填写输入、一键或分阶段执行、查看标准加工规范和评审报告
 - 批量评审：模板下载、CSV/XLSX 导入、并发执行、任务恢复和历史记录
@@ -74,6 +76,8 @@ python3 risk_review_web/prompts/risk-review-skill/build/build_prompt.py
 - 原有功能台：保留渐进迁移期间尚未进入 React 页面的入口
 
 评审结果页面直接渲染评审 Markdown，不再维护旧式规则检查、步骤检查或 review JSON 展示。
+
+需求评审产物按任务保存到 `outputs/requirement_reviews/<taskId>/`。需求评审只允许输出“通过”或“不通过”，不会读取因子评审 Phase 1/Phase 2 的 Skill、规则或历史产物。
 
 ## 并发模型
 

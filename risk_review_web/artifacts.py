@@ -16,6 +16,10 @@ from .paths import (
     PHASE2_PROMPT_PATH,
     PHASE2_REVIEW_SPEC_PATH,
     PHASE2_SKILL_PATH,
+    REQUIREMENT_REVIEW_OUTPUTS_DIR,
+    REQUIREMENT_REVIEW_PROMPT_PATH,
+    REQUIREMENT_REVIEW_SKILL_PATH,
+    REQUIREMENT_REVIEW_SPEC_PATH,
 )
 from .utils import atomic_write_text, parse_frontmatter, read_text
 
@@ -27,6 +31,12 @@ STANDARD_REQUIRED_HEADINGS = (
     "标准加工逻辑",
     "默认值兜底",
 )
+REQUIREMENT_REVIEW_METADATA_SCHEMA_VERSION = "risk_requirement_review_metadata_v1"
+REQUIREMENT_REVIEW_REQUIRED_HEADINGS = (
+    "总体结论",
+    "问题清单",
+)
+REQUIREMENT_REVIEW_ISSUE_HEADERS = ("序号", "核心问题", "需求原文", "修改建议")
 
 
 def canonical_json_dumps(value) -> str:
@@ -142,7 +152,7 @@ def _processing_spec_fingerprint(path: Path) -> dict:
     spec_text = read_text(path)
     spec = json.loads(spec_text)
     return {
-        "schema_version": spec.get("schema_version", ""),
+        "schema_version": spec.get("schema_version") or spec.get("schema", ""),
         "spec_version": spec.get("spec_version", ""),
         "checksum": sha256_text(spec_text),
     }
@@ -196,6 +206,103 @@ def validate_phase2_review_basic_output(review_text: str) -> None:
     missing = [heading for heading in ("总体结论", "汇总问题清单") if heading not in sections]
     if missing:
         raise ValueError("Phase 2 评审报告缺少必要章节：" + "、".join(missing))
+
+
+def normalize_requirement_review_output(output_text: str) -> str:
+    """Extract the standalone requirement-review Markdown body."""
+    return normalize_markdown_document_body(
+        strip_yaml_frontmatter(output_text),
+        required_heading="# 需求评审报告",
+    )
+
+
+def requirement_review_conclusion(review_text: str) -> str:
+    """Extract the conclusion table and return a stable Chinese pass/fail value."""
+    section = extract_markdown_sections(review_text).get("总体结论", "")
+    values: list[str] = []
+    for table in extract_markdown_tables(section):
+        if table["headers"] != ["项目", "内容"]:
+            continue
+        values.extend(
+            str(row.get("内容") or "").strip()
+            for row in table["rows"]
+            if str(row.get("项目") or "").strip() == "总体结论"
+        )
+    if len(values) != 1:
+        raise ValueError("需求评审报告的总体结论表必须且只能包含一条「总体结论」。")
+    verdict = re.sub(r"\s+", " ", values[0]).strip()
+    if verdict == "✅ 通过":
+        return "通过"
+    if verdict == "❌ 不通过，需修改":
+        return "不通过"
+    raise ValueError("需求评审结论必须且只能是「✅ 通过」或「❌ 不通过，需修改」。")
+
+
+def validate_requirement_review_basic_output(review_text: str) -> None:
+    """Enforce the minimal standalone requirement-review Markdown contract."""
+    body = strip_yaml_frontmatter(review_text)
+    if not body.strip():
+        raise ValueError("Claude 未输出需求评审报告正文。")
+    if not re.match(r"#\s+需求评审报告\b", body.lstrip()):
+        raise ValueError("Claude 未输出完整需求评审报告，stdout 必须以「# 需求评审报告」开头。")
+    sections = extract_markdown_sections(body)
+    missing = [heading for heading in REQUIREMENT_REVIEW_REQUIRED_HEADINGS if heading not in sections]
+    if missing:
+        raise ValueError("需求评审报告缺少必要章节：" + "、".join(missing))
+    requirement_review_conclusion(body)
+    issue_tables = extract_markdown_tables(sections.get("问题清单", ""))
+    if not any(tuple(table["headers"]) == REQUIREMENT_REVIEW_ISSUE_HEADERS for table in issue_tables):
+        raise ValueError("需求评审报告的问题清单缺少规定的 Markdown 表格。")
+
+
+def save_requirement_review_artifacts(
+    *,
+    task_id: str,
+    review_text: str,
+    requirement: str,
+    api_documents: list[dict],
+    mock: bool = False,
+) -> dict:
+    """Validate and persist one requirement-review report in its own task directory."""
+    validate_requirement_review_basic_output(review_text)
+    safe_task_id = re.sub(r"[^a-zA-Z0-9._-]", "-", str(task_id or "")).strip("-.")
+    if not safe_task_id:
+        raise ValueError("需求评审任务 ID 无效。")
+    task_dir = REQUIREMENT_REVIEW_OUTPUTS_DIR / safe_task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    report_name = "requirement_review.md"
+    metadata_name = "requirement_review.metadata.json"
+    report_path = task_dir / report_name
+    metadata_path = task_dir / metadata_name
+    atomic_write_text(report_path, review_text.strip() + "\n")
+    metadata = {
+        "schema": REQUIREMENT_REVIEW_METADATA_SCHEMA_VERSION,
+        "taskId": task_id,
+        "conclusion": "pass" if requirement_review_conclusion(review_text) == "通过" else "fail",
+        "requirementContentHash": sha256_text(str(requirement or "").strip()),
+        "apiDocuments": [
+            {
+                "name": str(item.get("name") or ""),
+                "path": str(item.get("path") or ""),
+                "contentHash": str(item.get("content_sha256") or item.get("contentHash") or ""),
+            }
+            for item in api_documents
+        ],
+        "requirementReviewSpec": _processing_spec_fingerprint(REQUIREMENT_REVIEW_SPEC_PATH),
+        "generationContract": {
+            "promptChecksum": sha256_text(read_text(REQUIREMENT_REVIEW_PROMPT_PATH)),
+            "skillChecksum": sha256_text(read_text(REQUIREMENT_REVIEW_SKILL_PATH)),
+        },
+        "mock": bool(mock),
+        "generated": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "reportPath": f"requirement_reviews/{safe_task_id}/{report_name}",
+    }
+    atomic_write_text(metadata_path, json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
+    return {
+        "reviewFileId": f"requirement_reviews/{safe_task_id}/{report_name}",
+        "reviewMetadataFileId": f"requirement_reviews/{safe_task_id}/{metadata_name}",
+        "conclusion": metadata["conclusion"],
+    }
 
 
 def build_standard_metadata(standard_file_id: str, standard_text: str, payload: dict | None = None) -> dict:

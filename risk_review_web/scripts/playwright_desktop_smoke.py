@@ -86,6 +86,7 @@ def main() -> int:
             "RISK_REVIEW_MOCK": "1",
             "RISK_REVIEW_STATE_DIR": str(temp_root / "state"),
             "RISK_REVIEW_OUTPUTS_DIR": str(temp_root / "outputs"),
+            "RISK_REVIEW_LOG_DIR": str(temp_root / "logs"),
             "RISK_REVIEW_STATE_SEED": "0",
         }
         server = subprocess.Popen(
@@ -131,6 +132,24 @@ await page.getByRole('button', { name: '任务中心' }).click();
 const taskDialog = page.getByRole('dialog', { name: '任务中心' });
 await taskDialog.getByText(factorName, { exact: true }).first().waitFor();
 await taskDialog.getByRole('button', { name: 'Close' }).click();
+await page.getByRole('menuitem', { name: '需求评审' }).click();
+await page.getByRole('heading', { name: '需求评审', exact: true }).waitFor();
+const requirementApiSelect = page.locator('.requirement-review-page .ant-select-selector').first();
+await requirementApiSelect.click();
+await page.locator('.ant-select-dropdown:visible').getByTitle('授信申请接口 · 本系统接口').click();
+await page.locator('.requirement-review-page textarea').fill('读取授信申请接口的申请时间，并校验字段、枚举和异常处理口径。');
+const requirementPage = page.locator('.requirement-review-page');
+await requirementPage.getByRole('button', { name: '开始评审' }).click();
+await requirementPage.getByText('已完成', { exact: true }).waitFor({ timeout: 30000 });
+await requirementPage.getByRole('heading', { name: '需求评审报告' }).waitFor({ timeout: 30000 });
+await requirementPage.getByRole('heading', { name: '总体结论' }).waitFor();
+await requirementPage.getByRole('button', { name: '执行详情' }).click();
+const requirementLogDialog = page.getByRole('dialog', { name: '执行日志' });
+await requirementLogDialog.getByRole('tab', { name: /运行日志/ }).waitFor();
+await requirementLogDialog.getByText('需求评审', { exact: true }).first().waitFor();
+await requirementLogDialog.getByRole('tab', { name: /Claude 输入\/输出/ }).click();
+await requirementLogDialog.getByText('暂无执行日志。').waitFor();
+await requirementLogDialog.getByRole('button', { name: 'Close' }).click();
 await page.getByRole('menuitem', { name: /评审记录/ }).click();
 await page.getByRole('row', { name: new RegExp(factorName) }).first().waitFor({ timeout: 30000 });
 return { page: page.url(), factorName };

@@ -13,6 +13,7 @@ import { QualityValidation } from './pages/QualityValidation'
 import { ReviewModeExperimentPage } from './pages/ReviewModeExperiment'
 import { LegacyWorkbench } from './pages/LegacyWorkbench'
 import { DevelopmentSpec } from './pages/DevelopmentSpec'
+import { RequirementReviewPage } from './features/requirement-review'
 import { cancelTask, fetchApiDocs, fetchExamples, fetchGlobalPoolStatus, fetchHealth, fetchTasks } from './api/reviewApi'
 import type { ApiDocItem, AppNotice, ExampleItem, GlobalPoolStatus, ReviewHistoryRecord, SystemHealth, TaskRecord } from './types/review'
 import { ErrorState } from './components/ErrorState'
@@ -36,6 +37,7 @@ function KeptPage({ active, children }: { active: boolean; children: ReactNode }
 
 const PAGE_PATHS: Record<PageKey, string> = {
   'single-review': '/review/single',
+  'requirement-review': '/requirement-review',
   'batch-review': '/review/batch',
   'scheduled-tasks': '/review/scheduled',
   'validation-set': '/quality/runs',
@@ -53,6 +55,7 @@ function pageFromLocation(): PageKey {
   const exact = (Object.entries(PAGE_PATHS) as Array<[PageKey, string]>).find(([, value]) => value === path)
   if (exact) return exact[0]
   if (path.startsWith('/review/batch')) return 'batch-review'
+  if (path.startsWith('/requirement-review')) return 'requirement-review'
   if (path.startsWith('/review/scheduled')) return 'scheduled-tasks'
   if (path.startsWith('/quality/experiment')) return 'review-mode-experiment'
   if (path.startsWith('/quality/cases')) return 'validation-cases'
@@ -201,6 +204,12 @@ export default function App() {
           </KeptPage>
         ) : null}
 
+        {keep('requirement-review') ? (
+          <KeptPage active={page === 'requirement-review'}>
+            <RequirementReviewPage apiDocs={apiDocs} onNotice={handleNotice} />
+          </KeptPage>
+        ) : null}
+
         {keep('scheduled-tasks') ? (
           <KeptPage active={page === 'scheduled-tasks'}>
             <ScheduledTasks onNotice={handleNotice} />
@@ -291,6 +300,7 @@ export default function App() {
           onOpenTask={(task) => {
             setTaskCenterOpen(false)
             if (task.taskType === 'batch') navigate('batch-review')
+            else if (task.taskType === 'requirement-review') navigate('requirement-review')
             else if (task.taskType === 'regression') navigate('validation-set')
             else if (task.taskType === 'review-mode-experiment') navigate('review-mode-experiment')
             else navigate('history')

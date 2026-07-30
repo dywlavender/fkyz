@@ -55,7 +55,9 @@ def wait_for_server(base_url: str, process: subprocess.Popen[str], timeout: floa
             stdout, stderr = process.communicate(timeout=1)
             raise RuntimeError(f"Mock 服务启动失败。\nstdout:\n{stdout}\nstderr:\n{stderr}")
         try:
-            request_json(base_url, "/api/tasks")
+            health = request_json(base_url, "/api/health")
+            if not (health.get("checks") or {}).get("api_docs_loaded"):
+                raise RuntimeError(f"API 文档服务未正确装配：{health.get('api_docs') or health}")
             return
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             time.sleep(0.1)
@@ -206,6 +208,7 @@ def main() -> int:
             "RISK_REVIEW_MOCK": "1",
             "RISK_REVIEW_STATE_DIR": str(state_dir),
             "RISK_REVIEW_OUTPUTS_DIR": str(outputs_dir),
+            "RISK_REVIEW_LOG_DIR": str(temp_root / "logs"),
             "RISK_REVIEW_STATE_SEED": "0",
         }
         process = start_server(environment)

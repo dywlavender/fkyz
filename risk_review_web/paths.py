@@ -11,6 +11,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 RAW_API_DIR = ROOT / "raw" / "api"
 OUTPUTS_DIR = Path(os.environ.get("RISK_REVIEW_OUTPUTS_DIR") or ROOT / "outputs").expanduser()
+REQUIREMENT_REVIEW_OUTPUTS_DIR = OUTPUTS_DIR / "requirement_reviews"
 # 验证集可能位于 wiki/outputs/ 或 validation/outputs/；运行时按 glob 取最新一份，见 resolve_validation_set_path()。
 VALIDATION_SET_DIR_CANDIDATES = [
     ROOT / "wiki" / "outputs",
@@ -19,6 +20,7 @@ VALIDATION_SET_DIR_CANDIDATES = [
 VALIDATION_SET_GLOB = "*validation-set*.md"
 DATA_DIR = PACKAGE_DIR / "data"
 STATE_DIR = Path(os.environ.get("RISK_REVIEW_STATE_DIR") or PACKAGE_DIR / ".local" / "state").expanduser()
+LOG_DIR = Path(os.environ.get("RISK_REVIEW_LOG_DIR") or PACKAGE_DIR / "local" / "logs").expanduser()
 EXAMPLES_PATH = DATA_DIR / "examples.json"
 BUSINESS_RULES_PATH = DATA_DIR / "business_rules.json"
 VALIDATION_RUNS_PATH = STATE_DIR / "validation_runs.json"
@@ -39,6 +41,10 @@ RULE_ENGINE_BUILD_PATH = RISK_REVIEW_SKILL_DIR / "build" / "build_prompt.py"
 PHASE1_PROMPT_PATH = PROMPTS_DIR / "phase1.md"
 PHASE2_PROMPT_PATH = PROMPTS_DIR / "phase2.md"
 DIRECT_REVIEW_PROMPT_PATH = PROMPTS_DIR / "direct_review.md"
+REQUIREMENT_REVIEW_PROMPT_PATH = PROMPTS_DIR / "requirement_review.md"
+REQUIREMENT_REVIEW_SKILL_DIR = PROMPTS_DIR / "requirement-review-skill"
+REQUIREMENT_REVIEW_SKILL_PATH = REQUIREMENT_REVIEW_SKILL_DIR / "requirement_review.md"
+REQUIREMENT_REVIEW_SPEC_PATH = REQUIREMENT_REVIEW_SKILL_DIR / "spec" / "requirement_review_spec.json"
 
 
 def bootstrap_runtime_state() -> None:

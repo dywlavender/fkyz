@@ -17,6 +17,8 @@ import type {
   ReviewRecordPage,
   ReviewRecordQuery,
   ReviewModeExperiment,
+  RequirementReviewRequest,
+  RequirementReviewResponse,
   RuntimeSettings,
   ScheduledRun,
   ScheduledTask,
@@ -99,6 +101,14 @@ export async function runPhase1(payload: Phase1Request): Promise<{ taskId: strin
 
 export async function runPhase2(payload: Phase2Request): Promise<{ taskId: string; task: TaskRecord<Phase2Response> }> {
   return requestJson('/api/review/phase2', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, clientId: payload.clientId || getClientId() }),
+  })
+}
+
+export async function runRequirementReview(payload: RequirementReviewRequest): Promise<{ taskId: string; task: TaskRecord<RequirementReviewResponse> }> {
+  return requestJson('/api/requirement-review', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...payload, clientId: payload.clientId || getClientId() }),

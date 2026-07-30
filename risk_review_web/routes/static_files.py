@@ -54,7 +54,7 @@ def handle_get(handler, path: str, static_dir: Path, outputs_dir: Path) -> bool:
     if path.startswith("/outputs/"):
         serve_output(handler, outputs_dir, path[len("/outputs/"):])
         return True
-    if any(path.startswith(prefix) for prefix in ("/review/", "/quality/", "/records", "/system/")):
+    if any(path.startswith(prefix) for prefix in ("/review/", "/requirement-review", "/quality/", "/records", "/system/")):
         react_index = static_dir / "dist" / "index.html"
         serve_static(handler, static_dir, "dist/index.html" if react_index.exists() else "index.html")
         return True

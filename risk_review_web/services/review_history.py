@@ -214,7 +214,7 @@ def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict 
     if not include_active and not _is_terminal_status(status):
         return None
     task_type = str(task.get("taskType") or "")
-    if task_type in {"child", "scheduled-phase1", "scheduled-phase2"}:
+    if task_type in {"child", "scheduled-phase1", "scheduled-phase2", "requirement-review"}:
         return None
     result = task.get("result") or {}
     context = task.get("context") or {}
@@ -441,4 +441,3 @@ def _external_review_records() -> list[dict]:
             "items": items,
         })
     return records
-

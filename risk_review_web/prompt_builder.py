@@ -5,6 +5,9 @@ from .paths import (
     PHASE1_SKILL_PATH,
     PHASE2_PROMPT_PATH,
     DIRECT_REVIEW_PROMPT_PATH,
+    REQUIREMENT_REVIEW_PROMPT_PATH,
+    REQUIREMENT_REVIEW_SKILL_PATH,
+    REQUIREMENT_REVIEW_SPEC_PATH,
     PHASE2_SKILL_PATH,
     ROOT,
 )
@@ -74,5 +77,18 @@ def build_direct_review_prompt(*, requirement: str, draft: str) -> str:
         {
             "REQUIREMENT": requirement,
             "DRAFT": draft,
+        },
+    )
+
+
+def build_requirement_review_prompt(*, requirement: str, api_names: list[str]) -> str:
+    """Build the standalone requirement-review prompt from approved inputs."""
+    return render_template(
+        read_text(REQUIREMENT_REVIEW_PROMPT_PATH),
+        {
+            "REQUIREMENT_REVIEW_SKILL_PATH": rel(REQUIREMENT_REVIEW_SKILL_PATH),
+            "REQUIREMENT_REVIEW_SPEC_PATH": rel(REQUIREMENT_REVIEW_SPEC_PATH),
+            "REQUIREMENT": str(requirement or "").strip(),
+            "API_NAMES": "\n".join(f"- {name}" for name in api_names),
         },
     )

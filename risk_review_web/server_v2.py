@@ -33,7 +33,11 @@ from risk_review_web.artifacts import (
     strip_yaml_frontmatter,
     validate_phase1_standard_basic_output,
     validate_phase2_review_basic_output,
+    normalize_requirement_review_output,
+    save_requirement_review_artifacts,
+    validate_requirement_review_basic_output,
 )
+from risk_review_web.api_docs import get_api_doc, list_api_docs
 from risk_review_web.business_rules import (
     BUSINESS_RULES_LOCK,
     normalize_business_rule,
@@ -53,6 +57,8 @@ from risk_review_web.paths import (
     PHASE2_SKILL_PATH,
     PHASE2_REVIEW_SPEC_PATH,
     RULE_ENGINE_BUILD_PATH,
+    REQUIREMENT_REVIEW_SKILL_PATH,
+    REQUIREMENT_REVIEW_SPEC_PATH,
     ROOT,
     STATIC_DIR,
 )
@@ -60,6 +66,7 @@ from risk_review_web.prompt_builder import (
     build_phase1_prompt,
     build_phase2_prompt,
     build_direct_review_prompt,
+    build_requirement_review_prompt,
 )
 from risk_review_web.scheduled_tasks import build_service as build_scheduled_task_service
 from risk_review_web.runtime_settings import get_runtime_settings, update_runtime_settings
@@ -112,6 +119,13 @@ from risk_review_web.routes import scheduled as scheduled_routes
 from risk_review_web.routes import static_files as static_routes
 from risk_review_web.routes import system as system_routes
 from risk_review_web.routes import validation as validation_routes
+from risk_review_web.routes import requirement_review as requirement_review_routes
+from risk_review_web.services.requirement_review import (
+    create_requirement_review_workspace,
+    mock_requirement_review_markdown,
+    selected_api_documents,
+)
+from risk_review_web.services.runtime_logging import new_trace_id, runtime_log
 
 TASKS = {}
 TASK_LOCK = threading.Lock()
@@ -544,27 +558,48 @@ def delete_task_record(task_id: str) -> dict:
 
 
 def task_log(task_id: str, message: str):
-    """Append a timestamped user-facing execution log to a task."""
+    """Append a user-facing execution log in memory and to the daily file."""
     with TASK_LOCK:
         task = TASKS.get(task_id)
         if not task:
             return
         task.setdefault("logs", []).append({"time": time.time(), "message": message})
         task["updated"] = time.time()
+        trace_id = str(task.get("traceId") or "")
+        task_type = str(task.get("taskType") or "task")
+    runtime_log(
+        task_type,
+        message,
+        event="task_execution",
+        trace_id=trace_id,
+        task_id=task_id,
+    )
 
 
-def task_debug_log(task_id: str, stream: str, message: str):
-    """Append Claude stdin/stdout text when task-level debugging is enabled."""
+def task_debug_log(task_id: str, stream: str, message: str, *, memory: bool = True):
+    """Append Claude stdin/stdout in memory and to the same daily log file."""
     with TASK_LOCK:
         task = TASKS.get(task_id)
         if not task:
             return
-        task.setdefault("debugLogs", []).append({
-            "time": time.time(),
-            "stream": stream,
-            "message": str(message or ""),
-        })
-        task["updated"] = time.time()
+        if memory:
+            task.setdefault("debugLogs", []).append({
+                "time": time.time(),
+                "stream": stream,
+                "message": str(message or ""),
+            })
+            task["updated"] = time.time()
+        trace_id = str(task.get("traceId") or "")
+        task_type = str(task.get("taskType") or "task")
+    stream_name = str(stream or "claude_io").lower()
+    runtime_log(
+        task_type,
+        str(message or ""),
+        level="ERROR" if stream_name == "stderr" and str(message or "").strip() else "INFO",
+        event=f"claude_{stream_name}",
+        trace_id=trace_id,
+        task_id=task_id,
+    )
 
 
 def task_cancel_requested(task_id: str) -> bool:
@@ -650,6 +685,7 @@ def request_task_cancel(task_id: str) -> bool:
                 TASKS[child_id]["updated"] = time.time()
     queued_single_cancelled = GLOBAL_TASK_POOL.cancel(task_id)
     cancelled_pool_jobs = GLOBAL_TASK_POOL.cancel_group(task_id)
+    pool_group = GLOBAL_TASK_POOL.group_info(task_id)
     with TASK_LOCK:
         task = TASKS.get(task_id)
         if task and queued_single_cancelled:
@@ -661,6 +697,17 @@ def request_task_cancel(task_id: str) -> bool:
             }
     for child_id in child_ids:
         terminate_task_process(child_id)
+    if task and not queued_single_cancelled and int(pool_group.get("poolActive") or 0) == 0:
+        with TASK_LOCK:
+            current = TASKS.get(task_id)
+            if current and current.get("status") == "cancelling":
+                current["status"] = "cancelled"
+                current["result"] = current.get("result") or {
+                    "stdout": "",
+                    "stderr": "任务已终止；当前没有仍在执行的线程池作业。",
+                    "returncode": 130,
+                }
+                current["updated"] = time.time()
     cancel_validation_runs_for_task(task_id)
     experiment_id = str((task or {}).get("experimentId") or "")
     if experiment_id:
@@ -758,6 +805,8 @@ def system_health() -> dict:
         PHASE2_SKILL_PATH,
         PHASE1_PROCESSING_SPEC_PATH,
         PHASE2_REVIEW_SPEC_PATH,
+        REQUIREMENT_REVIEW_SKILL_PATH,
+        REQUIREMENT_REVIEW_SPEC_PATH,
         RULE_ENGINE_BUILD_PATH,
         STATIC_DIR / "index.html",
         STATIC_DIR / "app.js",
@@ -848,6 +897,14 @@ def build_prompt_phase2(payload: dict) -> str:
         standard_text=phase2_context["standardText"],
         requirement=(payload.get("requirement") or "").strip(),
         draft=draft,
+    )
+
+
+def build_prompt_requirement_review(payload: dict) -> str:
+    """Build the standalone requirement-review prompt."""
+    return build_requirement_review_prompt(
+        requirement=str(payload.get("requirement") or "").strip(),
+        api_names=[str(item) for item in payload.get("apiNames") or []],
     )
 
 
@@ -970,8 +1027,7 @@ def run_claude_prompt(
     task_log(task_id, f"Prompt 字符数：{len(prompt)}")
     with TASK_LOCK:
         debug_enabled = bool((TASKS.get(task_id) or {}).get("debug_claude"))
-    if debug_enabled:
-        task_debug_log(task_id, "prompt", prompt)
+    task_debug_log(task_id, "prompt", prompt, memory=debug_enabled)
     timeout_seconds = int(os.environ.get("RISK_REVIEW_CLAUDE_TIMEOUT", "600"))
     popen_kwargs = {}
     if os.name == "posix":
@@ -1004,22 +1060,24 @@ def run_claude_prompt(
             terminate_task_process(task_id)
             stdout, stderr = proc.communicate(timeout=3)
             task_log(task_id, "Claude Code 调用超时")
-            if debug_enabled:
-                task_debug_log(task_id, "stdout", stdout or "")
-                task_debug_log(task_id, "stderr", stderr or "Claude Code 调用超时。")
+            task_debug_log(task_id, "stdout", stdout or "", memory=debug_enabled)
+            task_debug_log(
+                task_id,
+                "stderr",
+                stderr or "Claude Code 调用超时。",
+                memory=debug_enabled,
+            )
             return "timeout", {"stdout": stdout or "", "stderr": stderr or "Claude Code 调用超时。", "returncode": 124}
         if task_cancel_requested(task_id):
             task_log(task_id, "Claude Code 调用已取消")
-            if debug_enabled:
-                if stdout:
-                    task_debug_log(task_id, "stdout", stdout)
-                if stderr:
-                    task_debug_log(task_id, "stderr", stderr)
+            if stdout:
+                task_debug_log(task_id, "stdout", stdout, memory=debug_enabled)
+            if stderr:
+                task_debug_log(task_id, "stderr", stderr, memory=debug_enabled)
             return "cancelled", {"stdout": stdout or "", "stderr": stderr or "Claude Code 调用已取消。", "returncode": proc.returncode if proc.returncode is not None else 130}
         task_log(task_id, f"Claude Code 返回，退出码：{proc.returncode}")
-        if debug_enabled:
-            task_debug_log(task_id, "stdout", stdout or "")
-            task_debug_log(task_id, "stderr", stderr or "")
+        task_debug_log(task_id, "stdout", stdout or "", memory=debug_enabled)
+        task_debug_log(task_id, "stderr", stderr or "", memory=debug_enabled)
         normalized_stderr = claude_failure_stderr(stdout or "", stderr or "", proc.returncode)
         return ("done" if proc.returncode == 0 else "error"), {
             "returncode": proc.returncode,
@@ -1283,6 +1341,87 @@ def run_claude_phase1(payload: dict, task_id: str):
         TASKS[task_id]["status"] = status
         TASKS[task_id]["result"] = result
         TASKS[task_id]["outputs"] = list_outputs()
+        TASKS[task_id]["updated"] = time.time()
+
+
+def run_claude_requirement_review(payload: dict, task_id: str):
+    """Run one isolated, single-stage requirement review."""
+    if task_cancel_requested(task_id):
+        mark_task_cancelled(task_id, "需求评审启动前已取消。")
+        return
+    with TASK_LOCK:
+        TASKS[task_id]["status"] = "running"
+        TASKS[task_id]["updated"] = time.time()
+    task_log(task_id, "需求评审开始")
+
+    use_mock = os.environ.get("RISK_REVIEW_MOCK") == "1" or payload.get("mock") is True
+    status = "done"
+    result: dict = {"returncode": 0, "stdout": "", "stderr": ""}
+    raw_output = ""
+    documents: list[dict] = []
+    isolated_workspace: Path | None = None
+    try:
+        if use_mock:
+            task_log(task_id, "使用 Mock 模式（需求评审）")
+            time.sleep(0.3)
+            if task_cancel_requested(task_id):
+                mark_task_cancelled(task_id, "需求评审 Mock 已取消。")
+                return
+            documents = selected_api_documents(payload.get("apiNames") or [])
+            raw_output = mock_requirement_review_markdown(payload.get("apiNames") or [])
+        else:
+            isolated_workspace, documents = create_requirement_review_workspace(
+                task_id,
+                payload.get("apiNames") or [],
+                log=lambda message: task_log(task_id, message),
+            )
+            status, result, raw_output = run_generation(
+                task_id=task_id,
+                phase_label="需求评审",
+                empty_error="Claude 未输出需求评审报告正文",
+                prompt=build_prompt_requirement_review(payload),
+                isolated_workspace=isolated_workspace,
+            )
+            if status not in {"done", "cancelled"}:
+                status = "error"
+    except Exception as exc:
+        status = "error"
+        result = {"returncode": 1, "stdout": raw_output, "stderr": str(exc)}
+        task_log(task_id, f"需求评审执行失败：{exc}")
+    finally:
+        if isolated_workspace is not None:
+            shutil.rmtree(isolated_workspace, ignore_errors=True)
+            task_log(task_id, "需求评审隔离工作目录已清理")
+
+    if status == "done":
+        try:
+            report = normalize_requirement_review_output(raw_output)
+            validate_requirement_review_basic_output(report)
+            artifact_ids = save_requirement_review_artifacts(
+                task_id=task_id,
+                review_text=report,
+                requirement=payload.get("requirement") or "",
+                api_documents=documents,
+                mock=use_mock,
+            )
+            result.update({
+                "returncode": 0,
+                "stdout": report,
+                "stderr": "",
+                **artifact_ids,
+            })
+            task_log(task_id, f"需求评审报告已保存：outputs/{artifact_ids['reviewFileId']}")
+            task_log(task_id, "需求评审完成")
+        except Exception as exc:
+            status = "error"
+            result.update({"returncode": 1, "stdout": raw_output, "stderr": str(exc)})
+            task_log(task_id, f"需求评审输出校验失败：{exc}")
+
+    with TASK_LOCK:
+        if status == "error":
+            attach_error_metadata(result, "需求评审执行失败")
+        TASKS[task_id]["status"] = status
+        TASKS[task_id]["result"] = result
         TASKS[task_id]["updated"] = time.time()
 
 
@@ -1979,12 +2118,19 @@ def create_task_record(
 ):
     """Create the canonical in-memory task record shared by every submission path."""
     with TASK_LOCK:
+        parent = TASKS.get(parent_task_id) if parent_task_id else None
+        trace_id = str((parent or {}).get("traceId") or "")
+        if not trace_id and parent_task_id:
+            trace_id = f"tr_{hashlib.sha256(parent_task_id.encode('utf-8')).hexdigest()[:16]}"
+        if not trace_id:
+            trace_id = new_trace_id()
         parent_cancelled = bool(
             parent_task_id
-            and (TASKS.get(parent_task_id) or {}).get("cancel_requested")
+            and (parent or {}).get("cancel_requested")
         )
         TASKS[task_id] = {
             "id": task_id,
+            "traceId": trace_id,
             "taskType": task_type,
             "parentTaskId": parent_task_id,
             "clientId": client_id,
@@ -2004,8 +2150,94 @@ def create_task_record(
             "created": time.time(),
             "updated": time.time(),
         }
+    runtime_log(
+        task_type,
+        "任务已创建并进入队列。" if not parent_cancelled else "父任务已取消，子任务不再启动。",
+        level="WARN" if parent_cancelled else "INFO",
+        event="task_created",
+        trace_id=trace_id,
+        task_id=task_id,
+    )
     if len(TASKS) % 16 == 0:
         gc_tasks()
+
+
+def track_task_future(task_id: str, future, label: str):
+    """Convert an unexpected worker exception into a terminal task error."""
+
+    def complete(completed) -> None:
+        try:
+            completed.result()
+        except CancelledError:
+            message = f"{label}在全局线程池排队期间被取消。"
+            status = "cancelled"
+            returncode = 130
+        except BaseException as exc:
+            message = f"{label}异常终止：{type(exc).__name__}: {exc}"
+            status = "error"
+            returncode = 1
+        else:
+            with TASK_LOCK:
+                current = TASKS.get(task_id) or {}
+                current_status = str(current.get("status") or "")
+                cancel_requested = bool(current.get("cancel_requested"))
+            if current_status in {"done", "error", "cancelled"}:
+                return
+            status = "cancelled" if cancel_requested else "error"
+            returncode = 130 if cancel_requested else 1
+            message = (
+                f"{label}已取消。"
+                if cancel_requested
+                else f"{label}后台作业已结束，但未写入终态。"
+            )
+
+        result = {
+            "stdout": "",
+            "stderr": message,
+            "returncode": returncode,
+        }
+        if status == "error":
+            attach_error_metadata(result, message)
+        with TASK_LOCK:
+            task = TASKS.get(task_id)
+            if not task or task.get("status") in {"done", "error", "cancelled"}:
+                return
+            task["status"] = status
+            task["result"] = result
+            task["outputs"] = list_outputs()
+            task["updated"] = time.time()
+        task_log(task_id, message)
+
+    future.add_done_callback(complete)
+    return future
+
+
+def submit_requirement_review(payload: dict) -> tuple[str, dict]:
+    """Create and enqueue one standalone requirement-review task."""
+    task_id = f"requirement-review-{uuid.uuid4().hex[:12]}"
+    create_task_record(
+        task_id,
+        debug_claude=True,
+        task_type="requirement-review",
+        client_id=str(payload.get("clientId") or ""),
+        group_concurrency=1,
+        context={"apiNames": list(payload.get("apiNames") or [])},
+    )
+    track_task_future(
+        task_id,
+        GLOBAL_TASK_POOL.submit(
+            task_id,
+            task_id,
+            run_claude_requirement_review,
+            payload,
+            task_id,
+            group_limit=1,
+        ),
+        "需求评审",
+    )
+    with TASK_LOCK:
+        task = decorate_task(TASKS[task_id])
+    return task_id, task
 
 
 def submit_regression_task(payload: dict, examples: list[dict]) -> tuple[str, dict, dict[str, str]]:
@@ -2031,13 +2263,17 @@ def submit_regression_task(payload: dict, examples: list[dict]) -> tuple[str, di
             "items": [],
             "summary": {"total": len(examples), "pass": 0, "fail": 0, "error": 0, "skip": 0, "running": 0},
         }
-    GLOBAL_TASK_POOL.submit(
+    track_task_future(
         task_id,
-        task_id,
-        run_regression_validation,
-        task_payload,
-        task_id,
-        group_limit=1,
+        GLOBAL_TASK_POOL.submit(
+            task_id,
+            task_id,
+            run_regression_validation,
+            task_payload,
+            task_id,
+            group_limit=1,
+        ),
+        "质量验证",
     )
     with TASK_LOCK:
         task = decorate_task(TASKS[task_id])
@@ -2084,13 +2320,17 @@ def submit_review_mode_experiment(payload: dict, examples: list[dict]) -> tuple[
         TASKS[task_id]["caseIds"] = task_payload["caseIds"]
         TASKS[task_id]["experimentId"] = experiment_id
         TASKS[task_id]["result"] = initial
-    GLOBAL_TASK_POOL.submit(
+    track_task_future(
         task_id,
-        task_id,
-        run_review_mode_experiment,
-        task_payload,
-        task_id,
-        group_limit=1,
+        GLOBAL_TASK_POOL.submit(
+            task_id,
+            task_id,
+            run_review_mode_experiment,
+            task_payload,
+            task_id,
+            group_limit=1,
+        ),
+        "评审模式对比实验",
     )
     with TASK_LOCK:
         task = decorate_task(TASKS[task_id])
@@ -2108,7 +2348,6 @@ def run_review_pipeline(
     should_stop=None,
     on_phase1_done=None,
 ) -> dict:
-    """Run the direct-review arm of an experiment and persist its report artifact."""
     """Run Phase 1 then Phase 2 in-process, honoring cancellation between stages."""
     factor_name = (phase1_payload.get("factorName") or f"row-{index + 1}").strip()
     api_names = phase1_payload.get("apiNames") or []
@@ -2313,7 +2552,12 @@ def get_scheduled_task_service():
             run_phase1=run_scheduled_phase1,
             run_phase2=run_scheduled_phase2,
             cancel_execution=request_task_cancel,
-            log=lambda message: print(f"[scheduled-tasks] {message}", flush=True),
+            log=lambda message: runtime_log(
+                "scheduled_tasks",
+                message,
+                level="ERROR" if "failed" in str(message).lower() else "INFO",
+                event="scheduler",
+            ),
         )
     return SCHEDULED_TASK_SERVICE
 
@@ -2434,6 +2678,12 @@ class Handler(BaseHTTPRequestHandler):
         """Dispatch creation, control, import, and review-submission requests."""
         parsed = urlparse(self.path)
         if scheduled_routes.handle_post(self, parsed.path, get_scheduled_task_service):
+            return
+        if requirement_review_routes.handle_post(
+            self,
+            parsed.path,
+            submit_review=submit_requirement_review,
+        ):
             return
         if validation_routes.handle_post(
             self,
@@ -2582,7 +2832,18 @@ class Handler(BaseHTTPRequestHandler):
                     "requirement": str(payload.get("requirement") or ""),
                 },
             )
-            GLOBAL_TASK_POOL.submit(task_id, task_id, run_claude_phase1, payload, task_id, group_limit=1)
+            track_task_future(
+                task_id,
+                GLOBAL_TASK_POOL.submit(
+                    task_id,
+                    task_id,
+                    run_claude_phase1,
+                    payload,
+                    task_id,
+                    group_limit=1,
+                ),
+                "Phase 1",
+            )
             with TASK_LOCK:
                 task = decorate_task(TASKS[task_id])
             json_response(self, 202, {"taskId": task_id, "task": task})
@@ -2613,7 +2874,18 @@ class Handler(BaseHTTPRequestHandler):
                     "standardFileId": str(payload.get("standardFileId") or ""),
                 },
             )
-            GLOBAL_TASK_POOL.submit(task_id, task_id, run_claude_phase2, payload, task_id, group_limit=1)
+            track_task_future(
+                task_id,
+                GLOBAL_TASK_POOL.submit(
+                    task_id,
+                    task_id,
+                    run_claude_phase2,
+                    payload,
+                    task_id,
+                    group_limit=1,
+                ),
+                "Phase 2",
+            )
             with TASK_LOCK:
                 task = decorate_task(TASKS[task_id])
             json_response(self, 202, {"taskId": task_id, "task": task})
@@ -2743,6 +3015,13 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     """Recover persisted state, start scheduling, and serve the local application."""
+    startup_trace_id = new_trace_id()
+    runtime_log(
+        "server",
+        "风控 AI 评审平台正在启动。",
+        event="server_starting",
+        trace_id=startup_trace_id,
+    )
     recover_stale_validation_runs()
     recover_stale_review_mode_experiments()
     scheduled_service = get_scheduled_task_service()
@@ -2750,9 +3029,21 @@ def main():
     port = int(os.environ.get("PORT", "8765"))
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(f"Risk review web running at http://127.0.0.1:{port}")
+    runtime_log(
+        "server",
+        f"服务已启动：http://127.0.0.1:{port}",
+        event="server_started",
+        trace_id=startup_trace_id,
+    )
     try:
         server.serve_forever()
     finally:
+        runtime_log(
+            "server",
+            "风控 AI 评审平台正在停止。",
+            event="server_stopping",
+            trace_id=startup_trace_id,
+        )
         scheduled_service.stop_scheduler()
         server.server_close()
 

@@ -45,6 +45,26 @@ class DailyRuntimeLoggerTest(unittest.TestCase):
             self.assertIn("taskId=requirement-review-example", lines[0])
             self.assertIn(r"第一行\n第二行", lines[0])
 
+    def test_can_write_raw_multiline_message_in_same_daily_file(self):
+        with tempfile.TemporaryDirectory(prefix="risk-runtime-raw-log-") as temp_dir:
+            logger = DailyRuntimeLogger(Path(temp_dir), retention_days=10)
+            occurred_at = datetime(2026, 7, 29, 16, 30, tzinfo=timezone(timedelta(hours=8)))
+            path = logger.write(
+                level="INFO",
+                module="agent",
+                event="model_input",
+                message='{"messages": [\n  {"role": "user", "content": "原始输入"}\n]}',
+                trace_id="tr_example",
+                task_id="phase1-example",
+                timestamp=occurred_at,
+                raw_message=True,
+            )
+            content = path.read_text(encoding="utf-8")
+            self.assertIn("raw_message_begin", content)
+            self.assertIn('"content": "原始输入"', content)
+            self.assertIn("raw_message_end", content)
+            self.assertNotIn(r"\n  {\"role\"", content)
+
     def test_keeps_only_ten_calendar_days(self):
         with tempfile.TemporaryDirectory(prefix="risk-runtime-log-retention-") as temp_dir:
             logger = DailyRuntimeLogger(Path(temp_dir), retention_days=10)

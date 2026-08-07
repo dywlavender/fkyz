@@ -14,6 +14,7 @@ from risk_review_web.environment import load_project_env
 
 
 EVENT_PREFIX = "RISK_REVIEW_AGENT_EVENT\t"
+AGENT_INPUT_SCHEMA = "risk_review_agent_input_v1"
 MAX_FILE_CHARS = 200_000
 MAX_GLOB_RESULTS = 500
 MAX_GREP_MATCHES = 500
@@ -115,6 +116,21 @@ def extract_text(content: Any) -> str:
     return str(content or "").strip()
 
 
+def decode_agent_input(raw_input: str) -> tuple[str, str]:
+    """Decode the role-separated stdin envelope sent by the parent process."""
+    try:
+        payload = json.loads(raw_input)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Agent 输入不是有效 JSON。") from exc
+    if not isinstance(payload, dict) or payload.get("schema") != AGENT_INPUT_SCHEMA:
+        raise ValueError("Agent 输入协议不受支持。")
+    system_prompt = str(payload.get("system") or "").strip()
+    user_prompt = str(payload.get("user") or "").strip()
+    if not user_prompt:
+        raise ValueError("Agent 用户消息为空。")
+    return system_prompt, user_prompt
+
+
 def create_model():
     provider = os.environ.get("RISK_REVIEW_AGENT_PROVIDER", "anthropic").strip().lower()
     model_name = os.environ.get("RISK_REVIEW_AGENT_MODEL", "").strip()
@@ -123,25 +139,35 @@ def create_model():
     temperature = float(os.environ.get("RISK_REVIEW_AGENT_TEMPERATURE", "0"))
     max_tokens = int(os.environ.get("RISK_REVIEW_AGENT_MAX_TOKENS", "1200000"))
     timeout = float(os.environ.get("RISK_REVIEW_AGENT_TIMEOUT", "600"))
-    return init_chat_model(model=model_name,model_provider="anthropic",temperature=temperature,max_retries=0,max_tokens=max_tokens)
+    return init_chat_model(model=model_name,model_provider=provider,temperature=temperature,max_retries=0,max_tokens=max_tokens,timeout=timeout)
 
     # raise RuntimeError(f"不支持的 Agent Provider：{provider}")
 
 
-def run_agent(prompt: str, workspace: Path, *, enable_tools: bool = True) -> str:
-    from langchain_core.messages import HumanMessage, ToolMessage
+def run_agent(
+    user_prompt: str,
+    workspace: Path,
+    *,
+    system_prompt: str = "",
+    enable_tools: bool = True,
+) -> str:
+    from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
     tools = build_tools(workspace) if enable_tools else []
     tools_by_name = {item.name: item for item in tools}
     base_model = create_model()
     model = base_model.bind_tools(tools) if tools else base_model
     max_steps = max(1, int(os.environ.get("RISK_REVIEW_AGENT_MAX_STEPS", "20")))
-    messages: list[Any] = [HumanMessage(content=prompt)]
+    messages: list[Any] = []
+    if system_prompt.strip():
+        messages.append(SystemMessage(content=system_prompt))
+    messages.append(HumanMessage(content=user_prompt))
     emit(
         "agent_start",
         {
             "workspace": str(workspace),
-            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
             "max_steps": max_steps,
             "tools": sorted(tools_by_name),
         },
@@ -151,7 +177,11 @@ def run_agent(prompt: str, workspace: Path, *, enable_tools: bool = True) -> str
             "model_input",
             {"round": round_number, "messages": [serialize_message(item) for item in messages]},
         )
-        response = model.invoke(messages)
+        response = None
+        for chunk in model.stream(messages):
+            response = chunk if response is None else response + chunk
+        if response is None:
+            raise RuntimeError("模型未返回响应。")
         emit("model_output", {"round": round_number, "message": serialize_message(response)})
         messages.append(response)
         tool_calls = list(getattr(response, "tool_calls", []) or [])
@@ -201,11 +231,12 @@ def main() -> int:
     args = parser.parse_args()
     load_project_env()
     workspace = Path(args.workspace).resolve(strict=True)
-    prompt = sys.stdin.read()
     try:
+        system_prompt, user_prompt = decode_agent_input(sys.stdin.read())
         run_agent(
-            prompt,
+            user_prompt,
             workspace,
+            system_prompt=system_prompt,
             enable_tools=args.phase not in {"Direct Review", "Model Test"},
         )
     except Exception as exc:

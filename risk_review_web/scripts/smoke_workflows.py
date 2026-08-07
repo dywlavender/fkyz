@@ -77,6 +77,7 @@ def main() -> int:
             "RISK_REVIEW_LOG_DIR": str(temp_root / "logs"),
             "RISK_REVIEW_STATE_SEED": "0",
             "RISK_REVIEW_SCHEDULER_POLL": "1",
+            "RISK_REVIEW_MODEL_BACKEND": "claude",
         }
         process: subprocess.Popen[str] = start_server(environment)
         try:
@@ -115,6 +116,25 @@ def main() -> int:
             batch_items = (batch_task.get("result") or {}).get("items") or []
             if batch_task.get("status") != "done" or len(batch_items) != 2:
                 raise AssertionError(f"多行批量评审失败：{batch_task}")
+            if any(item.get("conclusion") != "pass" or item.get("riskCount") is None for item in batch_items):
+                raise AssertionError(f"批量任务明细未同步评审结论：{batch_items}")
+            review_record_page = api_data(request_json(
+                base_url,
+                "/api/review-records?source=batch&page=1&pageSize=20",
+            )) or {}
+            batch_record = next(
+                (
+                    record
+                    for record in review_record_page.get("items") or []
+                    if str(record.get("taskId") or "") == str(batch["taskId"])
+                ),
+                None,
+            )
+            if not batch_record or any(
+                item.get("conclusion") != "pass" or item.get("riskCount") is None
+                for item in batch_record.get("items") or []
+            ):
+                raise AssertionError(f"评审记录明细未同步批量评审结论：{batch_record}")
 
             examples = json.loads((PROJECT_ROOT / "risk_review_web/data/examples.json").read_text(encoding="utf-8"))
             example_id = str(examples[0]["id"])

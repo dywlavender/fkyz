@@ -10,7 +10,20 @@ from pathlib import Path
 
 
 AGENT_EVENT_PREFIX = "RISK_REVIEW_AGENT_EVENT\t"
+AGENT_INPUT_SCHEMA = "risk_review_agent_input_v1"
 AgentEventCallback = Callable[[str, object], None]
+
+
+def encode_agent_input(*, system_prompt: str, user_prompt: str) -> str:
+    """Serialize role-separated messages for the worker's stdin protocol."""
+    return json.dumps(
+        {
+            "schema": AGENT_INPUT_SCHEMA,
+            "system": str(system_prompt or ""),
+            "user": str(user_prompt or ""),
+        },
+        ensure_ascii=False,
+    )
 
 
 def agent_python() -> Path:
@@ -51,6 +64,8 @@ def agent_health() -> dict:
                 "import importlib.metadata as m; print(m.version('langchain'))",
             ],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=10,
         )
@@ -85,6 +100,7 @@ def parse_agent_events(stderr: str, callback: AgentEventCallback | None) -> str:
 def run_agent_process(
     *,
     prompt: str,
+    system_prompt: str = "",
     phase_label: str,
     workspace: Path,
     timeout_seconds: int,
@@ -105,6 +121,9 @@ def run_agent_process(
         str(workspace.resolve()),
     ]
     child_env = dict(os.environ)
+    # Keep the worker's stdin/stderr protocol UTF-8 on Windows as well.
+    child_env["PYTHONUTF8"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
     project_root = str(Path(__file__).resolve().parents[3])
     existing_pythonpath = child_env.get("PYTHONPATH", "")
     child_env["PYTHONPATH"] = (
@@ -130,6 +149,8 @@ def run_agent_process(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             **popen_kwargs,
         )
@@ -160,7 +181,12 @@ def run_agent_process(
         stderr_thread.start()
         if proc.stdin is not None:
             try:
-                proc.stdin.write(prompt)
+                proc.stdin.write(
+                    encode_agent_input(
+                        system_prompt=system_prompt,
+                        user_prompt=prompt,
+                    )
+                )
                 proc.stdin.flush()
             finally:
                 proc.stdin.close()

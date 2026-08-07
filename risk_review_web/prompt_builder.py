@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .paths import (
     PHASE1_PROMPT_PATH,
+    PHASE1_USER_PROMPT_PATH,
     PHASE1_SKILL_PATH,
     PHASE2_PROMPT_PATH,
+    PHASE2_USER_PROMPT_PATH,
     DIRECT_REVIEW_PROMPT_PATH,
     REQUIREMENT_REVIEW_PROMPT_PATH,
     REQUIREMENT_REVIEW_SKILL_PATH,
@@ -12,6 +16,22 @@ from .paths import (
     ROOT,
 )
 from .utils import read_text
+
+
+@dataclass(frozen=True)
+class ModelPrompt:
+    """Role-separated model input with a single-prompt adapter for CLI backends."""
+
+    system: str
+    user: str
+
+    def combined(self) -> str:
+        return "\n\n".join(part.strip() for part in (self.system, self.user) if part.strip())
+
+
+def model_prompt_text(prompt: str | ModelPrompt) -> str:
+    """Render a prompt for a backend that only accepts one text input."""
+    return prompt.combined() if isinstance(prompt, ModelPrompt) else str(prompt)
 
 
 def rel(path) -> str:
@@ -39,16 +59,17 @@ def build_phase1_prompt(
     *,
     requirement: str,
     api_names: list[str],
-) -> str:
-    """Build the Phase 1 prompt from the requirement and approved API names."""
+) -> ModelPrompt:
+    """Build role-separated Phase 1 instructions and task-specific evidence."""
     api_block = "\n".join(f"- {name}" for name in api_names)
-    return render_template(
-        read_text(PHASE1_PROMPT_PATH),
-        {
-            **skill_path_values(),
-            "REQUIREMENT": requirement,
-            "API_NAMES": api_block,
-        },
+    values = {
+        **skill_path_values(),
+        "REQUIREMENT": requirement,
+        "API_NAMES": api_block,
+    }
+    return ModelPrompt(
+        system=render_template(read_text(PHASE1_PROMPT_PATH), values),
+        user=render_template(read_text(PHASE1_USER_PROMPT_PATH), values),
     )
 
 
@@ -57,16 +78,17 @@ def build_phase2_prompt(
     standard_text: str,
     requirement: str,
     draft: str,
-) -> str:
-    """Build the Phase 2 prompt from its frozen standard and review input."""
-    return render_template(
-        read_text(PHASE2_PROMPT_PATH),
-        {
-            **skill_path_values(),
-            "STANDARD_TEXT": standard_text,
-            "REQUIREMENT": requirement,
-            "DRAFT": draft,
-        },
+) -> ModelPrompt:
+    """Build role-separated Phase 2 instructions and task-specific evidence."""
+    values = {
+        **skill_path_values(),
+        "STANDARD_TEXT": standard_text,
+        "REQUIREMENT": requirement,
+        "DRAFT": draft,
+    }
+    return ModelPrompt(
+        system=render_template(read_text(PHASE2_PROMPT_PATH), values),
+        user=render_template(read_text(PHASE2_USER_PROMPT_PATH), values),
     )
 
 

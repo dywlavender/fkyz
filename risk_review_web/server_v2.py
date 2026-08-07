@@ -67,10 +67,12 @@ from risk_review_web.paths import (
     STATIC_DIR,
 )
 from risk_review_web.prompt_builder import (
+    ModelPrompt,
     build_phase1_prompt,
     build_phase2_prompt,
     build_direct_review_prompt,
     build_requirement_review_prompt,
+    model_prompt_text,
 )
 from risk_review_web.scheduled_tasks import build_service as build_scheduled_task_service
 from risk_review_web.runtime_settings import get_runtime_settings, update_runtime_settings
@@ -105,6 +107,7 @@ from risk_review_web.services.review_history import (
     list_outputs,
     parse_review_records,
     save_review_records,
+    normalize_review_item,
 )
 from risk_review_web.services.time_utils import iso_time as _iso_time
 from risk_review_web.services.validation_store import (
@@ -299,6 +302,12 @@ def normalize_task_record_view(record: dict) -> dict:
     context = dict(record.get("context") or {})
     context.setdefault("taskName", record.get("title") or record.get("factorName") or "评审任务")
     context.setdefault("factorName", record.get("factorName") or record.get("title") or "")
+    items = record.get("items")
+    normalized_items = (
+        [normalize_review_item(item) for item in items if isinstance(item, dict)]
+        if isinstance(items, list)
+        else items
+    )
     return {
         **record,
         "id": task_id,
@@ -310,6 +319,7 @@ def normalize_task_record_view(record: dict) -> dict:
         "context": context,
         "progress": progress,
         "summary": progress,
+        "items": normalized_items,
     }
 
 
@@ -581,7 +591,14 @@ def task_log(task_id: str, message: str):
     )
 
 
-def task_debug_log(task_id: str, stream: str, message: str, *, memory: bool = True):
+def task_debug_log(
+    task_id: str,
+    stream: str,
+    message: str,
+    *,
+    memory: bool = True,
+    raw_message: bool = False,
+):
     """Append model interaction data in memory and to the same daily log file."""
     with TASK_LOCK:
         task = TASKS.get(task_id)
@@ -597,14 +614,15 @@ def task_debug_log(task_id: str, stream: str, message: str, *, memory: bool = Tr
         trace_id = str(task.get("traceId") or "")
         task_type = str(task.get("taskType") or "task")
     stream_name = str(stream or "model_io").lower()
-    runtime_log(
-        task_type,
-        str(message or ""),
-        level="ERROR" if stream_name == "stderr" and str(message or "").strip() else "INFO",
-        event=f"model_{stream_name}",
-        trace_id=trace_id,
-        task_id=task_id,
-    )
+    log_kwargs = {
+        "level": "ERROR" if stream_name == "stderr" and str(message or "").strip() else "INFO",
+        "event": stream_name if stream_name.startswith("agent_") else f"model_{stream_name}",
+        "trace_id": trace_id,
+        "task_id": task_id,
+    }
+    if raw_message:
+        log_kwargs["raw_message"] = True
+    runtime_log(task_type, str(message or ""), **log_kwargs)
 
 
 def task_cancel_requested(task_id: str) -> bool:
@@ -750,7 +768,13 @@ def claude_health():
         info["note"] = f"find {command} failed: {exc}"
         return info
     try:
-        info["version"] = subprocess.check_output([command, "--version"], text=True, stderr=subprocess.STDOUT).strip()
+        info["version"] = subprocess.check_output(
+            [command, "--version"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stderr=subprocess.STDOUT,
+        ).strip()
     except Exception as exc:
         info["note"] = f"{command} --version failed: {exc}"
     return info
@@ -894,6 +918,8 @@ def test_claude_print():
             cwd=str(ROOT),
             input="只回复 OK",
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=int(os.environ.get("RISK_REVIEW_CLAUDE_TEST_TIMEOUT", "30")),
         )
@@ -944,7 +970,7 @@ def test_model_runtime():
         "seconds": round(time.time() - started, 2),
         **result,
     }
-def build_prompt_phase1(payload: dict) -> str:
+def build_prompt_phase1(payload: dict) -> ModelPrompt:
     """Build prompt for Phase 1 only (standard spec, no draft)."""
     requirement = (payload.get("requirement") or "").strip()
     api_names = payload.get("apiNames") or []
@@ -955,7 +981,7 @@ def build_prompt_phase1(payload: dict) -> str:
     )
 
 
-def build_prompt_phase2(payload: dict) -> str:
+def build_prompt_phase2(payload: dict) -> ModelPrompt:
     """Build prompt for Phase 2 only (review against existing standard)."""
     draft = (payload.get("draft") or "").strip()
     phase2_context = payload.get("_phase2_context") or prepare_phase2_context(payload)
@@ -1062,11 +1088,12 @@ def isolated_read_tool_rules(workspace: Path) -> str:
 def run_claude_prompt(
     task_id: str,
     phase_label: str,
-    prompt: str,
+    prompt: str | ModelPrompt,
     *,
     isolated_workspace: Path | None = None,
 ) -> tuple[str, dict]:
     """Execute one Claude prompt, capture debug streams, and support cancellation."""
+    prompt_text = model_prompt_text(prompt)
     cmd = [*claude_cmd("-p --output-format text")]
     command_cwd = ROOT
     if isolated_workspace is not None:
@@ -1090,10 +1117,10 @@ def run_claude_prompt(
             f"{phase_label} 文件隔离已启用：仅允许在隔离目录内使用 Read/Glob/Grep",
         )
     task_log(task_id, f"调用 Claude Code（{phase_label}）：{' '.join(cmd)} < stdin")
-    task_log(task_id, f"Prompt 字符数：{len(prompt)}")
+    task_log(task_id, f"Prompt 字符数：{len(prompt_text)}")
     with TASK_LOCK:
         debug_enabled = bool((TASKS.get(task_id) or {}).get("debug_claude"))
-    task_debug_log(task_id, "prompt", prompt, memory=debug_enabled)
+    task_debug_log(task_id, "prompt", prompt_text, memory=debug_enabled)
     timeout_seconds = int(os.environ.get("RISK_REVIEW_CLAUDE_TIMEOUT", "600"))
     popen_kwargs = {}
     if os.name == "posix":
@@ -1114,6 +1141,8 @@ def run_claude_prompt(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             **popen_kwargs,
         )
         with RUNNING_PROCS_LOCK:
@@ -1121,7 +1150,7 @@ def run_claude_prompt(
         if task_cancel_requested(task_id):
             terminate_task_process(task_id)
         try:
-            stdout, stderr = proc.communicate(input=prompt, timeout=timeout_seconds)
+            stdout, stderr = proc.communicate(input=prompt_text, timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             terminate_task_process(task_id)
             stdout, stderr = proc.communicate(timeout=3)
@@ -1167,7 +1196,7 @@ def run_claude_prompt(
 def run_agent_prompt(
     task_id: str,
     phase_label: str,
-    prompt: str,
+    prompt: str | ModelPrompt,
     *,
     isolated_workspace: Path | None = None,
 ) -> tuple[str, dict]:
@@ -1179,11 +1208,22 @@ def run_agent_prompt(
             "returncode": 1,
         }
     workspace = isolated_workspace.resolve()
+    if isinstance(prompt, ModelPrompt):
+        system_prompt = prompt.system
+        user_prompt = prompt.user
+    else:
+        system_prompt = ""
+        user_prompt = str(prompt)
     with TASK_LOCK:
         debug_enabled = bool((TASKS.get(task_id) or {}).get("debug_claude"))
     task_log(task_id, f"调用 LangChain Agent（{phase_label}）")
-    task_log(task_id, f"Prompt 字符数：{len(prompt)}")
-    task_debug_log(task_id, "prompt", prompt, memory=debug_enabled)
+    task_log(
+        task_id,
+        f"Prompt 字符数：system={len(system_prompt)}，user={len(user_prompt)}",
+    )
+    if system_prompt:
+        task_debug_log(task_id, "system_prompt", system_prompt, memory=debug_enabled)
+    task_debug_log(task_id, "user_prompt", user_prompt, memory=debug_enabled)
 
     def process_started(proc: subprocess.Popen[str]) -> None:
         with RUNNING_PROCS_LOCK:
@@ -1191,11 +1231,22 @@ def run_agent_prompt(
 
     def agent_event(event: str, payload: object) -> None:
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
+        if event in {"model_input", "model_output"}:
+            rendered = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+            task_debug_log(
+                task_id,
+                f"agent_{event}",
+                rendered,
+                memory=debug_enabled,
+                raw_message=True,
+            )
+            return
         task_debug_log(task_id, f"agent_{event}", rendered, memory=debug_enabled)
 
     try:
         status, result = run_agent_process(
-            prompt=prompt,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
             phase_label=phase_label,
             workspace=workspace,
             timeout_seconds=int(os.environ.get("RISK_REVIEW_AGENT_TIMEOUT", "600")),
@@ -1216,7 +1267,7 @@ def run_agent_prompt(
 def run_model_prompt(
     task_id: str,
     phase_label: str,
-    prompt: str,
+    prompt: str | ModelPrompt,
     *,
     isolated_workspace: Path | None = None,
 ) -> tuple[str, dict]:
@@ -1269,7 +1320,7 @@ def run_generation(
     task_id: str,
     phase_label: str,
     empty_error: str,
-    prompt: str,
+    prompt: str | ModelPrompt,
     isolated_workspace: Path | None = None,
 ) -> tuple[str, dict, str]:
     """Run one generation attempt and enforce non-empty output and cancellation checks."""
@@ -2623,7 +2674,16 @@ def run_review_pair(row: dict, payload: dict, task_id: str, index: int) -> dict:
             item["standardMetadataFileId"] = phase1_result.get("standardMetadataFileId")
             item["standardText"] = phase1_result.get("stdout") or ""
             item["cacheHit"] = bool(phase1_result.get("cacheHit"))
-            item.update({"status": "done", "raw": pipeline["raw"], "reviewFileId": pipeline.get("reviewFileId")})
+            report = str(pipeline.get("raw") or "")
+            summary = collect_review_stats(report)
+            item.update({
+                "status": "done",
+                "raw": report,
+                "reviewFileId": pipeline.get("reviewFileId"),
+                "conclusion": detect_verdict_text(report),
+                "riskCount": int(summary.get("fail") or 0),
+                "summary": summary,
+            })
             return item
         except Exception as exc:
             last_error = str(exc)

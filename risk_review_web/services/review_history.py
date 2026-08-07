@@ -208,6 +208,39 @@ def _task_record_title(task: dict) -> str:
     return f"{labels.get(task_type, '评审任务')} · {str(task.get('id') or '')[:8]}"
 
 
+def normalize_review_item(item: dict) -> dict:
+    """Fill detail-level verdict fields from the report while preserving source data."""
+    normalized = dict(item)
+    status = str(normalized.get("status") or "")
+    raw = str(normalized.get("raw") or normalized.get("reportPreview") or "")
+    conclusion = str(normalized.get("conclusion") or "").strip()
+    risk_count = normalized.get("riskCount")
+
+    if not conclusion and raw:
+        conclusion = detect_verdict_text(raw)
+    if risk_count is None and raw:
+        risk_count = int(collect_review_stats(raw).get("fail") or 0)
+
+    if (not conclusion or risk_count is None) and normalized.get("reviewFileId"):
+        artifact_conclusion, artifact_risk_count = _artifact_conclusion(
+            str(normalized.get("reviewFileId") or "")
+        )
+        conclusion = conclusion or artifact_conclusion
+        if risk_count is None:
+            risk_count = artifact_risk_count
+
+    if not conclusion and status in {"done", "pass", "fail", "error", "skip", "cancelled"}:
+        conclusion = "unreviewable"
+    if risk_count is None and status in {"done", "pass", "fail", "error", "skip", "cancelled"}:
+        risk_count = 0
+
+    if conclusion:
+        normalized["conclusion"] = conclusion
+    if risk_count is not None:
+        normalized["riskCount"] = int(risk_count or 0)
+    return normalized
+
+
 def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict | None:
     """Project an in-memory task into the stable review-history schema."""
     status = str(task.get("status") or "")
@@ -221,6 +254,8 @@ def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict 
     items = result.get("items") if isinstance(result, dict) else None
     if not isinstance(items, list):
         items = []
+    else:
+        items = [normalize_review_item(item) for item in items if isinstance(item, dict)]
     standard_file = result.get("standardFileId") or context.get("standardFileId")
     standard_metadata = result.get("standardMetadataFileId")
     if standard_file and not standard_metadata:
@@ -246,9 +281,9 @@ def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict 
     failed_items = [item for item in items if item.get("status") in {"error", "skip"}]
     if items:
         conclusions = [
-            detect_verdict_text(str(item.get("raw") or ""))
+            str(item.get("conclusion") or detect_verdict_text(str(item.get("raw") or "")))
             for item in done_items
-            if item.get("raw")
+            if item.get("conclusion") or item.get("raw")
         ]
         if conclusions and all(value == "pass" for value in conclusions):
             conclusion = "pass"
@@ -257,7 +292,11 @@ def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict 
         elif failed_items:
             conclusion = "unreviewable"
         risk_count = sum(
-            int((item.get("summary") or {}).get("fail") or 0)
+            int(
+                item.get("riskCount")
+                if item.get("riskCount") is not None
+                else (item.get("summary") or {}).get("fail") or 0
+            )
             for item in items
         )
     source = {

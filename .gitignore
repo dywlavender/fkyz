@@ -38,3 +38,5 @@ risk_review_web/.local/
 
 # Frontend dependencies
 node_modules/
+
+ai-review-sharing/

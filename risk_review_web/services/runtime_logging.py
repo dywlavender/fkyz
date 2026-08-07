@@ -47,23 +47,39 @@ class DailyRuntimeLogger:
         task_id: str = "",
         timestamp: datetime | None = None,
         mirror_to_console: bool = False,
+        raw_message: bool = False,
     ) -> Path:
-        """Write exactly one physical line and return the selected daily file."""
+        """Write one record and return the selected daily file.
+
+        Normal records remain single-line JSON-escaped messages.  Raw records
+        are opt-in blocks for model I/O that must remain readable in the same
+        daily log file.
+        """
         occurred_at = timestamp or datetime.now().astimezone()
         if occurred_at.tzinfo is None:
             occurred_at = occurred_at.astimezone()
         day = occurred_at.date()
         path = self.log_dir / f"application-{day.isoformat()}.log"
-        rendered_message = json.dumps(str(message or ""), ensure_ascii=False)
-        line = (
+        prefix = (
             f"{occurred_at.isoformat(timespec='milliseconds')} "
             f"{_safe_label(level).upper():<5} "
             f"[traceId={_safe_label(trace_id)}] "
             f"[taskId={_safe_label(task_id)}] "
             f"[module={_safe_label(module)}] "
-            f"[event={_safe_label(event)}] "
-            f"message={rendered_message}\n"
+            f"[event={_safe_label(event)}]"
         )
+        if raw_message:
+            rendered_message = str(message or "")
+            if rendered_message and not rendered_message.endswith("\n"):
+                rendered_message += "\n"
+            line = (
+                f"{prefix} raw_message_begin\n"
+                f"{rendered_message}"
+                f"{prefix} raw_message_end\n"
+            )
+        else:
+            rendered_message = json.dumps(str(message or ""), ensure_ascii=False)
+            line = f"{prefix} message={rendered_message}\n"
         with self._lock:
             self.log_dir.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as stream:
@@ -102,6 +118,7 @@ def runtime_log(
     event: str = "runtime",
     trace_id: str = "",
     task_id: str = "",
+    raw_message: bool = False,
 ) -> None:
     """Best-effort application logging that never interrupts business execution."""
     try:
@@ -112,6 +129,7 @@ def runtime_log(
             message=message,
             trace_id=trace_id,
             task_id=task_id,
+            raw_message=raw_message,
             mirror_to_console=os.environ.get("RISK_REVIEW_LOG_TO_CONSOLE", "").strip().lower()
             in {"1", "true", "yes", "on"},
         )

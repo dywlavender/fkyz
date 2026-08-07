@@ -12,15 +12,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
-    from langchain_core.messages import AIMessage
+    from langchain_core.messages import AIMessage, AIMessageChunk
     from risk_review_web import agent_worker
 except ImportError:  # The agent tests run in the dedicated langchain1.2 environment.
     AIMessage = None
+    AIMessageChunk = None
     agent_worker = None
 
 from risk_review_web.services.model_runtime.agent_runner import (
     AGENT_EVENT_PREFIX,
     agent_health,
+    encode_agent_input,
     parse_agent_events,
     run_agent_process,
 )
@@ -29,14 +31,16 @@ from risk_review_web.services.model_runtime.agent_runner import (
 class _FakeModel:
     def __init__(self):
         self.calls = 0
+        self.message_calls = []
 
     def bind_tools(self, _tools):
         return self
 
-    def invoke(self, _messages):
+    def stream(self, messages):
         self.calls += 1
+        self.message_calls.append(list(messages))
         if self.calls == 1:
-            return AIMessage(
+            yield AIMessageChunk(
                 content="",
                 tool_calls=[{
                     "name": "read_file",
@@ -45,7 +49,9 @@ class _FakeModel:
                     "type": "tool_call",
                 }],
             )
-        return AIMessage(content="# 标准加工规范\n\n## 因子加工输入字段\n\n内容")
+            return
+        yield AIMessageChunk(content="# 标准加工")
+        yield AIMessageChunk(content="规范\n\n## 因子加工输入字段\n\n内容")
 
 
 class AgentRunnerHealthTest(unittest.TestCase):
@@ -72,7 +78,11 @@ class AgentWorkerTest(unittest.TestCase):
                 temp_dir,
             ]
             with patch.object(agent_worker.sys, "argv", arguments):
-                with patch.object(agent_worker.sys, "stdin", io.StringIO("测试 Prompt")):
+                worker_input = encode_agent_input(
+                    system_prompt="系统约束",
+                    user_prompt="测试 Prompt",
+                )
+                with patch.object(agent_worker.sys, "stdin", io.StringIO(worker_input)):
                     with patch.object(agent_worker, "load_project_env"):
                         with patch.object(agent_worker, "run_agent", return_value="# 最终响应") as run:
                             with contextlib.redirect_stdout(stdout):
@@ -80,16 +90,29 @@ class AgentWorkerTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(stdout.getvalue(), "")
             self.assertEqual(run.call_args.args[0], "测试 Prompt")
+            self.assertEqual(run.call_args.kwargs["system_prompt"], "系统约束")
 
     def test_agent_logs_every_round_tool_call_result_and_final_output(self):
         with tempfile.TemporaryDirectory(prefix="agent-worker-test-") as temp_dir:
             workspace = Path(temp_dir).resolve()
             (workspace / "allowed.md").write_text("规则正文", encoding="utf-8")
             stderr = io.StringIO()
-            with patch.object(agent_worker, "create_model", return_value=_FakeModel()):
+            fake_model = _FakeModel()
+            with patch.object(agent_worker, "create_model", return_value=fake_model):
                 with contextlib.redirect_stderr(stderr):
-                    result = agent_worker.run_agent("测试 Prompt", workspace)
+                    result = agent_worker.run_agent(
+                        "测试 Prompt",
+                        workspace,
+                        system_prompt="系统约束",
+                    )
             self.assertTrue(result.startswith("# 标准加工规范"))
+            first_messages = fake_model.message_calls[0]
+            self.assertEqual([type(item).__name__ for item in first_messages], [
+                "SystemMessage",
+                "HumanMessage",
+            ])
+            self.assertEqual(first_messages[0].content, "系统约束")
+            self.assertEqual(first_messages[1].content, "测试 Prompt")
             events = [
                 json.loads(line[len(agent_worker.EVENT_PREFIX):])
                 for line in stderr.getvalue().splitlines()
@@ -137,17 +160,21 @@ class AgentWorkerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="agent-stream-test-") as temp_dir:
             workspace = Path(temp_dir).resolve()
             events: list[tuple[str, float]] = []
+            model_inputs: list[object] = []
             tool_result_seen = threading.Event()
             outcome: dict[str, object] = {}
 
-            def record_event(event: str, _payload: object) -> None:
+            def record_event(event: str, payload: object) -> None:
                 events.append((event, time.monotonic()))
+                if event == "model_input":
+                    model_inputs.append(payload)
                 if event == "tool_result":
                     tool_result_seen.set()
 
             def run_worker() -> None:
                 outcome["value"] = run_agent_process(
                     prompt="测试实时日志",
+                    system_prompt="系统约束",
                     phase_label="Phase 1",
                     workspace=workspace,
                     timeout_seconds=10,
@@ -173,6 +200,9 @@ class AgentWorkerTest(unittest.TestCase):
             self.assertIn("tool_call", names)
             self.assertIn("tool_result", names)
             self.assertIn("agent_final", names)
+            worker_envelope = json.loads(model_inputs[0]["prompt"])
+            self.assertEqual(worker_envelope["system"], "系统约束")
+            self.assertEqual(worker_envelope["user"], "测试实时日志")
 
 
 if __name__ == "__main__":

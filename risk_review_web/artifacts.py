@@ -186,26 +186,26 @@ def validate_phase1_standard_basic_output(standard_text: str) -> None:
     """Enforce the non-skippable structure required for a Phase 1 artifact."""
     body = strip_yaml_frontmatter(standard_text)
     if not body.strip():
-        raise ValueError("Claude 未输出 Phase 1 标准加工规范正文。")
+        raise ValueError(f"Claude 未输出 Phase 1 标准加工规范正文。模型输出:{standard_text}")
     if not re.match(r"#\s+标准加工规范\b", body.lstrip()):
-        raise ValueError("Claude 未输出完整 Phase 1 标准加工规范正文，stdout 必须以「# 标准加工规范」开头。")
+        raise ValueError(f"Claude 未输出完整 Phase 1 标准加工规范正文，stdout 必须以「# 标准加工规范」开头。 模型输出:{standard_text}")
     sections = extract_markdown_sections(body)
     missing = [heading for heading in STANDARD_REQUIRED_HEADINGS if heading not in sections]
     if missing:
-        raise ValueError("Phase 1 标准加工规范缺少必要章节：" + "、".join(missing))
+        raise ValueError("Phase 1 标准加工规范缺少必要章节：" + "、".join(missing)+"。模型输出:" .join(review_text))
 
 
 def validate_phase2_review_basic_output(review_text: str) -> None:
     """Enforce the non-skippable structure required for a Phase 2 artifact."""
     body = strip_yaml_frontmatter(review_text)
     if not body.strip():
-        raise ValueError("Claude 未输出 Phase 2 评审报告正文。")
+        raise ValueError(f"Claude 未输出 Phase 2 评审报告正文。模型输出:{review_text}")
     if not re.match(r"#\s+评审报告\b", body.lstrip()):
-        raise ValueError("Claude 未输出完整 Phase 2 评审报告正文，stdout 必须以「# 评审报告」开头。")
+        raise ValueError(f"Claude 未输出完整 Phase 2 评审报告正文，stdout 必须以「# 评审报告」开头。模型输出:{review_text}")
     sections = extract_markdown_sections(body)
     missing = [heading for heading in ("总体结论", "汇总问题清单") if heading not in sections]
     if missing:
-        raise ValueError("Phase 2 评审报告缺少必要章节：" + "、".join(missing))
+        raise ValueError("Phase 2 评审报告缺少必要章节：" + "、".join(missing) +"。模型输出:" .join(review_text))
 
 
 def normalize_requirement_review_output(output_text: str) -> str:
@@ -242,17 +242,17 @@ def validate_requirement_review_basic_output(review_text: str) -> None:
     """Enforce the minimal standalone requirement-review Markdown contract."""
     body = strip_yaml_frontmatter(review_text)
     if not body.strip():
-        raise ValueError("Claude 未输出需求评审报告正文。")
+        raise ValueError(f"Claude 未输出需求评审报告正文。模型输出:{review_text}")
     if not re.match(r"#\s+需求评审报告\b", body.lstrip()):
-        raise ValueError("Claude 未输出完整需求评审报告，stdout 必须以「# 需求评审报告」开头。")
+        raise ValueError(f"Claude 未输出完整需求评审报告，stdout 必须以「# 需求评审报告」开头。模型输出:{review_text}")
     sections = extract_markdown_sections(body)
     missing = [heading for heading in REQUIREMENT_REVIEW_REQUIRED_HEADINGS if heading not in sections]
     if missing:
-        raise ValueError("需求评审报告缺少必要章节：" + "、".join(missing))
+        raise ValueError("需求评审报告缺少必要章节：" + "、".join(missing)+"。模型输出:" .join(review_text))
     requirement_review_conclusion(body)
     issue_tables = extract_markdown_tables(sections.get("问题清单", ""))
     if not any(tuple(table["headers"]) == REQUIREMENT_REVIEW_ISSUE_HEADERS for table in issue_tables):
-        raise ValueError("需求评审报告的问题清单缺少规定的 Markdown 表格。")
+        raise ValueError(f"需求评审报告的问题清单缺少规定的 Markdown 表格。。模型输出:{review_text}")
 
 
 def save_requirement_review_artifacts(

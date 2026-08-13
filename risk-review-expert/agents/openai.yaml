@@ -1,0 +1,4 @@
+interface:
+  display_name: "风控评审专家"
+  short_description: "按阶段生成标准加工规范并完成风控因子加工逻辑智能评审"
+  default_prompt: "使用 $risk-review-expert 对需求和加工逻辑执行完整风控评审。"

@@ -77,30 +77,15 @@ def main() -> int:
             "RISK_REVIEW_LOG_DIR": str(temp_root / "logs"),
             "RISK_REVIEW_STATE_SEED": "0",
             "RISK_REVIEW_SCHEDULER_POLL": "1",
-            "RISK_REVIEW_MODEL_BACKEND": "claude",
         }
         process: subprocess.Popen[str] = start_server(environment)
         try:
             wait_for_server(base_url, process, 30)
 
             settings = api_data(request_json(base_url, "/api/runtime-settings")) or {}
-            if settings.get("modelBackend") != "claude":
-                raise AssertionError(f"模型后端首次默认值错误：{settings}")
-            agent_settings = api_data(request_json(
-                base_url,
-                "/api/runtime-settings",
-                {**settings, "modelBackend": "agent"},
-                method="PUT",
-            )) or {}
             health = request_json(base_url, "/api/health")
-            if agent_settings.get("modelBackend") != "agent" or (health.get("modelRuntime") or {}).get("selectedBackend") != "agent":
-                raise AssertionError(f"模型后端开关未生效：settings={agent_settings}, health={health}")
-            request_json(
-                base_url,
-                "/api/runtime-settings",
-                {**agent_settings, "modelBackend": "claude"},
-                method="PUT",
-            )
+            if not isinstance(health.get("modelRuntime"), dict):
+                raise AssertionError(f"健康接口缺少 Agent 运行状态：{health}")
 
             rows = [
                 {
@@ -189,7 +174,7 @@ def main() -> int:
                 raise AssertionError(f"到期自动触发失败：{automatic_finished}")
         finally:
             terminate_process(process)
-    print("[PASS] 模型后端开关、多行批量、单案例回归、定时任务手动与到期自动触发")
+        print("[PASS] 单一 Agent 运行设置、多行批量、单案例回归、定时任务手动与到期自动触发")
     return 0
 
 

@@ -60,7 +60,7 @@ IMPORT_ALIASES: dict[str, list[str]] = {
 
 VALID_SCHEDULE_TYPES = {"once", "daily", "weekly", "monthly", "cron"}
 VALID_MODES = {"phase1_only", "phase1_phase2", "phase2_only"}
-VALID_RUNTIME_MODES = {"mock", "claude"}
+VALID_RUNTIME_MODES = {"mock", "agent"}
 VALID_FAILURE_POLICIES = {"continue", "stop"}
 VALID_RUN_STATUSES = {"pending", "running", "success", "partial_success", "failed", "cancelled"}
 
@@ -554,7 +554,7 @@ def detect_review_conclusion(markdown: str) -> str:
     source = str(markdown or "")
     overall = re.search(r"\|\s*总体结论\s*\|\s*([^|]+?)\s*\|", source)
     target = overall.group(1) if overall else source
-    if re.search(r"❌|不通过|未通过|不符合", target):
+    if re.search(r"不通过|未通过|不符合", target):
         return "fail"
     if re.search(r"⛔|无法评审", target):
         return "unreviewable"
@@ -691,7 +691,7 @@ class ScheduledTaskService:
                 self._record_scheduler_dispatch_failure(task, str(exc))
 
     def _recover_interrupted_runs(self) -> None:
-        """A process restart cannot resume in-flight Claude calls; close them explicitly."""
+        """A process restart cannot resume in-flight Agent calls; close them explicitly."""
         now_text = _iso_now()
         with self.store.lock:
             runs = _read_json_list(self.store.runs_path)
@@ -1224,7 +1224,7 @@ class ScheduledTaskService:
         mode = str(payload.get("mode") or "").strip()
         if mode not in VALID_MODES:
             raise ScheduledTaskError("mode 无效。")
-        runtime_mode = str(payload.get("runtimeMode") or "").strip() or "claude"
+        runtime_mode = str(payload.get("runtimeMode") or "").strip() or "agent"
         if runtime_mode not in VALID_RUNTIME_MODES:
             raise ScheduledTaskError("runtimeMode 无效。")
         failure_policy = str(payload.get("failurePolicy") or "").strip() or "continue"

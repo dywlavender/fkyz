@@ -7,7 +7,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from risk_review_web.services.runtime_logging import DailyRuntimeLogger
+from unittest.mock import patch
+
+from risk_review_web.services.runtime_logging import DailyRuntimeLogger, runtime_log
 
 
 class DailyRuntimeLoggerTest(unittest.TestCase):
@@ -25,6 +27,34 @@ class DailyRuntimeLoggerTest(unittest.TestCase):
                 )
                 self.assertIn("工具执行完成", console.getvalue())
 
+    def test_console_mirroring_does_not_fail_on_gbk_incompatible_characters(self):
+        with tempfile.TemporaryDirectory(prefix="risk-runtime-gbk-") as temp_dir:
+            logger = DailyRuntimeLogger(Path(temp_dir), retention_days=10)
+            raw_console = io.BytesIO()
+            console = io.TextIOWrapper(raw_console, encoding="gbk", errors="strict")
+            with contextlib.redirect_stdout(console):
+                logger.write(
+                    level="INFO",
+                    module="agent",
+                    event="model_response",
+                    message="总体结论：🚫 不通过",
+                    mirror_to_console=True,
+                )
+                console.flush()
+                rendered = raw_console.getvalue().decode("gbk")
+
+            self.assertIn(r"\U0001f6ab", rendered)
+            self.assertIn("不通过", rendered)
+            log_text = next(Path(temp_dir).glob("application-*.log")).read_text(encoding="utf-8")
+            self.assertIn("🚫", log_text)
+
+    def test_runtime_logging_never_propagates_console_encoding_failures(self):
+        with patch(
+            "risk_review_web.services.runtime_logging._DEFAULT_LOGGER.write",
+            side_effect=UnicodeEncodeError("gbk", "🚫", 0, 1, "illegal multibyte sequence"),
+        ):
+            runtime_log("requirement-review", "不通过")
+
     def test_writes_one_daily_file_with_trace_and_single_line_message(self):
         with tempfile.TemporaryDirectory(prefix="risk-runtime-log-") as temp_dir:
             logger = DailyRuntimeLogger(Path(temp_dir), retention_days=10)
@@ -32,7 +62,7 @@ class DailyRuntimeLoggerTest(unittest.TestCase):
             path = logger.write(
                 level="INFO",
                 module="requirement-review",
-                event="claude_output",
+                event="agent_output",
                 message="第一行\n第二行",
                 trace_id="tr_example",
                 task_id="requirement-review-example",

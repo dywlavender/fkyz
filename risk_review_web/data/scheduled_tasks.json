@@ -9,7 +9,7 @@
     "weekday": "1",
     "monthDay": "1",
     "mode": "phase1_phase2",
-    "runtimeMode": "claude",
+    "runtimeMode": "agent",
     "concurrency": 3,
     "failurePolicy": "continue",
     "standardFile": "",

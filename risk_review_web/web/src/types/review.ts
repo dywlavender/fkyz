@@ -127,7 +127,7 @@ export interface Phase1Request {
   factorName: string
   requirement: string
   apiNames: string[]
-  debugClaude?: boolean
+  debugAgent?: boolean
   clientId?: string
   forceRefresh?: boolean
 }
@@ -169,7 +169,7 @@ export interface Phase2Request {
   requirement: string
   draft: string
   standardFileId: string
-  debugClaude?: boolean
+  debugAgent?: boolean
   clientId?: string
 }
 
@@ -552,28 +552,12 @@ export interface RegressionSummary {
 export interface SystemHealth {
   ok?: boolean
   checks?: Record<string, boolean>
-  claude?: {
-    command?: string
-    claude_path?: string | null
-    version?: string | null
-    working_dir?: string
-    mock_mode?: boolean
-    note?: string
-  }
+  mock_mode?: boolean
   modelRuntime?: {
-    selectedBackend?: 'claude' | 'agent'
-    selectedAvailable?: boolean
-    claude?: {
-      available?: boolean
-      command?: string
-      claude_path?: string | null
-      version?: string | null
-      note?: string
-    }
+    available?: boolean
     agent?: {
       available?: boolean
       python?: string
-      environment_available?: boolean
       provider?: string
       model?: string
       api_key_configured?: boolean
@@ -600,7 +584,6 @@ export interface RuntimeSettings {
   globalConcurrency: number
   batchConcurrency: number
   scheduledConcurrency: number
-  modelBackend: 'claude' | 'agent'
 }
 
 export interface AppNotice {
@@ -639,7 +622,7 @@ export interface ScheduledTask {
   weekday?: string
   monthDay?: string
   mode: ScheduledTaskMode
-  runtimeMode: 'mock' | 'claude'
+  runtimeMode: 'mock' | 'agent'
   failurePolicy: 'continue' | 'stop'
   standardFile?: string
   items: ScheduledTaskItem[]
@@ -702,7 +685,7 @@ export interface CreateScheduledTaskRequest {
   weekday?: string
   monthDay?: string
   mode: ScheduledTaskMode
-  runtimeMode: 'mock' | 'claude'
+  runtimeMode: 'mock' | 'agent'
   failurePolicy: 'continue' | 'stop'
   standardFile?: string
   items: ScheduledTaskItem[]

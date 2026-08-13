@@ -18,7 +18,7 @@ class ReviewEvaluationTest(unittest.TestCase):
             "✅ 通过（完整逻辑）": "pass",
             "预期 fail": "fail",
             "failure：字段错配": "fail",
-            "❌ 不通过，需修改": "fail",
+            "不通过，需修改": "fail",
             "unreviewable：缺少输入": "unreviewable",
             "⛔ 无法评审": "unreviewable",
         }

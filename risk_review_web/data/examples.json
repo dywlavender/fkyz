@@ -40,7 +40,7 @@
     "procLogic": "1. 取 applyTime 前 8 位作为申请日期。\n2. 选取 kpyf在近 12 个月内的记录。\n3. 对 inputAmount 求和。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n授信申请接口.applyTime\nES_医药企业药品采购信息查询接口.content[].kpyf\nES_医药企业药品采购信息查询接口.content[].inputAmount\n\n【加工逻辑】\n1. 取 applyTime 前 8 位作为申请日期。\n2. 选取 kpyf在近 12 个月内的记录。\n3. 对 inputAmount 求和。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`❌ 不通过，需修改`",
+    "expected": "`不通过，需修改`",
     "maxIssueCount": 3,
     "version": "4da76cfa12fa",
     "updatedAt": 1784041793
@@ -78,7 +78,7 @@
     "procLogic": "1. 使用 alter[]，每条含 ALTDATE（格式 YYYYMMDATE）和 ALTITEM。\n2. 筛选 ALTITEM 包含“投资人”“股东变更”“投资人（股权）变更”的记录。\n3. 取第一条记录计算与 applyDate 的月份差。\n4. 若无记录则输出 -1。",
     "defaultValues": "-1",
     "draft": "【因子加工输入字段】\ntaxpayerId | 统一社会信用代码\napplyDate | 申请日期\n\n【加工逻辑】\n1. 使用 alter[]，每条含 ALTDATE（格式 YYYYMMDATE）和 ALTITEM。\n2. 筛选 ALTITEM 包含“投资人”“股东变更”“投资人（股权）变更”的记录。\n3. 取第一条记录计算与 applyDate 的月份差。\n4. 若无记录则输出 -1。\n\n【默认值】\n-1",
-    "expected": "`❌ 不通过，需修改`",
+    "expected": "`不通过，需修改`",
     "expectedIssuePatterns": [
       "取第一条记录"
     ],
@@ -121,7 +121,7 @@
     "procLogic": "1. 读取 withdrawAmt、withdrawType、contractAvailableAmt。\n2. 当 withdrawType = 01 且 withdrawAmt > 0 时直接输出 true，不再比较 contractAvailableAmt。\n3. 其他情况输出 false。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n提款申请接口.withdrawAmt\n提款申请接口.withdrawType\n授信额度查询接口.contractAvailableAmt\n\n【加工逻辑】\n1. 读取 withdrawAmt、withdrawType、contractAvailableAmt。\n2. 当 withdrawType = 01 且 withdrawAmt > 0 时直接输出 true，不再比较 contractAvailableAmt。\n3. 其他情况输出 false。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`❌ 不通过，需修改`",
+    "expected": "`不通过，需修改`",
     "expectedIssuePatterns": [
       "contractAvailableAmt"
     ],
@@ -143,7 +143,7 @@
     "procLogic": "1. 取授信申请接口中的 applyTime 作为进件时点，将 applyTime 转换为yyyy-MM格式后作为 endMonth。按endMonth - 12 个月得到窗口起点。\n2. 遍历 ES 接口返回的 content 明细，列表不为空时，按 kpyf 过滤在窗口内的记录。要求 `窗口起点 <= kpyf <= endMonth` 的记录。\n3. 对保留记录的 inputAmount 求和，求和结果四舍五入后保留2位小数。\n4. 无符合记录时或者列表为空返回0。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n授信申请接口.applyTime\nES_医药企业药品采购信息查询接口.content[].kpyf\nES_医药企业药品采购信息查询接口.content[].inputAmount\n\n【加工逻辑】\n1. 取授信申请接口中的 applyTime 作为进件时点，将 applyTime 转换为yyyy-MM格式后作为 endMonth。按endMonth - 12 个月得到窗口起点。\n2. 遍历 ES 接口返回的 content 明细，列表不为空时，按 kpyf 过滤在窗口内的记录。要求 `窗口起点 <= kpyf <= endMonth` 的记录。\n3. 对保留记录的 inputAmount 求和，求和结果四舍五入后保留2位小数。\n4. 无符合记录时或者列表为空返回0。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`❌ 不通过`（四舍五入保留2位是会改变部分有效输入最终结果的新增精度转换，应按 result_changing_addition 判定）",
+    "expected": "`不通过`（四舍五入保留2位是会改变部分有效输入最终结果的新增精度转换，应按 result_changing_addition 判定）",
     "expectedIssuePatterns": [
       "四舍五入"
     ],
@@ -165,7 +165,7 @@
     "procLogic": "1. 取授信申请接口中的 applyTime 作为进件时点，将 applyTime 转换为yyyy-MM格式后作为 endMonth。按endMonth - 12 个月得到窗口起点。\n2. 遍历 ES 接口返回的 content 明细，列表不为空时，按 kpyf 过滤在窗口内的记录。要求 `窗口起点 <= kpyf <= endMonth` 的记录。\n3. 对保留记录的 inputAmount 求和，再将求和结果乘以100后输出。\n4. 无符合记录时或者列表为空返回0。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n授信申请接口.applyTime\nES_医药企业药品采购信息查询接口.content[].kpyf\nES_医药企业药品采购信息查询接口.content[].inputAmount\n\n【加工逻辑】\n1. 取授信申请接口中的 applyTime 作为进件时点，将 applyTime 转换为yyyy-MM格式后作为 endMonth。按endMonth - 12 个月得到窗口起点。\n2. 遍历 ES 接口返回的 content 明细，列表不为空时，按 kpyf 过滤在窗口内的记录。要求 `窗口起点 <= kpyf <= endMonth` 的记录。\n3. 对保留记录的 inputAmount 求和，再将求和结果乘以100后输出。\n4. 无符合记录时或者列表为空返回0。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`❌ 不通过`（乘以100会确定性改变 AGGREGATION-001 的求和结果）",
+    "expected": "`不通过`（乘以100会确定性改变 AGGREGATION-001 的求和结果）",
     "expectedIssuePatterns": [
       "乘以 100"
     ],
@@ -214,7 +214,7 @@
     "procLogic": "1. 取 applyTime 作为统计终点，窗口起点为 applyTime 减6个月，起点和终点均包含。\n2. 遍历 relatedAccounts[].transactions[]。\n3. 筛选 direction = CREDIT 且 status = SUCCESS 的窗口内流水。\n4. 对保留流水的 amount 求和；无符合记录时返回0。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n授信申请接口.applyTime\n企业账户交易流水查询接口.relatedAccounts[].transactions[].transactionDate\n企业账户交易流水查询接口.relatedAccounts[].transactions[].direction\n企业账户交易流水查询接口.relatedAccounts[].transactions[].status\n企业账户交易流水查询接口.relatedAccounts[].transactions[].amount\n\n【加工逻辑】\n1. 取 applyTime 作为统计终点，窗口起点为 applyTime 减6个月，起点和终点均包含。\n2. 遍历 relatedAccounts[].transactions[]。\n3. 筛选 direction = CREDIT 且 status = SUCCESS 的窗口内流水。\n4. 对保留流水的 amount 求和；无符合记录时返回0。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`❌ 不通过`（把关联账户数组作为加工对象，未使用主账户交易数组）",
+    "expected": "`不通过`（把关联账户数组作为加工对象，未使用主账户交易数组）",
     "expectedIssuePatterns": [
       "relatedAccounts[].transactions[]"
     ],
@@ -258,7 +258,7 @@
     "procLogic": "1. 读取 withdrawType、withdrawAmt、limitStatus、frozenFlag、usedAmt。\n2. 当 withdrawType = 01 AND limitStatus = ACTIVE AND frozenFlag = N AND withdrawAmt > 0 AND withdrawAmt <= usedAmt 时输出 true。\n3. 其他正常业务情况输出 false。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n提款申请接口.withdrawType\n提款申请接口.withdrawAmt\n授信额度查询接口.limitStatus\n授信额度查询接口.frozenFlag\n授信额度查询接口.usedAmt\n\n【加工逻辑】\n1. 读取 withdrawType、withdrawAmt、limitStatus、frozenFlag、usedAmt。\n2. 当 withdrawType = 01 AND limitStatus = ACTIVE AND frozenFlag = N AND withdrawAmt > 0 AND withdrawAmt <= usedAmt 时输出 true。\n3. 其他正常业务情况输出 false。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`❌ 不通过`（使用已用额度usedAmt替代合同可用额度contractAvailableAmt）",
+    "expected": "`不通过`（使用已用额度usedAmt替代合同可用额度contractAvailableAmt）",
     "version": "c12cd9a3e18d",
     "updatedAt": 1784474204
   },
@@ -294,7 +294,7 @@
     "procLogic": "1. 计算包含双边界的近12个月窗口。\n2. 遍历 invoices[]，筛选 invoiceStatus = VALID 且 buyerTaxNo 非空的窗口内发票。\n3. 直接统计保留发票的记录条数，不对 buyerTaxNo 去重；无符合记录时返回0。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n授信申请接口.applyTime\n增值税销项发票查询接口.invoices[].invoiceDate\n增值税销项发票查询接口.invoices[].invoiceStatus\n增值税销项发票查询接口.invoices[].buyerTaxNo\n\n【加工逻辑】\n1. 计算包含双边界的近12个月窗口。\n2. 遍历 invoices[]，筛选 invoiceStatus = VALID 且 buyerTaxNo 非空的窗口内发票。\n3. 直接统计保留发票的记录条数，不对 buyerTaxNo 去重；无符合记录时返回0。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`❌ 不通过`（按发票记录计数替代购方税号去重计数）",
+    "expected": "`不通过`（按发票记录计数替代购方税号去重计数）",
     "version": "c14fe594eb43",
     "updatedAt": 1784474206
   },
@@ -328,7 +328,7 @@
     "procLogic": "1. 遍历 loans[]。\n2. 筛选 loanStatus = ACTIVE OR overdueDays >= 30 的记录。\n3. 对保留记录的 outstandingBalance 求和；无符合记录时返回0。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n企业贷款还款表现查询接口.loans[].loanStatus\n企业贷款还款表现查询接口.loans[].overdueDays\n企业贷款还款表现查询接口.loans[].outstandingBalance\n\n【加工逻辑】\n1. 遍历 loans[]。\n2. 筛选 loanStatus = ACTIVE OR overdueDays >= 30 的记录。\n3. 对保留记录的 outstandingBalance 求和；无符合记录时返回0。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`❌ 不通过`（将必须同时满足的AND条件改成OR条件）",
+    "expected": "`不通过`（将必须同时满足的AND条件改成OR条件）",
     "version": "c16d2b046f8c",
     "updatedAt": 1784474208
   },
@@ -364,7 +364,7 @@
     "procLogic": "1. 取 applyTime 的日期作为 startDate，endDate = startDate + 30天。\n2. 遍历 batches[]，筛选 inventoryStatus = NORMAL 且 startDate <= expiryDate < endDate 的批次。\n3. 每批计算 max(availableQty - lockedQty, 0)并求和。\n4. 若求和结果大于0则输出 true，否则输出 false。",
     "defaultValues": "字段缺失、格式错误或数据异常时返回默认值",
     "draft": "【因子加工输入字段】\n授信申请接口.applyTime\n仓储库存批次查询接口.batches[].expiryDate\n仓储库存批次查询接口.batches[].inventoryStatus\n仓储库存批次查询接口.batches[].availableQty\n仓储库存批次查询接口.batches[].lockedQty\n\n【加工逻辑】\n1. 取 applyTime 的日期作为 startDate，endDate = startDate + 30天。\n2. 遍历 batches[]，筛选 inventoryStatus = NORMAL 且 startDate <= expiryDate < endDate 的批次。\n3. 每批计算 max(availableQty - lockedQty, 0)并求和。\n4. 若求和结果大于0则输出 true，否则输出 false。\n\n【默认值】\n字段缺失、格式错误或数据异常时返回默认值",
-    "expected": "`❌ 不通过`（颠倒起止边界包含关系，并把数值型库存量改成布尔结果）",
+    "expected": "`不通过`（颠倒起止边界包含关系，并把数值型库存量改成布尔结果）",
     "version": "c18fd00b2714",
     "updatedAt": 1784474210
   }

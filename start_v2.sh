@@ -5,10 +5,6 @@ PORT="${1:-8765}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 内置默认 Claude 命令；外部仍可用 RISK_REVIEW_CLAUDE_CMD 覆盖。
-# Windows / Git Bash 通常使用 claude.cmd；macOS / Linux 通常使用 claude。
-DEFAULT_CLAUDE_CMD="${DEFAULT_CLAUDE_CMD:-claude.cmd}"
-
 echo "==========================================="
 echo "  风控评审平台 Risk Review Server v2"
 echo "==========================================="
@@ -41,24 +37,5 @@ else
     echo "⚠ 未找到 lsof，跳过端口占用清理"
 fi
 
-if [ -z "${RISK_REVIEW_CLAUDE_CMD:-}" ]; then
-    if command -v "${DEFAULT_CLAUDE_CMD}" >/dev/null 2>&1; then
-        export RISK_REVIEW_CLAUDE_CMD="${DEFAULT_CLAUDE_CMD}"
-    elif command -v claude >/dev/null 2>&1; then
-        export RISK_REVIEW_CLAUDE_CMD="claude"
-    elif command -v claude.cmd >/dev/null 2>&1; then
-        export RISK_REVIEW_CLAUDE_CMD="claude.cmd"
-    fi
-fi
 
-if [ -n "${RISK_REVIEW_CLAUDE_CMD:-}" ]; then
-    echo "✓ Claude 命令: ${RISK_REVIEW_CLAUDE_CMD}"
-else
-    echo "⚠ 当前 shell 未找到 claude/claude.cmd；如选择 Claude 后端，请在环境变量或项目 .env 中配置 RISK_REVIEW_CLAUDE_CMD"
-fi
-
-if command -v python >/dev/null 2>&1; then
-    exec python -m risk_review_web.server_v2
-fi
-
-exec python3 -m risk_review_web.server_v2
+exec /opt/miniconda3/envs/langchain1.2/bin/python -m risk_review_web.server_v2

@@ -14,9 +14,6 @@ RUNTIME_SETTINGS_LOCK = threading.RLock()
 MAX_CONCURRENCY = 32
 
 
-VALID_MODEL_BACKENDS = {"claude", "agent"}
-
-
 def _default_settings() -> dict[str, Any]:
     global_concurrency = max(
         1,
@@ -26,12 +23,6 @@ def _default_settings() -> dict[str, Any]:
         "globalConcurrency": global_concurrency,
         "batchConcurrency": global_concurrency,
         "scheduledConcurrency": global_concurrency,
-        "modelBackend": (
-            os.environ.get("RISK_REVIEW_MODEL_BACKEND", "claude").strip().lower()
-            if os.environ.get("RISK_REVIEW_MODEL_BACKEND", "claude").strip().lower()
-            in VALID_MODEL_BACKENDS
-            else "claude"
-        ),
     }
 
 
@@ -64,14 +55,10 @@ def _normalize_settings(value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("批量评审并发上限不能超过全局并发上限。")
     if scheduled_concurrency > global_concurrency:
         raise ValueError("定时任务并发上限不能超过全局并发上限。")
-    model_backend = str(value.get("modelBackend", defaults["modelBackend"])).strip().lower()
-    if model_backend not in VALID_MODEL_BACKENDS:
-        raise ValueError("模型调用方式必须是 claude 或 agent。")
     return {
         "globalConcurrency": global_concurrency,
         "batchConcurrency": batch_concurrency,
         "scheduledConcurrency": scheduled_concurrency,
-        "modelBackend": model_backend,
     }
 
 

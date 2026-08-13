@@ -55,11 +55,11 @@ python3 risk_review_web/prompts/risk-review-skill/build/build_prompt.py
 - Phase 2 不读取接口文档和公共业务规则，不重新推导标准。
 - Markdown 正文由模型输出，Python 后端负责校验、加展示元数据并写入根目录 `outputs/`。
 
-## 模型运行后端
+## Agent 运行方式
 
-- “系统管理 → 运行设置”统一选择 `Claude CLI` 或 `LangChain Agent`，首次默认 Claude；任务创建时冻结所选后端，切换只影响新任务。
-- 两种后端共用 Prompt、阶段隔离目录、产物校验、缓存和元数据链路。缓存键不包含后端类型，已有 Claude 缓存可被 Agent 模式直接复用。
-- Agent Worker 从项目根目录 `.env` 读取 Provider、模型和凭据，最终响应正文直接作为 Markdown；每轮完整模型输入、模型输出、工具调用、工具结果和最终正文写入每日运行日志。
+- LangChain Agent 是唯一模型运行方式，在 Web 服务进程的全局任务池线程中直接执行。
+- Agent 最终响应直接进入 Markdown 校验与落盘链路，不经过标准输入输出。
+- Agent 从项目根目录 `.env` 读取 Provider、模型和凭据，最终响应正文直接作为 Markdown；每轮完整模型输入、模型输出、工具调用、工具结果和最终正文写入每日运行日志。
 - Agent 仅能调用隔离目录内的只读 `read_file`、`glob_files`、`grep_files`，禁止绝对路径、父目录穿越和符号链接逃逸。
 
 ## 版本数据与运行状态

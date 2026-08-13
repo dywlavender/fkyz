@@ -1,29 +1,16 @@
 from __future__ import annotations
 
-import argparse
-import json
+import importlib.metadata
 import os
 import re
 import sys
 from pathlib import Path
 from typing import Any
-from langchain.chat_models import init_chat_model
 
 
-from risk_review_web.environment import load_project_env
-
-
-EVENT_PREFIX = "RISK_REVIEW_AGENT_EVENT\t"
-AGENT_INPUT_SCHEMA = "risk_review_agent_input_v1"
 MAX_FILE_CHARS = 200_000
 MAX_GLOB_RESULTS = 500
 MAX_GREP_MATCHES = 500
-
-
-def emit(event: str, payload: object) -> None:
-    record = json.dumps({"event": event, "payload": payload}, ensure_ascii=False, default=str)
-    sys.stderr.write(EVENT_PREFIX + record + "\n")
-    sys.stderr.flush()
 
 
 def safe_relative_path(workspace: Path, raw_path: str, *, must_exist: bool = True) -> Path:
@@ -74,7 +61,7 @@ def build_tools(workspace: Path):
 
     @tool
     def grep_files(query: str, pattern: str = "**/*") -> str:
-        """Search text files in the isolated workspace using a regular expression."""
+        """Search UTF-8 text files in the isolated workspace."""
         matcher = re.compile(str(query or ""))
         file_list = glob_files.invoke({"pattern": pattern}).splitlines()
         matches: list[str] = []
@@ -116,32 +103,45 @@ def extract_text(content: Any) -> str:
     return str(content or "").strip()
 
 
-def decode_agent_input(raw_input: str) -> tuple[str, str]:
-    """Decode the role-separated stdin envelope sent by the parent process."""
-    try:
-        payload = json.loads(raw_input)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Agent 输入不是有效 JSON。") from exc
-    if not isinstance(payload, dict) or payload.get("schema") != AGENT_INPUT_SCHEMA:
-        raise ValueError("Agent 输入协议不受支持。")
-    system_prompt = str(payload.get("system") or "").strip()
-    user_prompt = str(payload.get("user") or "").strip()
-    if not user_prompt:
-        raise ValueError("Agent 用户消息为空。")
-    return system_prompt, user_prompt
-
-
 def create_model():
+    from langchain.chat_models import init_chat_model
+
     provider = os.environ.get("RISK_REVIEW_AGENT_PROVIDER", "anthropic").strip().lower()
     model_name = os.environ.get("RISK_REVIEW_AGENT_MODEL", "").strip()
     if not model_name:
         raise RuntimeError("RISK_REVIEW_AGENT_MODEL 未配置。")
-    temperature = float(os.environ.get("RISK_REVIEW_AGENT_TEMPERATURE", "0"))
-    max_tokens = int(os.environ.get("RISK_REVIEW_AGENT_MAX_TOKENS", "1200000"))
-    timeout = float(os.environ.get("RISK_REVIEW_AGENT_TIMEOUT", "600"))
-    return init_chat_model(model=model_name,model_provider=provider,temperature=temperature,max_retries=0,max_tokens=max_tokens,timeout=timeout)
+    return init_chat_model(
+        model=model_name,
+        model_provider=provider,
+        temperature=float(os.environ.get("RISK_REVIEW_AGENT_TEMPERATURE", "0")),
+        max_retries=0,
+        max_tokens=int(os.environ.get("RISK_REVIEW_AGENT_MAX_TOKENS", "1200000")),
+        timeout=float(os.environ.get("RISK_REVIEW_AGENT_TIMEOUT", "600")),
+    )
 
-    # raise RuntimeError(f"不支持的 Agent Provider：{provider}")
+
+def agent_health() -> dict:
+    provider = os.environ.get("RISK_REVIEW_AGENT_PROVIDER", "anthropic").strip().lower()
+    if provider == "anthropic":
+        api_key_configured = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    elif provider in {"openai", "openai-compatible", "openai_compatible"}:
+        api_key_configured = bool(os.environ.get("OPENAI_API_KEY"))
+    else:
+        api_key_configured = False
+    try:
+        version = importlib.metadata.version("langchain")
+        note = ""
+    except importlib.metadata.PackageNotFoundError:
+        version = None
+        note = "当前 Web 服务 Python 环境未安装 LangChain。"
+    return {
+        "python": sys.executable,
+        "provider": provider,
+        "model": os.environ.get("RISK_REVIEW_AGENT_MODEL", "").strip(),
+        "api_key_configured": api_key_configured,
+        "langchain_version": version,
+        "note": note,
+    }
 
 
 def run_agent(
@@ -150,9 +150,14 @@ def run_agent(
     *,
     system_prompt: str = "",
     enable_tools: bool = True,
+    event_callback=None,
+    cancelled=None,
 ) -> str:
+    """Run one Agent call in the current process and current pool worker thread."""
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
+    callback = event_callback or (lambda _event, _payload: None)
+    is_cancelled = cancelled or (lambda: False)
     tools = build_tools(workspace) if enable_tools else []
     tools_by_name = {item.name: item for item in tools}
     base_model = create_model()
@@ -162,89 +167,40 @@ def run_agent(
     if system_prompt.strip():
         messages.append(SystemMessage(content=system_prompt))
     messages.append(HumanMessage(content=user_prompt))
-    emit(
-        "agent_start",
-        {
-            "workspace": str(workspace),
-            "system_prompt": system_prompt,
-            "user_prompt": user_prompt,
-            "max_steps": max_steps,
-            "tools": sorted(tools_by_name),
-        },
-    )
+    callback("agent_start", {"workspace": str(workspace), "max_steps": max_steps, "tools": sorted(tools_by_name)})
     for round_number in range(1, max_steps + 1):
-        emit(
-            "model_input",
-            {"round": round_number, "messages": [serialize_message(item) for item in messages]},
-        )
+        if is_cancelled():
+            raise InterruptedError("Agent 调用已取消。")
+        callback("model_input", {"round": round_number, "messages": [serialize_message(item) for item in messages]})
         response = None
         for chunk in model.stream(messages):
             response = chunk if response is None else response + chunk
         if response is None:
             raise RuntimeError("模型未返回响应。")
-        emit("model_output", {"round": round_number, "message": serialize_message(response)})
+        callback("model_output", {"round": round_number, "message": serialize_message(response)})
         messages.append(response)
         tool_calls = list(getattr(response, "tool_calls", []) or [])
         if not tool_calls:
             markdown = extract_text(response.content)
             if not markdown:
                 raise RuntimeError("Agent 最终响应为空。")
-            emit("agent_final", {"round": round_number, "markdown": markdown})
+            callback("agent_final", {"round": round_number, "markdown": markdown})
             return markdown
         for call in tool_calls:
+            if is_cancelled():
+                raise InterruptedError("Agent 调用已取消。")
             name = str(call.get("name") or "")
             arguments = call.get("args") or {}
             call_id = str(call.get("id") or "")
-            emit(
-                "tool_call",
-                {"round": round_number, "id": call_id, "name": name, "arguments": arguments},
-            )
+            callback("tool_call", {"round": round_number, "id": call_id, "name": name, "arguments": arguments})
             tool = tools_by_name.get(name)
             if tool is None:
-                tool_result = f"工具不存在：{name}"
-                is_error = True
+                tool_result, is_error = f"工具不存在：{name}", True
             else:
                 try:
-                    tool_result = str(tool.invoke(arguments))
-                    is_error = False
+                    tool_result, is_error = str(tool.invoke(arguments)), False
                 except Exception as exc:
-                    tool_result = f"{type(exc).__name__}: {exc}"
-                    is_error = True
-            emit(
-                "tool_result",
-                {
-                    "round": round_number,
-                    "id": call_id,
-                    "name": name,
-                    "is_error": is_error,
-                    "result": tool_result,
-                },
-            )
+                    tool_result, is_error = f"{type(exc).__name__}: {exc}", True
+            callback("tool_result", {"round": round_number, "id": call_id, "name": name, "is_error": is_error, "result": tool_result})
             messages.append(ToolMessage(content=tool_result, tool_call_id=call_id))
     raise RuntimeError(f"Agent 超过最大交互轮数：{max_steps}")
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", required=True)
-    parser.add_argument("--workspace", required=True)
-    args = parser.parse_args()
-    load_project_env()
-    workspace = Path(args.workspace).resolve(strict=True)
-    try:
-        system_prompt, user_prompt = decode_agent_input(sys.stdin.read())
-        run_agent(
-            user_prompt,
-            workspace,
-            system_prompt=system_prompt,
-            enable_tools=args.phase not in {"Direct Review", "Model Test"},
-        )
-    except Exception as exc:
-        emit("agent_error", {"type": type(exc).__name__, "message": str(exc)})
-        sys.stderr.write(f"Agent 执行失败：{type(exc).__name__}: {exc}\n")
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

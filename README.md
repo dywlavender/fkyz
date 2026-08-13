@@ -1,6 +1,6 @@
 # 风控 AI 评审平台（Risk Review Web）
 
-支持 Claude Code CLI 与 LangChain Agent 双运行后端的风控因子加工逻辑评审平台。输入需求与接口文档后，Phase 1 生成唯一的「标准加工规范」，Phase 2 将待评审加工逻辑与该标准进行结果语义比较，输出通过、不通过或无法评审。
+基于 LangChain Agent 的风控因子加工逻辑评审平台。输入需求与接口文档后，Phase 1 生成唯一的「标准加工规范」，Phase 2 将待评审加工逻辑与该标准进行结果语义比较，输出通过、不通过或无法评审。
 
 > 本仓库根目录同时是「知识库」工作区，但 `risk_review_web/` 属于风控评审平台代码，不参与知识库的 INGEST / QUERY / LINT / REFLECT / MERGE 流程。详见 `AGENTS.md`。
 
@@ -19,11 +19,10 @@
 
 ```text
 .
-├── start_v2.sh                      # 启动脚本（端口 / Claude 命令探测 / 释放占用端口）
-├── CLAUDE.md                        # Claude 调用运行契约（只输出 Markdown，不写文件）
+├── start_v2.sh                      # 启动脚本（端口 / 释放占用端口）
 ├── AGENTS.md                        # 平台开发约定与验证要求
 ├── risk_review_web/                 # 平台主代码
-│   ├── server_v2.py                 # 后端入口（HTTP 服务 + Claude 调用 + 文件落盘）
+│   ├── server_v2.py                 # 后端入口（HTTP 服务 + Agent 调用 + 文件落盘）
 │   ├── paths.py                     # 路径常量
 │   ├── prompt_builder.py            # Prompt 组装
 │   ├── artifacts.py                 # 产物校验 / checksum / 缓存
@@ -50,7 +49,6 @@
 ### 1. 环境依赖
 
 - Python 3（`python` 或 `python3`）
-- Claude Code CLI（`claude` 或 `claude.cmd`）—— Phase 1 / Phase 2 实际调用
 - 使用 Agent 时需要 conda 环境 `langchain1.2`（默认 Python 路径 `/opt/miniconda3/envs/langchain1.2/bin/python`）及对应模型 API 凭据
 - macOS / Linux / Git Bash（Windows）
 
@@ -66,12 +64,13 @@
 1. 检查关键文件（Skill、`server_v2.py`、`index.html`）是否就位；
 2. 创建 `outputs/` 目录；
 3. 释放被占用的目标端口；
-4. 探测 Claude CLI 命令（可用 `RISK_REVIEW_CLAUDE_CMD` 覆盖）；
-5. 以 `python -m risk_review_web.server_v2` 启动 HTTP 服务。
+4. 以 `/opt/miniconda3/envs/langchain1.2/bin/python -m risk_review_web.server_v2` 启动 HTTP 服务。
+
+目标机 Python 路径不同时，直接修改 `start_v2.sh` 最后一行。
 
 启动后访问：<http://127.0.0.1:8765>
 
-### 3. Mock 模式（无需 Claude）
+### 3. Mock 模式（无需模型服务）
 
 ```bash
 RISK_REVIEW_MOCK=1 ./start_v2.sh
@@ -79,9 +78,9 @@ RISK_REVIEW_MOCK=1 ./start_v2.sh
 
 用于前端联调与冒烟测试，不实际调用模型。
 
-### 4. 模型运行后端
+### 4. Agent 配置
 
-复制 `.env.example` 为 `.env`，配置 Claude CLI 和 Agent 使用的模型。系统首次默认使用 Claude；启动后可在“系统管理 → 运行设置”切换 `Claude CLI` 或 `LangChain Agent`。切换只影响新任务，不修改标准缓存键、元数据或已有产物，因此相同业务输入仍会命中既有缓存。
+复制 `.env.example` 为 `.env`，配置 Agent Provider、模型名和凭据。所有模型任务由全局任务池线程直接调用 Agent。
 
 Agent 的最终响应正文直接作为 Markdown 结果交给现有校验与落盘链路；中间模型输入、模型输出、工具调用和工具结果写入每日运行日志，不混入业务结果。
 
@@ -91,10 +90,6 @@ Agent 的最终响应正文直接作为 Markdown 结果交给现有校验与落�
 |---------|--------|------|
 | `PORT` | `8765` | HTTP 服务端口 |
 | `RISK_REVIEW_MOCK` | — | 设为 `1` 启用 Mock 模式 |
-| `RISK_REVIEW_CLAUDE_CMD` | `claude` / `claude.cmd` | Claude CLI 命令 |
-| `RISK_REVIEW_CLAUDE_TIMEOUT` | `600` | Claude 调用超时（秒） |
-| `RISK_REVIEW_REQUIRE_CLAUDE_HEALTH` | — | 设为 `1` 启动时检查 Claude 可用性 |
-| `RISK_REVIEW_AGENT_PYTHON` | `/opt/miniconda3/envs/langchain1.2/bin/python` | Agent Worker Python |
 | `RISK_REVIEW_AGENT_PROVIDER` | `anthropic` | `anthropic` 或 OpenAI 兼容 Provider |
 | `RISK_REVIEW_AGENT_MODEL` | — | Agent 模型名（在 `.env` 中配置） |
 | `RISK_REVIEW_GLOBAL_CONCURRENCY` | `3` | 单后端进程内全局模型任务并发上限 |
@@ -102,7 +97,7 @@ Agent 的最终响应正文直接作为 Markdown 结果交给现有校验与落�
 ## 数据流
 
 ```
-用户输入 → 前端验证 → 后端 API → 运行设置选择 Claude/Agent → 结果返回 → 前端渲染
+用户输入 → 前端验证 → 后端 API → 全局线程池 → LangChain Agent → 结果返回 → 前端渲染
 ```
 
 - **Phase 1**：`POST /api/review/phase1` → 在临时只读隔离目录中提供 Phase 1 Skill、Phase 1 开发规范、指定接口文档和公共业务规则 → 调用所选模型后端 → 写入标准 Markdown 与 `.metadata.json`。
@@ -115,7 +110,6 @@ Agent 的最终响应正文直接作为 Markdown 结果交给现有校验与落�
 
 ## 开发约定
 
-- **模型调用契约**：Claude 或 Agent 的最终结果都是 Markdown 正文，**不得自行创建 / 修改 / 删除任何文件**；所有文件落盘由 Python 后端统一完成。Claude 细节见 `CLAUDE.md`。
 - **输出目录**：运行产物统一写入项目根目录 `outputs/`，不要写入 `wiki/outputs/`。
 - **后端入口**：`risk_review_web/server_v2.py`；**React 前端**：`risk_review_web/web/src/`；**原有功能台**：`static/index.html` / `static/app.js`。
 - **修改后至少执行**：Python 语法检查、前端 JS 语法检查、Mock 模式 Phase 1 / Phase 2 冒烟；如涉及验证集再跑一条回归验证。

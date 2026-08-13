@@ -20,13 +20,12 @@ import { ErrorState } from './components/ErrorState'
 import { appTheme } from './styles/theme'
 
 function detectMockMode(health?: SystemHealth | null) {
-  return Boolean(health?.claude?.mock_mode)
+  return Boolean(health?.mock_mode)
 }
 
 function detectModelReady(health?: SystemHealth | null) {
-  if (health?.claude?.mock_mode) return true
-  if (health?.modelRuntime) return Boolean(health.modelRuntime.selectedAvailable)
-  return Boolean(health?.claude?.claude_path)
+  if (health?.mock_mode) return true
+  return Boolean(health?.modelRuntime?.available)
 }
 
 function KeptPage({ active, children }: { active: boolean; children: ReactNode }) {

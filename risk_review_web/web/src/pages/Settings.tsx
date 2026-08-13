@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Col, Descriptions, Empty, Form, InputNumber, Radio, Row, Space, Statistic, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Col, Descriptions, Empty, Form, InputNumber, Row, Space, Statistic, Tag, Typography } from 'antd'
 import { useEffect, useState } from 'react'
 
 import { fetchRuntimeSettings, updateRuntimeSettings } from '../api/reviewApi'
@@ -15,10 +15,6 @@ export function Settings({ health, onNotice, onSettingsChanged }: SettingsProps)
   const [settingsLoading, setSettingsLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const globalConcurrency = Form.useWatch('globalConcurrency', form) || 1
-  const selectedBackend = Form.useWatch('modelBackend', form)
-    || health?.modelRuntime?.selectedBackend
-    || health?.runtime_settings?.modelBackend
-    || 'claude'
 
   useEffect(() => {
     let active = true
@@ -45,7 +41,7 @@ export function Settings({ health, onNotice, onSettingsChanged }: SettingsProps)
       const settings = await updateRuntimeSettings(values)
       form.setFieldsValue(settings)
       await onSettingsChanged?.()
-      onNotice({ type: 'success', message: '运行设置已生效，新任务将使用所选模型调用方式' })
+      onNotice({ type: 'success', message: '运行设置已生效' })
     } catch (caught) {
       if (caught instanceof Error) onNotice({ type: 'error', message: caught.message })
     } finally {
@@ -73,14 +69,14 @@ export function Settings({ health, onNotice, onSettingsChanged }: SettingsProps)
         <Space direction="vertical" size={2}>
           <Typography.Title level={5} style={{ margin: 0 }}>系统设置</Typography.Title>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            统一配置模型调用方式和任务并发，并查看运行环境与基础文件检查结果。
+            统一配置任务并发，并查看 Agent 运行环境与基础文件检查结果。
           </Typography.Text>
         </Space>
       </Card>
 
       <Row gutter={[12, 12]}>
         <Col xs={12} md={6}><Card className="compact-card"><Statistic title="服务状态" value={health.ok ? '健康' : '需检查'} /></Card></Col>
-        <Col xs={12} md={6}><Card className="compact-card"><Statistic title="运行模式" value={health.claude?.mock_mode ? 'Mock' : selectedBackend === 'agent' ? 'LangChain Agent' : 'Claude CLI'} /></Card></Col>
+        <Col xs={12} md={6}><Card className="compact-card"><Statistic title="运行模式" value={health.mock_mode ? 'Mock' : 'LangChain Agent'} /></Card></Col>
         <Col xs={12} md={6}><Card className="compact-card"><Statistic title="接口文档" value={health.api_docs?.count ?? 0} /></Card></Col>
         <Col xs={12} md={6}><Card className="compact-card"><Statistic title="文件检查" value={checks.filter(([, value]) => value).length} suffix={`/ ${checks.length}`} /></Card></Col>
       </Row>
@@ -94,21 +90,11 @@ export function Settings({ health, onNotice, onSettingsChanged }: SettingsProps)
         <Alert
           showIcon
           type="info"
-          message="模型调用方式和并发数由此处统一管理"
-          description="设置只影响保存后新提交的任务；已排队或运行任务保持提交时选定的模型调用方式。"
+          message="任务并发数由此处统一管理"
+          description="设置只影响保存后新提交的任务；已排队或运行任务保持原有调度。"
           style={{ marginBottom: 16 }}
         />
         <Form form={form} layout="vertical">
-          <Form.Item
-            name="modelBackend"
-            label="模型调用方式"
-            rules={[{ required: true, message: '请选择模型调用方式' }]}
-          >
-            <Radio.Group optionType="button" buttonStyle="solid">
-              <Radio.Button value="claude">Claude CLI（默认）</Radio.Button>
-              <Radio.Button value="agent">LangChain Agent</Radio.Button>
-            </Radio.Group>
-          </Form.Item>
           <Row gutter={[16, 0]}>
             <Col xs={24} md={8}>
               <Form.Item
@@ -163,16 +149,10 @@ export function Settings({ health, onNotice, onSettingsChanged }: SettingsProps)
       <Card className="compact-card" title="运行状态">
         <Descriptions bordered column={2} size="small">
           <Descriptions.Item label="运行模式">
-            <Tag color={health.claude?.mock_mode ? 'warning' : 'processing'}>{health.claude?.mock_mode ? 'Mock' : selectedBackend === 'agent' ? 'LangChain Agent' : 'Claude CLI'}</Tag>
+            <Tag color={health.mock_mode ? 'warning' : 'processing'}>{health.mock_mode ? 'Mock' : 'LangChain Agent'}</Tag>
           </Descriptions.Item>
           <Descriptions.Item label="服务状态">
             <Tag color={health.ok ? 'success' : 'error'}>{health.ok ? '健康' : '需检查'}</Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="Claude 状态">
-            {health.claude?.claude_path ? `可用：${health.claude.claude_path}` : '未检测到可执行命令'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Claude 命令">
-            {health.claude?.command || '-'}
           </Descriptions.Item>
           <Descriptions.Item label="Agent 状态">
             {agent?.available ? `可用：LangChain ${agent.langchain_version || '-'}` : agent?.note || '模型连接配置不完整'}

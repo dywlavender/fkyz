@@ -112,7 +112,7 @@ export function parseReviewResult(rawMarkdown?: string): ReviewResult {
   const conclusion = (() => {
     const overall = String(rawMarkdown || '').match(/\|\s*总体结论\s*\|\s*([^|]+)\|/)?.[1] || ''
     if (/✅|通过/.test(overall) && !/不通过/.test(overall)) return 'pass'
-    if (/❌|不通过|不符合/.test(overall)) return 'fail'
+    if (/不通过|不符合/.test(overall)) return 'fail'
     if (/⛔|无法评审/.test(overall)) return 'unreviewable'
     return 'unreviewable'
   })()

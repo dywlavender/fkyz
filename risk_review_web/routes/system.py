@@ -19,7 +19,7 @@ def handle_get(
     list_outputs: Callable,
     pool_snapshot: Callable,
     system_health: Callable,
-    claude_test: Callable,
+    model_test: Callable,
 ) -> bool:
     """Handle read-only API documentation, health, settings, and artifact endpoints."""
     if path == "/api/apis":
@@ -61,7 +61,7 @@ def handle_get(
     if path in ("/api/health", "/api/self-check"):
         json_response(handler, 200, system_health())
         return True
-    if path in {"/api/model-test", "/api/claude-test"}:
-        json_response(handler, 200, claude_test())
+    if path == "/api/model-test":
+        json_response(handler, 200, model_test())
         return True
     return False

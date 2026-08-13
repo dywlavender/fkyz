@@ -11,19 +11,6 @@ from risk_review_web import runtime_settings
 
 
 class RuntimeSettingsTest(unittest.TestCase):
-    def test_model_backend_defaults_to_claude(self):
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(runtime_settings._default_settings()["modelBackend"], "claude")
-
-    def test_accepts_supported_model_backends(self):
-        defaults = runtime_settings._default_settings()
-        self.assertEqual(
-            runtime_settings._normalize_settings({**defaults, "modelBackend": "agent"})["modelBackend"],
-            "agent",
-        )
-        with self.assertRaisesRegex(ValueError, "claude 或 agent"):
-            runtime_settings._normalize_settings({**defaults, "modelBackend": "invalid"})
-
     def test_project_env_does_not_override_process_environment(self):
         with tempfile.TemporaryDirectory(prefix="risk-env-test-") as temp_dir:
             env_file = Path(temp_dir) / ".env"

@@ -30,7 +30,7 @@ def validation_expected_code(value: str | None) -> str:
     raw = str(value or "").strip()
     source = raw.casefold()
     if re.search(
-        r"❌|不通过|不符合|失败|(?<![a-z])(?:fail|failed|failure)(?![a-z])",
+        r"不通过|不符合|失败|(?<![a-z])(?:fail|failed|failure)(?![a-z])",
         source,
     ):
         return "fail"
@@ -52,7 +52,7 @@ def detect_verdict_text(text: str) -> str:
     source = str(text or "")
     overall = re.search(r"\|\s*总体结论\s*\|\s*([^|]+?)\s*\|", source)
     target = overall.group(1) if overall else source
-    if re.search(r"❌\s*不通过", target):
+    if re.search(r"\s*不通过", target):
         return "fail"
     if re.search(r"⛔\s*无法评审|无法评审", target):
         return "unreviewable"

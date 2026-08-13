@@ -32,7 +32,7 @@ def normalize_requirement_review_payload(payload: dict) -> dict:
         "requirement": requirement,
         "apiNames": api_names,
         "clientId": str(payload.get("clientId") or ""),
-        "debugClaude": True,
+        "debugAgent": True,
         "mock": payload.get("mock") is True,
     }
 

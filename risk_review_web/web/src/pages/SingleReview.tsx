@@ -554,7 +554,7 @@ export function SingleReview(props: SingleReviewProps) {
       factorName: values.factorName,
       requirement: values.requirement,
       apiNames: values.apiNames,
-      debugClaude: true,
+      debugAgent: true,
     })
     if (runTokenRef.current !== runToken) {
       void cancelTask(response.taskId)
@@ -596,7 +596,7 @@ export function SingleReview(props: SingleReviewProps) {
       requirement: values.requirement,
       draft,
       standardFileId,
-      debugClaude: true,
+      debugAgent: true,
     })
     if (runTokenRef.current !== runToken) {
       void cancelTask(response.taskId)

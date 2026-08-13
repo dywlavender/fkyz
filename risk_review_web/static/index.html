@@ -145,7 +145,7 @@
           <details class="advanced-review-panel">
             <summary>
               <span>分阶段评审与调试</span>
-              <em>需要单独生成标准规范或查看 Claude 输出时展开</em>
+              <em>需要单独生成标准规范或查看 模型输出时展开</em>
             </summary>
             <div class="advanced-review-body">
               <div class="phase-bar">
@@ -168,10 +168,10 @@
 
               <div class="debug-toggle-row">
                 <label class="debug-toggle">
-                  <input id="claudeDebugToggle" type="checkbox">
-                  <span>显示 Claude 调试输出</span>
+                  <input id="agentDebugToggle" type="checkbox">
+                  <span>显示 Agent 调试输出</span>
                 </label>
-                <button id="openClaudeDebugBtn" class="mini-btn" type="button">查看调试日志</button>
+                <button id="openAgentDebugBtn" class="mini-btn" type="button">查看调试日志</button>
                 <span class="debug-toggle-hint">仅本次运行临时展示，不写入文件。</span>
               </div>
             </div>
@@ -486,16 +486,16 @@
           </div>
         </div>
 
-        <!-- Claude debug output modal -->
-        <div id="claudeDebugModal" class="modal-overlay" style="display:none">
+        <!-- Agent debug output modal -->
+        <div id="agentDebugModal" class="modal-overlay" style="display:none">
           <div class="modal-wrap standard-modal-wrap">
             <div class="modal-head">
               <span class="step-label s2">Debug</span>
-              <span class="modal-title">Claude 调试输出</span>
-              <button id="claudeDebugRefreshBtn" class="mini-btn" type="button">刷新</button>
-              <button id="claudeDebugCloseBtn" class="top-btn" type="button" style="margin-left:auto">✕ 关闭</button>
+              <span class="modal-title">Agent 调试输出</span>
+              <button id="agentDebugRefreshBtn" class="mini-btn" type="button">刷新</button>
+              <button id="agentDebugCloseBtn" class="top-btn" type="button" style="margin-left:auto">✕ 关闭</button>
             </div>
-            <pre id="claudeDebugBody" class="raw-modal-text debug-modal-body">暂无 Claude 调试输出。</pre>
+            <pre id="agentDebugBody" class="raw-modal-text debug-modal-body">暂无 Agent 调试输出。</pre>
           </div>
         </div>
 

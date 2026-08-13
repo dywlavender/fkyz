@@ -55,7 +55,7 @@ def strip_yaml_frontmatter(text: str) -> str:
 
 
 def normalize_markdown_document_body(text: str, required_heading: str | None = None) -> str:
-    """Extract a clean Markdown body from common Claude output wrappers."""
+    """Extract a clean Markdown body from common Agent output wrappers."""
     body = str(text or "").strip()
     fenced_blocks = list(re.finditer(r"```(?:markdown|md)?[ \t]*\n([\s\S]*?)\n```", body, re.I))
     for block in fenced_blocks:
@@ -186,9 +186,9 @@ def validate_phase1_standard_basic_output(standard_text: str) -> None:
     """Enforce the non-skippable structure required for a Phase 1 artifact."""
     body = strip_yaml_frontmatter(standard_text)
     if not body.strip():
-        raise ValueError(f"Claude 未输出 Phase 1 标准加工规范正文。模型输出:{standard_text}")
+        raise ValueError(f"Agent 未输出 Phase 1 标准加工规范正文。模型输出:{standard_text}")
     if not re.match(r"#\s+标准加工规范\b", body.lstrip()):
-        raise ValueError(f"Claude 未输出完整 Phase 1 标准加工规范正文，stdout 必须以「# 标准加工规范」开头。 模型输出:{standard_text}")
+        raise ValueError(f"Agent 未输出完整 Phase 1 标准加工规范正文，最终响应必须以「# 标准加工规范」开头。 模型输出:{standard_text}")
     sections = extract_markdown_sections(body)
     missing = [heading for heading in STANDARD_REQUIRED_HEADINGS if heading not in sections]
     if missing:
@@ -199,9 +199,9 @@ def validate_phase2_review_basic_output(review_text: str) -> None:
     """Enforce the non-skippable structure required for a Phase 2 artifact."""
     body = strip_yaml_frontmatter(review_text)
     if not body.strip():
-        raise ValueError(f"Claude 未输出 Phase 2 评审报告正文。模型输出:{review_text}")
+        raise ValueError(f"Agent 未输出 Phase 2 评审报告正文。模型输出:{review_text}")
     if not re.match(r"#\s+评审报告\b", body.lstrip()):
-        raise ValueError(f"Claude 未输出完整 Phase 2 评审报告正文，stdout 必须以「# 评审报告」开头。模型输出:{review_text}")
+        raise ValueError(f"Agent 未输出完整 Phase 2 评审报告正文，最终响应必须以「# 评审报告」开头。模型输出:{review_text}")
     sections = extract_markdown_sections(body)
     missing = [heading for heading in ("总体结论", "汇总问题清单") if heading not in sections]
     if missing:
@@ -233,18 +233,18 @@ def requirement_review_conclusion(review_text: str) -> str:
     verdict = re.sub(r"\s+", " ", values[0]).strip()
     if verdict == "✅ 通过":
         return "通过"
-    if verdict == "❌ 不通过，需修改":
+    if verdict == "不通过，需修改":
         return "不通过"
-    raise ValueError("需求评审结论必须且只能是「✅ 通过」或「❌ 不通过，需修改」。")
+    raise ValueError("需求评审结论必须且只能是「✅ 通过」或「不通过，需修改」。")
 
 
 def validate_requirement_review_basic_output(review_text: str) -> None:
     """Enforce the minimal standalone requirement-review Markdown contract."""
     body = strip_yaml_frontmatter(review_text)
     if not body.strip():
-        raise ValueError(f"Claude 未输出需求评审报告正文。模型输出:{review_text}")
+        raise ValueError(f"Agent 未输出需求评审报告正文。模型输出:{review_text}")
     if not re.match(r"#\s+需求评审报告\b", body.lstrip()):
-        raise ValueError(f"Claude 未输出完整需求评审报告，stdout 必须以「# 需求评审报告」开头。模型输出:{review_text}")
+        raise ValueError(f"Agent 未输出完整需求评审报告，最终响应必须以「# 需求评审报告」开头。模型输出:{review_text}")
     sections = extract_markdown_sections(body)
     missing = [heading for heading in REQUIREMENT_REVIEW_REQUIRED_HEADINGS if heading not in sections]
     if missing:
@@ -404,7 +404,7 @@ def normalize_phase1_output(
     checksum: str,
     mock: bool = False,
 ) -> str:
-    """Normalize Claude Phase 1 output and prepend canonical frontmatter."""
+    """Normalize Agent Phase 1 output and prepend canonical frontmatter."""
     body = normalize_markdown_document_body(strip_yaml_frontmatter(output_text), required_heading="# 标准加工规范")
     body = re.sub(r"^# 标准加工规范[^\n]*", f"# 标准加工规范 — {factor_name}", body, count=1)
     return build_phase1_frontmatter(payload, slug, factor_name, checksum, mock=mock) + body
@@ -445,7 +445,7 @@ def normalize_review_output(
     standard_file_id: str,
     checksum: str,
 ) -> str:
-    """Normalize Claude Phase 2 output and prepend canonical frontmatter."""
+    """Normalize Agent Phase 2 output and prepend canonical frontmatter."""
     body = normalize_markdown_document_body(strip_yaml_frontmatter(output_text), required_heading="# 评审报告")
     factor_name = (payload.get("factorName") or "").strip()
     body = re.sub(r"^# 评审报告[^\n]*", f"# 评审报告 — {factor_name}", body, count=1)

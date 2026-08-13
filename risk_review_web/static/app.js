@@ -33,7 +33,7 @@ const state = {
   standardMetadataFileId: null,
   standardChecksum: null,
   standardModalText: "",
-  claudeDebugLogs: [],
+  agentDebugLogs: [],
   historyDeleteChecked: {},
   historyPage: 1,
   historyPageSize: 10,
@@ -674,7 +674,7 @@ function renderValidationResultPanel() {
   }
   const verdictMap = { pass: "通过", fail: "不通过", unreviewable: "无法评审" };
   const verdictText = verdictMap[result.verdict] || result.verdict || "未知";
-  const statusText = result.verdict === "pass" ? "✅ 通过" : result.verdict === "fail" ? "❌ 不通过" : "⛔ 无法评审";
+  const statusText = result.verdict === "pass" ? "✅ 通过" : result.verdict === "fail" ? "不通过" : "⛔ 无法评审";
   el.innerHTML = `
     <div class="validation-result-row"><b>${statusText}</b><span>${formatDate(result.time)}</span></div>
     <div class="validation-result-row"><span>实际结论</span><strong>${escapeHtml(verdictText)}</strong></div>
@@ -1227,7 +1227,7 @@ function showRunning() {
   setStepState("step1", "run", "生成中...");
   setStepState("step2", step2Running ? "run" : "", step2Running ? "评审中..." : "等待中");
   $("#elapsedText").textContent = "";
-  clearClaudeDebugLogs();
+  clearAgentDebugLogs();
   $("#verdictBanner").className = "verdict idle";
   $("#verdictBanner").textContent = "评审中...";
   ["#failCount", "#pendingCount", "#suggestCount"].forEach(function(id) { $(id).textContent = "—"; });
@@ -1237,7 +1237,7 @@ function showPhase2Running() {
   $("#resultArea").classList.remove("hidden");
   state.step2 = "";
   state.phase2Done = false;
-  clearClaudeDebugLogs();
+  clearAgentDebugLogs();
   $("#step2Out").innerHTML = '<div class="empty-pane">正在评审中，请稍候...</div>';
   setStepState("step2", "run", "评审中...");
   $("#elapsedText").textContent = "";
@@ -1371,7 +1371,7 @@ async function runPhase1() {
         factorName: factorCnName,
         requirement,
         apiNames,
-        debugClaude: isClaudeDebugEnabled(),
+        debugAgent: isAgentDebugEnabled(),
       }),
     });
     if (!res.ok) {
@@ -1466,7 +1466,7 @@ async function runPhase2() {
         apiNames,
         draft,
         standardFileId: state.standardFileId,
-        debugClaude: isClaudeDebugEnabled(),
+        debugAgent: isAgentDebugEnabled(),
       }),
     });
     if (!res.ok) {
@@ -1586,7 +1586,7 @@ async function pollTask(taskId, startedAt, meta) {
     const task = data.task;
     renderGlobalPool(data.pool);
     renderTaskLogs(task.logs || []);
-    updateClaudeDebugLogs(task.debugLogs || []);
+    updateAgentDebugLogs(task.debugLogs || []);
     if (task.status === "queued" || task.status === "running" || task.status === "cancelling") {
       if (task.status === "queued") {
         const position = task.queuePosition ? "，队列第 " + task.queuePosition + " 位" : "";
@@ -1615,7 +1615,7 @@ async function pollTask(taskId, startedAt, meta) {
       resetReviewStopState();
       return;
     }
-    if (task.status === "timeout") throw new Error("Claude Code 调用超时");
+    if (task.status === "timeout") throw new Error("Agent 调用超时");
     throw new Error(taskFailureMessage(result, "评审失败：" + task.status));
   }
 }
@@ -1709,7 +1709,7 @@ function detectVerdict(text) {
   const source = String(text || "");
   const overall = source.match(/\|\s*总体结论\s*\|\s*([^|]+?)\s*\|/);
   const target = overall ? overall[1] : source;
-  if (/❌\s*不通过/.test(target)) return "fail";
+  if (/\s*不通过/.test(target)) return "fail";
   if (/⛔\s*无法评审|无法评审/.test(target)) return "unreviewable";
   if (/✅\s*(通过|符合)/.test(target)) return "pass";
   return "unreviewable";
@@ -1725,7 +1725,7 @@ function updateOverview(text) {
   banner.className = `verdict ${verdict}`;
   const labels = {
     pass: "总体结论：✅ 通过",
-    fail: "总体结论：❌ 不通过，需修改",
+    fail: "总体结论：不通过，需修改",
     unreviewable: "总体结论：⛔ 无法评审",
   };
   banner.textContent = labels[verdict];
@@ -1805,7 +1805,7 @@ function renderHistory() {
   el.innerHTML = '<div class="history-table-head"><span></span><span>评审对象</span><span>结论</span><span>时间</span></div>' + pageRows.map(function(item, pageIndex) {
     const index = start + pageIndex;
     const cls = item.verdict === "pass" ? "pass" : item.verdict === "unreviewable" ? "warn" : "fail";
-    const label = item.verdict === "pass" ? "✅ 通过" : item.verdict === "unreviewable" ? "⛔ 无法评审" : "❌ 不通过";
+    const label = item.verdict === "pass" ? "✅ 通过" : item.verdict === "unreviewable" ? "⛔ 无法评审" : "不通过";
     var checked = state.historyDeleteChecked[index] ? "checked" : "";
     return '<article class="hist-item" data-history-index="' + index + '">' +
       '<div class="hist-top">' +
@@ -1959,7 +1959,7 @@ function openReviewDetailModal(item) {
   var verdict = item.verdict || detectVerdict(raw);
   var v = $("#modalVerdict");
   v.className = "verdict " + verdict;
-  var labels = {pass:"✅ 通过", fail:"❌ 不通过，需修改", unreviewable:"⛔ 无法评审"};
+  var labels = {pass:"✅ 通过", fail:"不通过，需修改", unreviewable:"⛔ 无法评审"};
   v.textContent = labels[verdict] || "⛔ 无法评审";
   $("#modalFail").textContent = stats.fail || 0;
   $("#modalPending").textContent = verdict === "unreviewable" ? 1 : 0;
@@ -2109,11 +2109,11 @@ function closeModal(id) {
   refreshModalScrollLock();
 }
 
-function isClaudeDebugEnabled() {
-  return Boolean($("#claudeDebugToggle")?.checked);
+function isAgentDebugEnabled() {
+  return Boolean($("#agentDebugToggle")?.checked);
 }
 
-function formatClaudeDebugLogs(logs) {
+function formatAgentDebugLogs(logs) {
   return (logs || []).map(function(log) {
     var time = log.time ? formatTime(log.time) : new Date().toLocaleTimeString("zh-CN", { hour12: false });
     var stream = String(log.stream || "debug").toUpperCase();
@@ -2127,38 +2127,38 @@ function isNearScrollBottom(el, threshold = 24) {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
 }
 
-function renderClaudeDebugModal(options = {}) {
-  var body = $("#claudeDebugBody");
+function renderAgentDebugModal(options = {}) {
+  var body = $("#agentDebugBody");
   if (!body) return;
   const shouldFollow = options.forceScroll || isNearScrollBottom(body);
-  if (!state.claudeDebugLogs.length) {
-    body.textContent = isClaudeDebugEnabled()
-      ? "暂无 Claude 调试输出，任务运行中会自动刷新。"
-      : "调试输出未开启。打开“显示 Claude 调试输出”后重新运行评审即可查看。";
+  if (!state.agentDebugLogs.length) {
+    body.textContent = isAgentDebugEnabled()
+      ? "暂无 Agent 调试输出，任务运行中会自动刷新。"
+      : "调试输出未开启。打开“显示 Agent 调试输出”后重新运行评审即可查看。";
     if (shouldFollow) body.scrollTop = body.scrollHeight;
     return;
   }
-  body.textContent = formatClaudeDebugLogs(state.claudeDebugLogs);
+  body.textContent = formatAgentDebugLogs(state.agentDebugLogs);
   if (shouldFollow) body.scrollTop = body.scrollHeight;
 }
 
-function updateClaudeDebugLogs(logs) {
-  state.claudeDebugLogs = Array.isArray(logs) ? logs : [];
-  renderClaudeDebugModal();
+function updateAgentDebugLogs(logs) {
+  state.agentDebugLogs = Array.isArray(logs) ? logs : [];
+  renderAgentDebugModal();
 }
 
-function clearClaudeDebugLogs() {
-  state.claudeDebugLogs = [];
-  renderClaudeDebugModal();
+function clearAgentDebugLogs() {
+  state.agentDebugLogs = [];
+  renderAgentDebugModal();
 }
 
-function openClaudeDebugModal() {
-  renderClaudeDebugModal({ forceScroll: true });
-  openModal("claudeDebugModal");
+function openAgentDebugModal() {
+  renderAgentDebugModal({ forceScroll: true });
+  openModal("agentDebugModal");
 }
 
-function closeClaudeDebugModal() {
-  closeModal("claudeDebugModal");
+function closeAgentDebugModal() {
+  closeModal("agentDebugModal");
 }
 
 $$(".nav-btn").forEach(function(btn) { btn.addEventListener("click", function() { setPage(btn.dataset.page); }); });
@@ -2182,11 +2182,11 @@ $("#standardModalCloseBtn").addEventListener("click", closeStandardModal);
 $("#standardModal").addEventListener("click", function(e) {
   if (e.target === this) closeStandardModal();
 });
-$("#openClaudeDebugBtn")?.addEventListener("click", openClaudeDebugModal);
-$("#claudeDebugRefreshBtn")?.addEventListener("click", renderClaudeDebugModal);
-$("#claudeDebugCloseBtn")?.addEventListener("click", closeClaudeDebugModal);
-$("#claudeDebugModal")?.addEventListener("click", function(e) {
-  if (e.target === this) closeClaudeDebugModal();
+$("#openAgentDebugBtn")?.addEventListener("click", openAgentDebugModal);
+$("#agentDebugRefreshBtn")?.addEventListener("click", renderAgentDebugModal);
+$("#agentDebugCloseBtn")?.addEventListener("click", closeAgentDebugModal);
+$("#agentDebugModal")?.addEventListener("click", function(e) {
+  if (e.target === this) closeAgentDebugModal();
 });
 $("#newExampleBtn")?.addEventListener("click", clearExampleForm);
 $("#saveExampleBtn")?.addEventListener("click", function() {
@@ -2410,7 +2410,7 @@ function renderBatchProgress() {
   if (signature === batchState.renderSignature) return;
   batchState.renderSignature = signature;
   list.innerHTML = allItems.map((t, index) => {
-    const label = {running: "⏳ 运行中", done: "✅ 完成", error: "❌ 失败", skip: "⏭ 跳过"}[t.status] || "⏳ 等待";
+    const label = {running: "⏳ 运行中", done: "✅ 完成", error: "失败", skip: "⏭ 跳过"}[t.status] || "⏳ 等待";
     const verdict = getBatchVerdict(t);
     var detailBtn = (t.status === "done" || t.status === "error" || t.status === "skip") ? '<button class=\"mini-btn batch-detail-btn\" data-idx=\"' + index + '\" type=\"button\">详情</button>' : '';
     return '<div class=\"batch-progress-item\">' +

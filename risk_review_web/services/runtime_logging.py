@@ -27,6 +27,17 @@ def _safe_label(value: object) -> str:
     return re.sub(r"[\]\r\n]", "_", text)
 
 
+def _write_console_safely(line: str) -> None:
+    """Write a log line without letting a legacy Windows code page fail a task."""
+    try:
+        sys.stdout.write(line)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_line = line.encode(encoding, errors="backslashreplace").decode(encoding)
+        sys.stdout.write(safe_line)
+    sys.stdout.flush()
+
+
 class DailyRuntimeLogger:
     """Append thread-safe one-line records to one date-partitioned log file."""
 
@@ -85,8 +96,7 @@ class DailyRuntimeLogger:
             with path.open("a", encoding="utf-8") as stream:
                 stream.write(line)
             if mirror_to_console:
-                sys.stdout.write(line)
-                sys.stdout.flush()
+                _write_console_safely(line)
             if self._last_cleanup_date != day:
                 self._cleanup_expired(day)
                 self._last_cleanup_date = day
@@ -133,5 +143,9 @@ def runtime_log(
             mirror_to_console=os.environ.get("RISK_REVIEW_LOG_TO_CONSOLE", "").strip().lower()
             in {"1", "true", "yes", "on"},
         )
-    except OSError:
+    # Logging is auxiliary. Console wrappers and redirected streams can raise
+    # UnicodeError/ValueError in addition to OSError, especially on Windows.
+    # None of these output failures may turn a successful model call into a
+    # failed task; unrelated programming errors must still remain visible.
+    except (OSError, UnicodeError, ValueError):
         return

@@ -20,6 +20,7 @@ APP_DIR = PROJECT_ROOT / "risk_review_web"
 RUNTIME_ROOT_FILES = (
     "start_v2.sh",
     ".env.example",
+    "requirements.txt",
 )
 RUNTIME_TREES = (
     "risk_review_web",
@@ -36,12 +37,24 @@ ALWAYS_EXCLUDED_PARTS = {
     "node_modules",
     "tests",
     "web",
+    "complex_factor_cases",
+    "scripts",
 }
-ALWAYS_EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".zip"}
+ALWAYS_EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".zip", ".ipynb"}
+ALWAYS_EXCLUDED_FILES = {
+    "risk_review_web/README.md",
+    "risk_review_web/data/golden_cases.json",
+}
 RUNTIME_DATA_PREFIXES = (
     Path("outputs"),
     Path("risk_review_web/.local"),
     Path("risk_review_web/local"),
+    Path("risk_review_web/data/review_records.json"),
+    Path("risk_review_web/data/review_mode_experiments.json"),
+    Path("risk_review_web/data/runtime_settings.json"),
+    Path("risk_review_web/data/scheduled_runs.json"),
+    Path("risk_review_web/data/scheduled_tasks.json"),
+    Path("risk_review_web/data/validation_runs.json"),
 )
 
 
@@ -89,6 +102,8 @@ def is_runtime_data(relative: Path) -> bool:
 
 
 def should_include(relative: Path, *, include_runtime_data: bool) -> bool:
+    if relative.as_posix() in ALWAYS_EXCLUDED_FILES:
+        return False
     if any(part in ALWAYS_EXCLUDED_PARTS for part in relative.parts):
         return False
     if relative.suffix.lower() in ALWAYS_EXCLUDED_SUFFIXES:
@@ -155,16 +170,17 @@ Git 版本：{revision}
 
 部署步骤：
 1. 将 ZIP 解压到目标目录。
-2. 复制 .env.example 为 .env，并按现场环境填写模型命令、模型名和凭据。
+2. 复制 .env.example 为 .env，并按现场环境填写Agent Provider、模型名和凭据。
    不要把真实密钥写回部署 ZIP。
-3. 确认目标机已有兼容版本的 Python 3。
-4. Claude CLI 模式需提前在目标机离线安装并配置 Claude CLI；
-   LangChain Agent 模式需另行准备包含相应 Provider 包的离线 Python 环境。
-5. Linux/macOS 执行：bash start_v2.sh 8765
-6. 浏览器访问：http://127.0.0.1:8765/
+3. 确认目标机存在 /opt/miniconda3/envs/langchain1.2/bin/python，且已安装 requirements.txt 中的依赖。
+   如果目标机不能联网，需提前准备与目标 Python 版本、操作系统和 CPU 匹配的 wheelhouse，
+   然后执行：python -m pip install --no-index --find-links wheelhouse -r requirements.txt
+4. 执行：bash start_v2.sh 8765。若 Python 路径不同，修改 start_v2.sh 最后一行。
+5. 浏览器访问：http://127.0.0.1:8765/
 
 说明：
 - 前端已预编译在 risk_review_web/static/dist/，运行不需要 Node.js 或 node_modules。
+- 本 ZIP 是应用运行包，不内置跨平台 Python wheel；Python 依赖必须在目标环境预装或另配 wheelhouse。
 - raw/api/ 是 Phase 1 使用的接口文档，请按业务需要核对内容。
 - 服务会自动创建 outputs/ 和 risk_review_web/.local/state/。
 - 当前任务池只支持单个 Python 后端进程，不要多进程同时共享运行目录。

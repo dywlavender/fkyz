@@ -195,7 +195,7 @@ export function AppLayout(props: AppLayoutProps) {
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             <div className="sider-status-row">
               <span>运行模式</span>
-              <Tag color={mockMode ? 'gold' : 'blue'}>{mockMode ? 'Mock' : 'Claude'}</Tag>
+              <Tag color={mockMode ? 'gold' : 'blue'}>{mockMode ? 'Mock' : 'Agent'}</Tag>
             </div>
             <div className="sider-status-row">
               <span>服务状态</span>

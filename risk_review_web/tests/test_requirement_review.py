@@ -19,7 +19,7 @@ VALID_REPORT = """# 需求评审报告
 
 | 项目 | 内容 |
 |---|---|
-| 总体结论 | ❌ 不通过，需修改 |
+| 总体结论 | 不通过，需修改 |
 | 问题统计 | 不符合 1 项 |
 
 ## 问题清单
@@ -64,10 +64,10 @@ class RequirementReviewArtifactTest(unittest.TestCase):
 
     def test_rejects_non_binary_conclusion(self):
         with self.assertRaisesRegex(ValueError, "通过.*不通过"):
-            validate_requirement_review_basic_output(VALID_REPORT.replace("❌ 不通过，需修改", "无法评审"))
+            validate_requirement_review_basic_output(VALID_REPORT.replace("不通过，需修改", "无法评审"))
 
     def test_accepts_pass_conclusion_and_returns_canonical_value(self):
-        report = VALID_REPORT.replace("❌ 不通过，需修改", "✅ 通过")
+        report = VALID_REPORT.replace("不通过，需修改", "✅ 通过")
         validate_requirement_review_basic_output(report)
         self.assertEqual(requirement_review_conclusion(report), "通过")
 

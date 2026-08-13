@@ -68,7 +68,7 @@ export function normalizeConclusion(value?: string) {
   const source = String(value || 'unreviewable').trim()
   const candidates: string[] = []
   if (/✅|\bpass\b|通过/.test(source) && !/不通过/.test(source)) candidates.push('pass')
-  if (/❌|\bfail\b|不通过|不符合/.test(source)) candidates.push('fail')
+  if (/\bfail\b|不通过|不符合/.test(source)) candidates.push('fail')
   if (/⛔|无法评审|\bunreviewable\b|\bunknown\b/.test(source)) candidates.push('unreviewable')
   if (candidates.length) return [...new Set(candidates)].join('|')
   const normalized = source.toLowerCase()

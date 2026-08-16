@@ -1,26 +1,17 @@
 from __future__ import annotations
 
-import json
-import re
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from risk_review_web.paths import (
     OUTPUTS_DIR,
-    REVIEW_RECORDS_PATH,
     ROOT,
-    SCHEDULED_RUNS_PATH,
-    VALIDATION_RUNS_PATH,
 )
 from risk_review_web.services.artifact_catalog import list_outputs as list_output_artifacts
 from risk_review_web.services.review_evaluation import collect_review_stats, detect_verdict_text
 from risk_review_web.services.time_utils import iso_time as _iso_time
-from risk_review_web.utils import atomic_write_text, parse_frontmatter, read_text
-
-
-REVIEW_RECORDS_LOCK = threading.Lock()
+from risk_review_web.utils import read_text
 
 
 def _is_terminal_status(status: str | None) -> bool:
@@ -31,149 +22,6 @@ def _is_terminal_status(status: str | None) -> bool:
 def list_outputs():
     """List review artifacts from the configured output directory."""
     return list_output_artifacts(OUTPUTS_DIR, ROOT)
-
-
-def review_history_record_id(base: str) -> str:
-    """Match the browser's unsigned 32-bit JavaScript hash for existing session IDs."""
-    hash_value = 0
-    encoded = str(base).encode("utf-16-be", errors="surrogatepass")
-    for index in range(0, len(encoded), 2):
-        code_unit = int.from_bytes(encoded[index:index + 2], "big")
-        hash_value = ((hash_value * 31) + code_unit) & 0xFFFFFFFF
-    return f"session-{hash_value:08x}"
-
-
-def factor_name_from_output_name(name: str) -> str:
-    """Derive a display-only factor token from a generated artifact name."""
-    current = re.match(
-        r"^(?:standard|review)-(.+?)-\d{4}-\d{2}-\d{2}-[a-z0-9]{8}-[a-z0-9]{8}(?:\.|$)",
-        name,
-        re.I,
-    )
-    if current:
-        return current.group(1).replace("-", " ").strip()
-    legacy = re.match(
-        r"^(?:standard|review)-(.+)-\d{4}-\d{2}-\d{2}-[a-z0-9]{8}\.",
-        name,
-        re.I,
-    )
-    return legacy.group(1).replace("-", " ").strip() if legacy else name
-
-
-def parse_review_history_artifact(name: str) -> dict | None:
-    """Convert a review artifact into a history record when its content is readable."""
-    legacy = re.match(
-        r"^(standard|review)-(.+)\.(standard|review)\.(md|json|raw\.txt|validation\.json)$",
-        name,
-        re.I,
-    )
-    if legacy and legacy.group(1).lower() == legacy.group(3).lower():
-        extension = legacy.group(4).lower()
-        return {
-            "phase": legacy.group(1).lower(),
-            "base": legacy.group(2),
-            "kind": "raw" if extension == "raw.txt" else "validation" if extension == "validation.json" else extension,
-        }
-    current = re.match(
-        r"^(standard|review)-(.+)\.(md|metadata\.json|raw\.txt|validation\.json)$",
-        name,
-        re.I,
-    )
-    if not current:
-        return None
-    extension = current.group(3).lower()
-    return {
-        "phase": current.group(1).lower(),
-        "base": f"{current.group(1).lower()}-{current.group(2)}",
-        "kind": (
-            "json"
-            if extension == "metadata.json"
-            else "raw"
-            if extension == "raw.txt"
-            else "validation"
-            if extension == "validation.json"
-            else "md"
-        ),
-    }
-
-
-def artifact_review_history_records() -> list[dict]:
-    """Build history records for output files not represented by persisted tasks."""
-    grouped: dict[str, dict] = {}
-    created_at_numbers: dict[str, int] = {}
-    for output in list_outputs():
-        parsed = parse_review_history_artifact(output["name"])
-        if not parsed:
-            continue
-        review_text = ""
-        base = parsed["base"]
-        if parsed["phase"] == "review" and parsed["kind"] == "md":
-            try:
-                review_text = read_text(OUTPUTS_DIR / output["name"])
-                linked_standard = str(parse_frontmatter(review_text).get("standard_file") or "").strip()
-                if linked_standard and Path(linked_standard).name == linked_standard:
-                    base = Path(linked_standard).stem
-            except OSError:
-                review_text = ""
-        record = grouped.get(base)
-        if record is None:
-            record = {
-                "recordId": review_history_record_id(base),
-                "factorName": factor_name_from_output_name(output["name"]),
-                "createdAt": datetime.fromtimestamp(output.get("mtime") or 0, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
-                "source": "validation" if "vrun-" in base else "single",
-                "mode": "phase1_only",
-                "conclusion": "unreviewable",
-                "riskCount": 0,
-                "standardArtifacts": {},
-                "reviewArtifacts": {},
-            }
-            grouped[base] = record
-            created_at_numbers[base] = int(output.get("mtime") or 0)
-        if int(output.get("mtime") or 0) > created_at_numbers[base]:
-            created_at_numbers[base] = int(output.get("mtime") or 0)
-            record["createdAt"] = datetime.fromtimestamp(
-                output.get("mtime") or 0,
-                tz=timezone.utc,
-            ).isoformat().replace("+00:00", "Z")
-        artifact_group = record["standardArtifacts"] if parsed["phase"] == "standard" else record["reviewArtifacts"]
-        artifact_group[parsed["kind"]] = output["name"]
-        if parsed["phase"] == "review" and parsed["kind"] == "md":
-            try:
-                review_text = review_text or read_text(OUTPUTS_DIR / output["name"])
-                record["conclusion"] = detect_verdict_text(review_text)
-                record["riskCount"] = int(collect_review_stats(review_text).get("fail") or 0)
-            except OSError:
-                record["conclusion"] = "unreviewable"
-                record["riskCount"] = 0
-        record["mode"] = (
-            "one_click"
-            if record["standardArtifacts"].get("md") and record["reviewArtifacts"].get("md")
-            else "phase2_only"
-            if record["reviewArtifacts"].get("md")
-            else "phase1_only"
-        )
-    return sorted(grouped.values(), key=lambda item: str(item.get("createdAt") or ""), reverse=True)
-
-
-def parse_review_records() -> list[dict]:
-    """Read persisted review records using a tolerant empty-on-corruption policy."""
-    if not REVIEW_RECORDS_PATH.exists():
-        return []
-    try:
-        data = json.loads(read_text(REVIEW_RECORDS_PATH))
-    except Exception:
-        return []
-    return data if isinstance(data, list) else []
-
-
-def save_review_records(records: list[dict]) -> None:
-    """Persist a bounded, newest-first review history snapshot atomically."""
-    REVIEW_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(
-        REVIEW_RECORDS_PATH,
-        json.dumps(records[-5000:], ensure_ascii=False, indent=2),
-    )
 
 
 def _review_record_artifact_names(record: dict) -> set[str]:
@@ -247,7 +95,13 @@ def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict 
     if not include_active and not _is_terminal_status(status):
         return None
     task_type = str(task.get("taskType") or "")
-    if task_type in {"child", "scheduled-phase1", "scheduled-phase2", "requirement-review"}:
+    if task_type in {
+        "child",
+        "comparison-direct",
+        "scheduled-phase1",
+        "scheduled-phase2",
+        "requirement-review",
+    }:
         return None
     result = task.get("result") or {}
     context = task.get("context") or {}
@@ -342,6 +196,85 @@ def _task_to_review_record(task: dict, *, include_active: bool = False) -> dict 
     }
 
 
+def scheduled_run_to_review_record(run: dict, task: dict | None = None) -> dict:
+    """Convert one terminal scheduled run into its durable history record.
+
+    This is an event-time projection used by ``ScheduledTaskService``.  It is
+    intentionally not a query-time scan of ``scheduled_runs.json``.
+    """
+    task = task or {}
+    items: list[dict] = []
+    conclusions: list[str] = []
+    risk_count = 0
+    for raw_item in run.get("items") or []:
+        if not isinstance(raw_item, dict):
+            continue
+        item = dict(raw_item)
+        review_file = item.get("reviewFile") or item.get("reviewFileId")
+        conclusion = str(item.get("reviewConclusion") or item.get("conclusion") or "")
+        item_risk = int(item.get("riskCount") or 0)
+        if review_file and not conclusion:
+            conclusion, item_risk = _artifact_conclusion(str(review_file))
+        if not conclusion:
+            conclusion = "unreviewable"
+        if review_file:
+            conclusions.append(conclusion)
+        item.update({
+            "standardFileId": item.get("standardFileId") or item.get("standardFile"),
+            "reviewFileId": review_file,
+            "conclusion": conclusion,
+            "riskCount": item_risk,
+        })
+        items.append(normalize_review_item(item))
+        risk_count += item_risk
+
+    run_status = str(run.get("status") or "failed")
+    task_status = "cancelled" if run_status == "cancelled" else "error" if run_status == "failed" else "done"
+    conclusion = (
+        "fail" if "fail" in conclusions
+        else "pass" if conclusions and all(value == "pass" for value in conclusions)
+        else "unreviewable"
+    )
+    task_name = str(run.get("taskName") or task.get("taskName") or "定时评审")
+    created_at = run.get("createdAt") or run.get("startedAt") or _iso_time()
+    updated_at = run.get("finishedAt") or run.get("startedAt") or created_at
+    summary = {
+        "total": int(run.get("total") or len(items)),
+        "completed": int(run.get("success") or 0),
+        "failed": int(run.get("failed") or 0),
+    }
+    return {
+        "recordId": f"scheduled-{run.get('runId')}",
+        "id": run.get("runId"),
+        "taskId": run.get("runId"),
+        "parentTaskId": run.get("taskId"),
+        "taskType": "scheduled",
+        "status": task_status,
+        "taskStatus": task_status,
+        "runStatus": run_status,
+        "title": task_name,
+        "factorName": task_name,
+        "source": "scheduled",
+        "context": {
+            "taskName": task_name,
+            "scheduleType": task.get("scheduleType"),
+            "mode": task.get("mode"),
+            "runtimeMode": task.get("runtimeMode"),
+        },
+        "conclusion": conclusion,
+        "riskCount": risk_count,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "archived": False,
+        "summary": summary,
+        "progress": summary,
+        "standardArtifacts": {},
+        "reviewArtifacts": {},
+        "items": items,
+        "persistenceError": run.get("persistenceError"),
+    }
+
+
 def _artifact_conclusion(file_name: str | None) -> tuple[str, int]:
     """Read a report artifact and return its verdict and hard-issue count."""
     if not file_name:
@@ -351,132 +284,3 @@ def _artifact_conclusion(file_name: str | None) -> tuple[str, int]:
     except OSError:
         return "unreviewable", 0
     return detect_verdict_text(text), int(collect_review_stats(text).get("fail") or 0)
-
-
-def _load_json_list(path: Path) -> list[dict]:
-    """Best-effort read a JSON list; missing or malformed state produces no records."""
-    if not path.is_file():
-        return []
-    try:
-        data = json.loads(read_text(path))
-    except Exception:
-        return []
-    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
-
-
-def _external_review_records() -> list[dict]:
-    """Project validation and scheduled-run state into review-history records."""
-    records: list[dict] = []
-    for run in _load_json_list(SCHEDULED_RUNS_PATH):
-        status = str(run.get("status") or "")
-        if status in {"queued", "running", "cancelling"}:
-            continue
-        items = []
-        conclusions = []
-        risk_count = 0
-        for item in run.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            review_file = item.get("reviewFile")
-            conclusion, item_risk = _artifact_conclusion(review_file)
-            if review_file:
-                conclusions.append(conclusion)
-            risk_count += item_risk
-            items.append({
-                **item,
-                "standardFileId": item.get("standardFile"),
-                "reviewFileId": review_file,
-                "conclusion": conclusion,
-                "riskCount": item_risk,
-            })
-        conclusion = (
-            "fail" if "fail" in conclusions
-            else "pass" if conclusions and all(value == "pass" for value in conclusions)
-            else "unreviewable"
-        )
-        task_status = (
-            "cancelled" if status == "cancelled"
-            else "error" if status == "failed"
-            else "done"
-        )
-        records.append({
-            "recordId": f"scheduled-{run.get('runId')}",
-            "taskId": run.get("runId"),
-            "title": run.get("taskName") or "定时评审",
-            "factorName": run.get("taskName") or "定时评审",
-            "source": "scheduled",
-            "taskStatus": task_status,
-            "conclusion": conclusion,
-            "riskCount": risk_count,
-            "createdAt": run.get("createdAt") or run.get("startedAt") or _iso_time(),
-            "updatedAt": run.get("finishedAt") or run.get("startedAt") or _iso_time(),
-            "archived": False,
-            "summary": {
-                "total": int(run.get("total") or len(items)),
-                "completed": int(run.get("success") or 0),
-                "failed": int(run.get("failed") or 0),
-            },
-            "standardArtifacts": {},
-            "reviewArtifacts": {},
-            "items": items,
-        })
-
-    validation_groups: dict[str, list[dict]] = {}
-    for run in _load_json_list(VALIDATION_RUNS_PATH):
-        status = str(run.get("status") or "")
-        if status in {"pending", "queued", "running", "cancelling"}:
-            continue
-        validation_groups.setdefault(str(run.get("groupId") or run.get("runId")), []).append(run)
-    for group_id, runs in validation_groups.items():
-        items = []
-        conclusions = []
-        risk_count = 0
-        for run in runs:
-            review_file = run.get("reviewFile")
-            conclusion = str(run.get("actualConclusion") or "")
-            item_risk = 0
-            if review_file:
-                detected, item_risk = _artifact_conclusion(review_file)
-                conclusion = conclusion or detected
-            if conclusion:
-                conclusions.append(conclusion)
-            risk_count += item_risk
-            items.append({
-                **run,
-                "factorName": run.get("caseName"),
-                "standardFileId": run.get("standardFile"),
-                "standardMetadataFileId": run.get("standardMetadataFile"),
-                "reviewFileId": review_file,
-                "conclusion": conclusion or "unreviewable",
-                "riskCount": item_risk,
-            })
-        failed = sum(1 for item in runs if item.get("status") in {"failed", "cancelled"})
-        conclusion = (
-            "fail" if "fail" in conclusions
-            else "pass" if conclusions and all(value == "pass" for value in conclusions)
-            else "unreviewable"
-        )
-        created_at = min((str(item.get("startedAt") or item.get("createdAt") or "") for item in runs), default="")
-        updated_at = max((str(item.get("finishedAt") or item.get("startedAt") or "") for item in runs), default="")
-        records.append({
-            "recordId": f"validation-{group_id}",
-            "taskId": group_id,
-            "title": f"质量验证 · {group_id[:12]}",
-            "factorName": "质量验证",
-            "source": "validation",
-            "taskStatus": "error" if failed == len(runs) else "done",
-            "conclusion": conclusion,
-            "riskCount": risk_count,
-            "createdAt": created_at or _iso_time(),
-            "updatedAt": updated_at or created_at or _iso_time(),
-            "archived": False,
-            "summary": {
-                "total": len(runs),
-                "completed": len(runs) - failed,
-                "failed": failed,
-            },
-            "standardArtifacts": {},
-            "reviewArtifacts": {},
-            "items": items,
-        })
-    return records

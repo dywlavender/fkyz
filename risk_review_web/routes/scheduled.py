@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable
 from urllib.parse import unquote
 
-from risk_review_web.scheduled_tasks import ScheduledTaskError
+from risk_review_web.scheduling.models import ScheduledTaskError
 from risk_review_web.services.http_responses import error_response, success_response
 
 
@@ -82,6 +82,13 @@ def handle_post(handler, path: str, get_service: Callable):
             success_response(handler, get_service().cancel_run(run_id))
         except ScheduledTaskError as exc:
             error_response(handler, 404, str(exc))
+        return True
+    if path.startswith("/api/scheduled-runs/") and path.endswith("/retry-history"):
+        run_id = unquote(path.split("/")[-2])
+        try:
+            success_response(handler, get_service().retry_run_history(run_id))
+        except ScheduledTaskError as exc:
+            error_response(handler, 404 if "不存在" in str(exc) else 409, str(exc))
         return True
     return False
 

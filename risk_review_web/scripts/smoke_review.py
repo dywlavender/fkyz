@@ -78,7 +78,7 @@ def require_done(task: dict, phase: str) -> dict:
     if task.get("status") != "done":
         result = task.get("result") or {}
         raise AssertionError(
-            f"{phase} 未完成：status={task.get('status')}，error={result.get('stderr') or result}"
+            f"{phase} 未完成：status={task.get('status')}，error={result.get('error') or result}"
         )
     return task.get("result") or {}
 

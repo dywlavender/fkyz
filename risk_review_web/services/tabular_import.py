@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import csv
+import base64
 import xml.etree.ElementTree as ET
 from io import BytesIO, StringIO
 from zipfile import ZipFile
+
+
+class TabularImportError(ValueError):
+    """A user-facing, explicit CSV/XLSX decoding or parsing failure."""
 
 
 def parse_xlsx(data: bytes) -> list[list[str]]:
@@ -51,8 +56,8 @@ def parse_xlsx(data: bytes) -> list[list[str]]:
                         reference = chr(offset + 65) + reference
                     row_data.append(cells.get(reference + row_number, ""))
                 rows.append(row_data)
-    except Exception:
-        return []
+    except Exception as exc:
+        raise TabularImportError(f"XLSX 文件解析失败：{exc}") from exc
     return rows
 
 
@@ -62,6 +67,31 @@ def parse_csv_rows(text: str) -> list[list[str]]:
     for row in csv.reader(StringIO(text.lstrip("\ufeff"))):
         if any(str(cell).strip() for cell in row):
             rows.append([str(cell).strip() for cell in row])
+    return rows
+
+
+def decode_import_rows(name: str, data_base64: str) -> list[list[str]]:
+    """Decode CSV/XLSX with one shared encoding and error policy."""
+    if not data_base64:
+        raise TabularImportError("上传文件内容为空。")
+    try:
+        raw = base64.b64decode(data_base64, validate=True)
+    except Exception as exc:
+        raise TabularImportError("上传文件 base64 解码失败。") from exc
+    if str(name or "").lower().endswith((".xlsx", ".xls")):
+        rows = parse_xlsx(raw)
+    else:
+        last_error: UnicodeDecodeError | None = None
+        for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+            try:
+                rows = parse_csv_rows(raw.decode(encoding))
+                break
+            except UnicodeDecodeError as exc:
+                last_error = exc
+        else:
+            raise TabularImportError("CSV 文件编码无法识别，请使用 UTF-8 或 GB18030。") from last_error
+    if not rows:
+        raise TabularImportError("未解析出有效数据行。")
     return rows
 
 

@@ -1,20 +1,33 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 import unittest
 import uuid
 from concurrent.futures import Future
+from pathlib import Path
 from unittest.mock import patch
 
-from risk_review_web import server_v2
+from risk_review_web import app_context as server_v2
+from risk_review_web.domain.agent_result import AgentResult
+from risk_review_web.repositories.review_record_repository import ReviewRecordRepository
 
 
 class ServerTaskWiringTest(unittest.TestCase):
     def setUp(self):
         self.runtime_log_patch = patch.object(server_v2, "runtime_log")
         self.runtime_log = self.runtime_log_patch.start()
+        self.history_temp_dir = tempfile.TemporaryDirectory(prefix="task-wiring-history-")
+        self.history_patch = patch.object(
+            server_v2,
+            "REVIEW_RECORD_REPOSITORY",
+            ReviewRecordRepository(path=Path(self.history_temp_dir.name) / "review_records.json"),
+        )
+        self.history_patch.start()
 
     def tearDown(self):
+        self.history_patch.stop()
+        self.history_temp_dir.cleanup()
         self.runtime_log_patch.stop()
 
     def test_phase1_api_documents_are_available_to_workspace_builder(self):
@@ -40,38 +53,36 @@ class ServerTaskWiringTest(unittest.TestCase):
             future.set_exception(NameError("missing dependency"))
             task = server_v2.TASKS[task_id]
             self.assertEqual(task["status"], "error")
-            self.assertIn("NameError: missing dependency", task["result"]["stderr"])
+            self.assertIn("NameError: missing dependency", task["result"]["error"])
         finally:
             with server_v2.TASK_LOCK:
-                server_v2.TASKS.pop(task_id, None)
+                server_v2.TASK_REPOSITORY.remove(task_id)
 
     def test_cancelling_orphaned_task_reaches_terminal_state(self):
         task_id = f"task-cancel-{uuid.uuid4().hex}"
         server_v2.create_task_record(task_id, task_type="phase1")
-        with server_v2.TASK_LOCK:
-            server_v2.TASKS[task_id]["status"] = "running"
+        server_v2.TASK_REPOSITORY.start(task_id)
         try:
             self.assertTrue(server_v2.request_task_cancel(task_id))
             self.assertEqual(server_v2.TASKS[task_id]["status"], "cancelled")
         finally:
             with server_v2.TASK_LOCK:
-                server_v2.TASKS.pop(task_id, None)
+                server_v2.TASK_REPOSITORY.remove(task_id)
 
     def test_completed_worker_cannot_leave_task_running(self):
         task_id = f"task-terminal-{uuid.uuid4().hex}"
         server_v2.create_task_record(task_id, task_type="phase1")
-        with server_v2.TASK_LOCK:
-            server_v2.TASKS[task_id]["status"] = "running"
+        server_v2.TASK_REPOSITORY.start(task_id)
         future: Future = Future()
         server_v2.track_task_future(task_id, future, "Phase 1")
         try:
             future.set_result(None)
             task = server_v2.TASKS[task_id]
             self.assertEqual(task["status"], "error")
-            self.assertIn("未写入终态", task["result"]["stderr"])
+            self.assertIn("未写入终态", task["result"]["error"])
         finally:
             with server_v2.TASK_LOCK:
-                server_v2.TASKS.pop(task_id, None)
+                server_v2.TASK_REPOSITORY.remove(task_id)
 
     def test_child_tasks_share_parent_trace_id(self):
         parent_id = f"task-parent-{uuid.uuid4().hex}"
@@ -86,55 +97,60 @@ class ServerTaskWiringTest(unittest.TestCase):
             )
         finally:
             with server_v2.TASK_LOCK:
-                server_v2.TASKS.pop(child_id, None)
-                server_v2.TASKS.pop(parent_id, None)
+                server_v2.TASK_REPOSITORY.remove(child_id)
+                server_v2.TASK_REPOSITORY.remove(parent_id)
 
     def test_model_dispatch_always_uses_agent(self):
         task_id = f"task-dispatch-{uuid.uuid4().hex}"
         server_v2.create_task_record(task_id, task_type="phase1")
         try:
-            with patch.object(server_v2, "run_agent_prompt", return_value=("done", {"content": "ok"})) as agent:
-                status, result = server_v2.run_model_prompt(
+            with patch.object(server_v2, "run_agent_prompt", return_value=AgentResult.succeeded("ok")) as agent:
+                result = server_v2.run_model_prompt(
                     task_id,
                     "Phase 1",
                     "prompt",
                     isolated_workspace=server_v2.ROOT,
                 )
-            self.assertEqual(status, "done")
-            self.assertEqual(result["content"], "ok")
+            self.assertTrue(result.ok)
+            self.assertEqual(result.content, "ok")
             agent.assert_called_once()
         finally:
             with server_v2.TASK_LOCK:
-                server_v2.TASKS.pop(task_id, None)
+                server_v2.TASK_REPOSITORY.remove(task_id)
 
-    def test_normalized_model_content_uses_agent_response(self):
-        self.assertEqual(
-            server_v2.model_response_content({"content": "agent-response", "stdout": "wrong"}),
-            "agent-response",
-        )
+    def test_agent_result_content_is_canonical(self):
+        result = AgentResult.succeeded("agent-response")
+        self.assertEqual(result.content, "agent-response")
+        self.assertNotIn("stdout", result.as_dict())
 
-    def test_generation_consumes_agent_content_without_stdout(self):
+    def test_stage_executor_consumes_agent_content_without_stdout(self):
         task_id = f"task-agent-content-{uuid.uuid4().hex}"
         server_v2.create_task_record(task_id, task_type="phase1")
         try:
             with patch.object(
                 server_v2,
                 "run_model_prompt",
-                return_value=("done", {"content": "# Agent Markdown", "returncode": 0}),
+                return_value=AgentResult.succeeded("# Agent Markdown"),
             ):
-                status, result, raw_output = server_v2.run_generation(
+                result = server_v2.STAGE_EXECUTOR.run_agent_result(
                     task_id=task_id,
                     phase_label="Phase 1",
-                    empty_error="empty",
                     prompt="prompt",
-                    isolated_workspace=server_v2.ROOT,
+                    workspace=server_v2.ROOT,
+                    agent_call=lambda: server_v2.run_model_prompt(
+                        task_id,
+                        "Phase 1",
+                        "prompt",
+                        isolated_workspace=server_v2.ROOT,
+                    ),
+                    empty_error="empty",
                 )
-            self.assertEqual(status, "done")
-            self.assertEqual(raw_output, "# Agent Markdown")
-            self.assertNotIn("stdout", result)
+            self.assertTrue(result.ok)
+            self.assertEqual(result.content, "# Agent Markdown")
+            self.assertNotIn("stdout", result.as_dict())
         finally:
             with server_v2.TASK_LOCK:
-                server_v2.TASKS.pop(task_id, None)
+                server_v2.TASK_REPOSITORY.remove(task_id)
 
     def test_model_io_is_persisted_without_enabling_page_debug_logs(self):
         task_id = f"task-file-debug-{uuid.uuid4().hex}"
@@ -153,7 +169,46 @@ class ServerTaskWiringTest(unittest.TestCase):
             )
         finally:
             with server_v2.TASK_LOCK:
-                server_v2.TASKS.pop(task_id, None)
+                server_v2.TASK_REPOSITORY.remove(task_id)
+
+    def test_history_failure_does_not_publish_done_and_can_be_retried(self):
+        task_id = f"task-unpersisted-{uuid.uuid4().hex}"
+        server_v2.create_task_record(task_id, task_type="child")
+        with patch.object(
+            server_v2.REVIEW_RECORD_REPOSITORY,
+            "upsert_task",
+            side_effect=OSError("history unavailable"),
+        ):
+            server_v2.finish_task(task_id, "done", {"content": "ok"})
+        failed = server_v2.TASK_REPOSITORY.get(task_id)
+        self.assertEqual(failed.status.value, "error")
+        self.assertTrue(failed.unpersisted)
+        self.assertEqual(failed.persistence_target_status, "done")
+        retried = server_v2.retry_task_persistence(task_id)
+        self.assertEqual(retried["status"], "done")
+        self.assertFalse(retried["unpersisted"])
+        server_v2.TASK_REPOSITORY.remove(task_id)
+
+    def test_cancel_wins_before_done_history_is_persisted(self):
+        task_id = f"task-cancel-race-{uuid.uuid4().hex}"
+        server_v2.create_task_record(task_id, task_type="phase2")
+        server_v2.TASK_REPOSITORY.start(task_id)
+        server_v2.TASK_REPOSITORY.request_cancel(
+            task_id,
+            server_v2.agent_result_payload(
+                AgentResult.cancelled("任务已请求取消。"),
+                error="任务已请求取消。",
+            ),
+        )
+        try:
+            server_v2.finish_task(task_id, "done", {"content": "late success"})
+            task = server_v2.TASK_REPOSITORY.require(task_id)
+            record = server_v2.REVIEW_RECORD_REPOSITORY.get(f"task-{task_id}")
+            self.assertEqual(task.status.value, "cancelled")
+            self.assertEqual(record["status"], "cancelled")
+            self.assertEqual(record["taskStatus"], "cancelled")
+        finally:
+            server_v2.TASK_REPOSITORY.remove(task_id)
 
 
 if __name__ == "__main__":

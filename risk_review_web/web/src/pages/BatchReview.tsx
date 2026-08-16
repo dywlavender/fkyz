@@ -33,9 +33,9 @@ interface BatchReviewProps {
 
 interface BatchTaskResult {
   items?: BatchResultItem[]
-  stdout?: string
-  stderr?: string
-  returncode?: number
+  agentStatus?: 'succeeded' | 'failed' | 'cancelled' | string
+  content?: string
+  error?: string | null
 }
 
 interface BatchDisplayItem extends BatchRow, BatchResultItem {

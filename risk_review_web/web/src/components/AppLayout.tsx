@@ -25,7 +25,6 @@ export type PageKey =
   | 'api-docs'
   | 'development-spec'
   | 'settings'
-  | 'legacy'
 
 interface AppLayoutProps {
   page: PageKey
@@ -70,7 +69,6 @@ const items: MenuProps['items'] = [
       { key: 'api-docs', label: '接口文档' },
       { key: 'development-spec', label: '开发规范' },
       { key: 'settings', label: '运行设置' },
-      { key: 'legacy', label: '原有功能台' },
     ],
   },
 ]
@@ -87,19 +85,18 @@ const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
   'api-docs': { title: '系统管理', subtitle: '接口资产、开发规范与运行状态' },
   'development-spec': { title: '因子加工开发规范', subtitle: '分别查看标准生成规则与加工评审规则' },
   settings: { title: '运行设置', subtitle: '统一配置并发上限，查看运行模式与环境状态' },
-  legacy: { title: '原有功能台', subtitle: '保留尚未迁移的页面、按钮与调试入口' },
 }
 
 const PAGE_KEYS: PageKey[] = [
   'single-review', 'batch-review', 'scheduled-tasks', 'requirement-review',
   'validation-set', 'validation-cases', 'review-mode-experiment',
-  'history', 'api-docs', 'development-spec', 'settings', 'legacy',
+  'history', 'api-docs', 'development-spec', 'settings',
 ]
 
 function parentMenuKey(page: PageKey): string | undefined {
   if (['single-review', 'batch-review', 'scheduled-tasks'].includes(page)) return 'review-root'
   if (['validation-set', 'validation-cases', 'review-mode-experiment'].includes(page)) return 'quality-root'
-  if (['api-docs', 'development-spec', 'settings', 'legacy'].includes(page)) return 'system-root'
+  if (['api-docs', 'development-spec', 'settings'].includes(page)) return 'system-root'
   return undefined
 }
 

@@ -13,6 +13,7 @@ except ImportError:
     agent_runtime = None
 
 from risk_review_web.services.model_runtime.agent_runner import run_agent_call
+from risk_review_web.domain.agent_result import AgentStatus
 
 
 class _FakeModel:
@@ -47,7 +48,7 @@ class AgentRuntimeTest(unittest.TestCase):
             events = []
             fake_model = _FakeModel()
             with patch.object(agent_runtime, "create_model", return_value=fake_model):
-                status, result = run_agent_call(
+                result = run_agent_call(
                     prompt="测试 Prompt",
                     system_prompt="系统约束",
                     phase_label="Phase 1",
@@ -55,10 +56,10 @@ class AgentRuntimeTest(unittest.TestCase):
                     cancelled=lambda: False,
                     event_callback=lambda event, payload: events.append((event, payload)),
                 )
-            self.assertEqual(status, "done")
-            self.assertTrue(result["content"].startswith("# 标准加工规范"))
-            self.assertEqual(result["returncode"], 0)
-            self.assertNotIn("stdout", result)
+            self.assertIs(result.status, AgentStatus.SUCCEEDED)
+            self.assertTrue(result.content.startswith("# 标准加工规范"))
+            self.assertIsNone(result.error)
+            self.assertNotIn("stdout", result.as_dict())
             names = [event for event, _payload in events]
             self.assertEqual(names.count("model_input"), 2)
             self.assertIn("tool_call", names)
@@ -68,14 +69,14 @@ class AgentRuntimeTest(unittest.TestCase):
     def test_agent_cancellation_is_checked_before_call(self):
         with tempfile.TemporaryDirectory(prefix="agent-cancel-test-") as temp_dir:
             with patch.object(agent_runtime, "run_agent") as run:
-                status, result = run_agent_call(
+                result = run_agent_call(
                     prompt="不会执行",
                     phase_label="Phase 1",
                     workspace=Path(temp_dir),
                     cancelled=lambda: True,
                 )
-            self.assertEqual(status, "cancelled")
-            self.assertEqual(result["returncode"], 130)
+            self.assertIs(result.status, AgentStatus.CANCELLED)
+            self.assertIn("取消", result.error or "")
             run.assert_not_called()
 
     def test_read_tool_rejects_workspace_escape(self):

@@ -18,13 +18,7 @@ Start the backend and open:
 http://127.0.0.1:8765/
 ```
 
-The React workbench is served at `/`. The original frontend remains available at:
-
-```text
-http://127.0.0.1:8765/legacy/
-```
-
-The original frontend is intentionally retained while feature migration is in progress. Pages, buttons, switches, scheduled-task types, API clients, and components must not be removed merely because the React workbench does not expose them yet.
+The React workbench is the only frontend entry point and is served at `/`. React deep routes are served from the same built entry point; deleted old pages and assets return `404`.
 
 ## Scheduled Tasks
 

@@ -1,29 +1,28 @@
 from __future__ import annotations
 
-import base64
-import csv
-import json
+# Canonical scheduling service implementation.
+
 import os
 import re
 import threading
 import time
 import uuid
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
-from zipfile import ZipFile
 
 from risk_review_web.api_docs import get_api_doc, list_api_docs
 from risk_review_web.error_classification import classify_task_error
-from risk_review_web.paths import OUTPUTS_DIR, SCHEDULED_RUNS_PATH, SCHEDULED_TASKS_PATH
+from risk_review_web.paths import OUTPUTS_DIR
 from risk_review_web.runtime_settings import get_runtime_settings
 from risk_review_web.task_pool import GLOBAL_TASK_POOL
 from risk_review_web.utils import atomic_write_text, read_text
+from risk_review_web.services.tabular_import import TabularImportError, decode_import_rows as decode_tabular_import_rows
+from risk_review_web.services.review_history import scheduled_run_to_review_record
+from risk_review_web.scheduling.repository import ScheduledTaskStore, _atomic_write_json, _read_json_list
 
 JsonDict = dict[str, Any]
 RunItemExecutor = Callable[[JsonDict, JsonDict, str, int], JsonDict]
@@ -31,6 +30,7 @@ Phase1Executor = Callable[[JsonDict, str], JsonDict]
 Phase2Executor = Callable[[JsonDict, str], JsonDict]
 LogFn = Callable[[str], None]
 CancelExecutionFn = Callable[[str], bool]
+ReviewRecordSink = Callable[[JsonDict], Any]
 
 IMPORT_FIELDS = [
     "factorName",
@@ -68,9 +68,8 @@ SCHEDULER_POLL_INTERVAL_SECONDS = max(1, int(os.environ.get("RISK_REVIEW_SCHEDUL
 SCHEDULED_RUN_MAX_COUNT = max(10, int(os.environ.get("RISK_REVIEW_SCHEDULED_RUN_MAX", "1000")))
 
 
-class ScheduledTaskError(ValueError):
-    """User-facing validation or lifecycle error raised by scheduled tasks."""
-    pass
+from risk_review_web.scheduling.models import ScheduledTaskError
+from risk_review_web.scheduling.schedule_parser import compute_next_run_at, compute_next_run_from_cron
 
 
 def enrich_error_metadata(payload: JsonDict) -> JsonDict:
@@ -101,24 +100,6 @@ def _parse_iso(value: str | None) -> datetime | None:
     return parsed
 
 
-def _atomic_write_json(path: Path, payload: Any) -> None:
-    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
-
-
-def _read_json_list(path: Path) -> list[JsonDict]:
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_json(path, [])
-        return []
-    try:
-        data = json.loads(read_text(path))
-    except Exception as exc:
-        raise ScheduledTaskError(f"定时任务数据文件无法解析：{path.name}") from exc
-    if not isinstance(data, list):
-        raise ScheduledTaskError(f"定时任务数据文件格式错误：{path.name} 顶层必须是数组。")
-    return data
-
-
 def _normalize_id_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -127,206 +108,6 @@ def _normalize_id_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [part.strip() for part in re.split(r"[,\n，、]+", value) if part.strip()]
     return [str(value).strip()] if str(value).strip() else []
-
-
-def _parse_time_text(value: str | None) -> tuple[int, int]:
-    text = (value or "").strip() or "00:00"
-    match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
-    if not match:
-        raise ScheduledTaskError("runTime 格式必须为 HH:MM。")
-    hour = int(match.group(1))
-    minute = int(match.group(2))
-    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-        raise ScheduledTaskError("runTime 超出有效时间范围。")
-    return hour, minute
-
-
-def _weekday_index(value: str | None) -> int:
-    text = (value or "").strip().lower()
-    mapping = {
-        "1": 0,
-        "mon": 0,
-        "monday": 0,
-        "周一": 0,
-        "2": 1,
-        "tue": 1,
-        "tuesday": 1,
-        "周二": 1,
-        "3": 2,
-        "wed": 2,
-        "wednesday": 2,
-        "周三": 2,
-        "4": 3,
-        "thu": 3,
-        "thursday": 3,
-        "周四": 3,
-        "5": 4,
-        "fri": 4,
-        "friday": 4,
-        "周五": 4,
-        "6": 5,
-        "sat": 5,
-        "saturday": 5,
-        "周六": 5,
-        "7": 6,
-        "sun": 6,
-        "sunday": 6,
-        "周日": 6,
-        "周天": 6,
-    }
-    if text not in mapping:
-        raise ScheduledTaskError("weekday 无效，应为 1-7 或周几。")
-    return mapping[text]
-
-
-def _month_day(value: str | None) -> int:
-    try:
-        day = int(str(value or "").strip())
-    except ValueError as exc:
-        raise ScheduledTaskError("monthDay 必须为 1-31。") from exc
-    if day < 1 or day > 31:
-        raise ScheduledTaskError("monthDay 必须为 1-31。")
-    return day
-
-
-def _set_time(base: datetime, run_time: str | None) -> datetime:
-    hour, minute = _parse_time_text(run_time)
-    return base.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-
-def _safe_month_replace(base: datetime, day: int) -> datetime:
-    candidate = base.replace(day=1)
-    while True:
-        try:
-            return candidate.replace(day=day)
-        except ValueError:
-            day -= 1
-            if day < 1:
-                raise ScheduledTaskError("无法计算 monthly nextRunAt。")
-
-
-def compute_next_run_at(task: JsonDict, *, now: datetime | None = None, from_time: datetime | None = None) -> str | None:
-    """Compute the next local execution time for a normalized schedule."""
-    current = now or _now()
-    base = from_time or current
-    schedule_type = task.get("scheduleType")
-    run_time = task.get("runTime")
-    if schedule_type == "once":
-        run_date_text = (task.get("runDate") or "").strip()
-        if not run_date_text:
-            raise ScheduledTaskError("once 任务必须提供 runDate。")
-        try:
-            run_date = datetime.strptime(run_date_text, "%Y-%m-%d").date()
-        except ValueError as exc:
-            raise ScheduledTaskError("runDate 格式必须为 YYYY-MM-DD。") from exc
-        candidate = _set_time(datetime.combine(run_date, datetime.min.time(), tzinfo=current.tzinfo), run_time)
-        if candidate <= current and task.get("lastRunAt"):
-            return None
-        return candidate.isoformat(timespec="seconds")
-    if schedule_type == "daily":
-        candidate = _set_time(base, run_time)
-        if candidate <= current:
-            candidate = _set_time(base + timedelta(days=1), run_time)
-        return candidate.isoformat(timespec="seconds")
-    if schedule_type == "weekly":
-        weekday = _weekday_index(task.get("weekday"))
-        candidate = _set_time(base, run_time)
-        delta = (weekday - candidate.weekday()) % 7
-        candidate = candidate + timedelta(days=delta)
-        if candidate <= current:
-            candidate = candidate + timedelta(days=7)
-        return candidate.isoformat(timespec="seconds")
-    if schedule_type == "monthly":
-        day = _month_day(task.get("monthDay"))
-        candidate = _safe_month_replace(_set_time(base, run_time), day)
-        if candidate <= current:
-            if candidate.month == 12:
-                next_month = candidate.replace(year=candidate.year + 1, month=1, day=1)
-            else:
-                next_month = candidate.replace(month=candidate.month + 1, day=1)
-            candidate = _safe_month_replace(_set_time(next_month, run_time), day)
-        return candidate.isoformat(timespec="seconds")
-    if schedule_type == "cron":
-        cron_text = (task.get("cron") or "").strip()
-        return compute_next_run_from_cron(cron_text, current).isoformat(timespec="seconds")
-    raise ScheduledTaskError("scheduleType 无效。")
-
-
-def compute_next_run_from_cron(cron_text: str, now: datetime) -> datetime:
-    """Resolve the next timestamp for the supported five-field cron subset."""
-    parts = cron_text.split()
-    if len(parts) != 5:
-        raise ScheduledTaskError("cron 仅支持标准 5 段表达式。")
-    minute_values = _parse_cron_field(parts[0], 0, 59)
-    hour_values = _parse_cron_field(parts[1], 0, 23)
-    day_values = _parse_cron_field(parts[2], 1, 31)
-    month_values = _parse_cron_field(parts[3], 1, 12)
-    raw_week_values = _parse_cron_field(parts[4], 0, 6, sunday_alias=7)
-    # cron: 0/7=Sunday, 1=Monday; datetime.weekday(): Monday=0, Sunday=6.
-    week_values = {6 if value == 0 else value - 1 for value in raw_week_values}
-    day_wildcard = parts[2] == "*"
-    week_wildcard = parts[4] == "*"
-    candidate = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    for _ in range(366 * 24 * 60):
-        day_matches = candidate.day in day_values
-        week_matches = candidate.weekday() in week_values
-        calendar_matches = (
-            day_matches and week_matches
-            if day_wildcard or week_wildcard
-            else day_matches or week_matches
-        )
-        if (
-            candidate.minute in minute_values
-            and candidate.hour in hour_values
-            and candidate.month in month_values
-            and calendar_matches
-        ):
-            return candidate
-        candidate += timedelta(minutes=1)
-    raise ScheduledTaskError("cron 下一次执行时间超出一年搜索范围。")
-
-
-def _parse_cron_field(field: str, minimum: int, maximum: int, sunday_alias: int | None = None) -> set[int]:
-    values: set[int] = set()
-    for part in field.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if part == "*":
-            values.update(range(minimum, maximum + 1))
-            continue
-        step = 1
-        base = part
-        if "/" in part:
-            base, step_text = part.split("/", 1)
-            try:
-                step = int(step_text)
-            except ValueError as exc:
-                raise ScheduledTaskError(f"cron 字段步长非法：{part}") from exc
-            if step <= 0:
-                raise ScheduledTaskError(f"cron 字段步长非法：{part}")
-        if base == "*":
-            start, end = minimum, maximum
-        elif "-" in base:
-            left, right = base.split("-", 1)
-            start, end = int(left), int(right)
-        else:
-            start = end = int(base)
-        if sunday_alias is not None:
-            if start == sunday_alias:
-                start = 0
-            if end == sunday_alias:
-                end = 0
-        if start < minimum or end > maximum:
-            raise ScheduledTaskError(f"cron 字段超出范围：{part}")
-        if start <= end:
-            values.update(range(start, end + 1, step))
-        else:
-            wrapped = list(range(start, maximum + 1, step)) + list(range(minimum, end + 1, step))
-            values.update(wrapped)
-    if not values:
-        raise ScheduledTaskError("cron 字段不能为空。")
-    return values
 
 
 def _normalize_import_header(cell: Any) -> str:
@@ -368,86 +149,12 @@ def _normalize_import_rows(rows: list[list[str]]) -> tuple[list[JsonDict], list[
     return items, errors
 
 
-def parse_csv_rows(text: str) -> list[list[str]]:
-    """Parse and trim non-empty CSV records used by scheduled imports."""
-    rows: list[list[str]] = []
-    for row in csv.reader(StringIO(text.lstrip("\ufeff"))):
-        if any(str(cell).strip() for cell in row):
-            rows.append([str(cell).strip() for cell in row])
-    return rows
-
-
-def parse_xlsx_rows(data: bytes) -> list[list[str]]:
-    """Parse the first worksheet from an XLSX payload using the standard library."""
-    rows: list[list[str]] = []
-    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-    try:
-        with ZipFile(BytesIO(data)) as archive:
-            shared_strings: list[str] = []
-            if "xl/sharedStrings.xml" in archive.namelist():
-                tree = ET.parse(archive.open("xl/sharedStrings.xml"))
-                for si in tree.findall(f"{ns}si"):
-                    texts = [node.text or "" for node in si.findall(f".//{ns}t")]
-                    shared_strings.append("".join(texts))
-            tree = ET.parse(archive.open("xl/worksheets/sheet1.xml"))
-            sheet_data = tree.getroot().find(f"{ns}sheetData")
-            if sheet_data is None:
-                return rows
-            for row_node in sheet_data.findall(f"{ns}row"):
-                cells: dict[str, str] = {}
-                for cell in row_node.findall(f"{ns}c"):
-                    ref = cell.get("r", "")
-                    cell_type = cell.get("t", "")
-                    value_node = cell.find(f"{ns}v")
-                    value = value_node.text if value_node is not None else ""
-                    if cell_type == "s" and value:
-                        try:
-                            value = shared_strings[int(float(value))]
-                        except (ValueError, IndexError):
-                            pass
-                    cells[ref] = value
-                if not cells:
-                    continue
-                max_col = 0
-                row_number = "".join(ch for ch in next(iter(cells)) if ch.isdigit()) or "1"
-                for ref in cells:
-                    letters = "".join(ch for ch in ref if ch.isalpha())
-                    col_index = 0
-                    for letter in letters.upper():
-                        col_index = col_index * 26 + (ord(letter) - 64)
-                    max_col = max(max_col, col_index)
-                row_data: list[str] = []
-                for col in range(1, max_col + 1):
-                    letters = ""
-                    cursor = col
-                    while cursor > 0:
-                        cursor, remainder = divmod(cursor - 1, 26)
-                        letters = chr(remainder + 65) + letters
-                    row_data.append(str(cells.get(f"{letters}{row_number}", "")).strip())
-                rows.append(row_data)
-    except Exception:
-        return []
-    return rows
-
-
 def decode_import_rows(name: str, data_base64: str) -> list[list[str]]:
-    """Decode an uploaded CSV/XLSX payload into tabular rows."""
-    if not data_base64:
-        raise ScheduledTaskError("上传文件内容为空。")
+    """Decode an uploaded CSV/XLSX payload through the shared parser."""
     try:
-        raw = base64.b64decode(data_base64)
-    except Exception as exc:
-        raise ScheduledTaskError("上传文件 base64 解码失败。") from exc
-    if str(name or "").lower().endswith((".xlsx", ".xls")):
-        rows = parse_xlsx_rows(raw)
-    else:
-        try:
-            rows = parse_csv_rows(raw.decode("utf-8-sig"))
-        except UnicodeDecodeError:
-            rows = parse_csv_rows(raw.decode("gb18030"))
-    if not rows:
-        raise ScheduledTaskError("未解析出有效数据行。")
-    return rows
+        return decode_tabular_import_rows(name, data_base64)
+    except TabularImportError as exc:
+        raise ScheduledTaskError(str(exc)) from exc
 
 
 def preview_import(name: str, data_base64: str, mode: str | None = None, task_standard_file: str | None = None) -> JsonDict:
@@ -571,61 +278,6 @@ class SchedulerDependencies:
     run_phase2: Phase2Executor
 
 
-class ScheduledTaskStore:
-    """Thread-safe JSON persistence for scheduled tasks and run history."""
-    def __init__(self, tasks_path: Path = SCHEDULED_TASKS_PATH, runs_path: Path = SCHEDULED_RUNS_PATH) -> None:
-        self.tasks_path = tasks_path
-        self.runs_path = runs_path
-        self.lock = threading.RLock()
-        self._ensure_files()
-
-    def _ensure_files(self) -> None:
-        for path in (self.tasks_path, self.runs_path):
-            if not path.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                _atomic_write_json(path, [])
-
-    def list_tasks(self) -> list[JsonDict]:
-        """Return persisted tasks ordered from newest to oldest."""
-        with self.lock:
-            tasks = _read_json_list(self.tasks_path)
-        tasks.sort(key=lambda item: item.get("createdAt") or "", reverse=True)
-        return tasks
-
-    def get_task(self, task_id: str) -> JsonDict | None:
-        """Return one persisted task by identifier."""
-        for task in self.list_tasks():
-            if task.get("taskId") == task_id:
-                return task
-        return None
-
-    def save_tasks(self, tasks: list[JsonDict]) -> None:
-        """Replace the persisted task collection atomically."""
-        with self.lock:
-            _atomic_write_json(self.tasks_path, tasks)
-
-    def list_runs(self, task_id: str | None = None) -> list[JsonDict]:
-        """Return run history, optionally restricted to one scheduled task."""
-        with self.lock:
-            runs = _read_json_list(self.runs_path)
-        if task_id:
-            runs = [item for item in runs if item.get("taskId") == task_id]
-        runs.sort(key=lambda item: item.get("startedAt") or item.get("createdAt") or "", reverse=True)
-        return runs
-
-    def get_run(self, run_id: str) -> JsonDict | None:
-        """Return one persisted scheduled run by identifier."""
-        for run in self.list_runs():
-            if run.get("runId") == run_id:
-                return run
-        return None
-
-    def save_runs(self, runs: list[JsonDict]) -> None:
-        """Replace the persisted scheduled-run collection atomically."""
-        with self.lock:
-            _atomic_write_json(self.runs_path, runs)
-
-
 class ScheduledTaskService:
     """Own scheduled-task validation, dispatch, cancellation, and timer scanning."""
     def __init__(
@@ -633,12 +285,14 @@ class ScheduledTaskService:
         *,
         store: ScheduledTaskStore,
         dependencies: SchedulerDependencies,
+        review_record_sink: ReviewRecordSink,
         log: LogFn | None = None,
         cancel_execution: CancelExecutionFn | None = None,
         outputs_dir: Path = OUTPUTS_DIR,
     ) -> None:
         self.store = store
         self.dependencies = dependencies
+        self.review_record_sink = review_record_sink
         self.log = log or (lambda _message: None)
         self.cancel_execution = cancel_execution
         self.outputs_dir = outputs_dir
@@ -693,6 +347,7 @@ class ScheduledTaskService:
     def _recover_interrupted_runs(self) -> None:
         """A process restart cannot resume in-flight Agent calls; close them explicitly."""
         now_text = _iso_now()
+        recovered: list[JsonDict] = []
         with self.store.lock:
             runs = _read_json_list(self.store.runs_path)
             changed = False
@@ -705,9 +360,13 @@ class ScheduledTaskService:
                     "error": "服务重启，原执行上下文已丢失。",
                     **classify_task_error("服务重启，原执行上下文已丢失。"),
                 })
+                recovered.append(dict(run))
                 changed = True
             if changed:
                 _atomic_write_json(self.store.runs_path, runs)
+        for run in recovered:
+            task = self.store.get_task(str(run.get("taskId") or "")) or {}
+            self._persist_terminal_review_record(run, task)
 
     def list_tasks(self) -> list[JsonDict]:
         """Return tasks enriched with item counts and latest-run status."""
@@ -933,10 +592,45 @@ class ScheduledTaskService:
                 return tasks[index]
         raise ScheduledTaskError("任务不存在。")
 
+    def _persist_terminal_review_record(self, run: JsonDict, task: JsonDict) -> None:
+        """Write one terminal scheduled run to the unified history sink."""
+        try:
+            self.review_record_sink(scheduled_run_to_review_record(run, task))
+        except Exception as exc:
+            message = f"统一评审历史写入失败：{type(exc).__name__}: {exc}"
+            self.log(f"scheduled run history persist failed: runId={run.get('runId')} error={message}")
+            try:
+                self._update_run(
+                    str(run.get("runId") or ""),
+                    {"historyPersisted": False, "persistenceError": message},
+                )
+            except Exception as update_exc:
+                self.log(f"scheduled run persistence error marker failed: runId={run.get('runId')} error={update_exc}")
+            return
+        try:
+            self._update_run(
+                str(run.get("runId") or ""),
+                {"historyPersisted": True, "persistenceError": ""},
+            )
+        except Exception as exc:
+            self.log(f"scheduled run history success marker failed: runId={run.get('runId')} error={exc}")
+
+    def retry_run_history(self, run_id: str) -> JsonDict:
+        """Retry a scheduled run whose unified-history write previously failed."""
+        run = self.store.get_run(run_id)
+        if not run:
+            raise ScheduledTaskError("执行记录不存在。")
+        if run.get("status") not in {"success", "partial_success", "failed", "cancelled"}:
+            raise ScheduledTaskError("只有终态执行记录可以重试历史写入。")
+        task = self.store.get_task(str(run.get("taskId") or "")) or {}
+        self.review_record_sink(scheduled_run_to_review_record(run, task))
+        self._update_run(run_id, {"historyPersisted": True, "persistenceError": ""})
+        return self.get_run(run_id)
+
     def _record_scheduler_dispatch_failure(self, task: JsonDict, error_message: str) -> None:
         run = self._create_run_record(task, trigger="scheduler")
         finished_at = _iso_now()
-        self._update_run(
+        completed_run = self._update_run(
             run["runId"],
             {
                 "status": "failed",
@@ -961,6 +655,7 @@ class ScheduledTaskService:
                 **classify_task_error(error_message),
             },
         )
+        self._persist_terminal_review_record(completed_run, task)
         if task.get("scheduleType") == "once":
             self._update_task_record(str(task.get("taskId") or ""), {"enabled": False, "nextRunAt": "", "updatedAt": finished_at})
         else:
@@ -1008,7 +703,7 @@ class ScheduledTaskService:
                 self._update_task_record(task_id, task_patch)
             except ScheduledTaskError as exc:
                 self.log(f"scheduled task record update skipped: taskId={task_id} error={exc}")
-            self._update_run(
+            completed_run = self._update_run(
                 run_id,
                 {
                     "status": status,
@@ -1020,6 +715,7 @@ class ScheduledTaskService:
                     "durationMs": int((time.time() - started) * 1000),
                 },
             )
+            self._persist_terminal_review_record(completed_run, task)
             with self.execution_lock:
                 self.running_task_ids.discard(task_id)
                 self.run_futures.pop(run_id, None)
@@ -1188,7 +884,7 @@ class ScheduledTaskService:
                 "status": "success" if ok else "failed",
                 "standardFile": result.get("standardFileId") or "",
                 "reviewFile": "",
-                "error": "" if ok else str(result.get("stderr") or "Phase 1 失败"),
+                "error": "" if ok else str(result.get("error") or "Phase 1 失败"),
             }
         if mode == "phase2_only":
             standard_file = str(item.get("standardFile") or task_standard_file or "").strip()
@@ -1209,8 +905,8 @@ class ScheduledTaskService:
                 "status": "success" if ok else "failed",
                 "standardFile": standard_file,
                 "reviewFile": result.get("reviewFileId") or "",
-                "reviewConclusion": detect_review_conclusion(str(result.get("stdout") or "")),
-                "error": "" if ok else str(result.get("stderr") or "Phase 2 失败"),
+                "reviewConclusion": detect_review_conclusion(str(result.get("content") or "")),
+                "error": "" if ok else str(result.get("error") or "Phase 2 失败"),
             }
         raise ScheduledTaskError("不支持的任务模式。")
 
@@ -1285,6 +981,7 @@ def build_service(
     run_review_pair: RunItemExecutor,
     run_phase1: Phase1Executor,
     run_phase2: Phase2Executor,
+    review_record_sink: ReviewRecordSink,
     log: LogFn | None = None,
     cancel_execution: CancelExecutionFn | None = None,
 ) -> ScheduledTaskService:
@@ -1296,6 +993,7 @@ def build_service(
             run_phase1=run_phase1,
             run_phase2=run_phase2,
         ),
+        review_record_sink=review_record_sink,
         log=log,
         cancel_execution=cancel_execution,
     )

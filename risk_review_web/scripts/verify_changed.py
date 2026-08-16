@@ -110,11 +110,16 @@ def main() -> int:
 
     backend_smoke = args.all or any(
         path.startswith((
+            "risk_review_web/domain/",
+            "risk_review_web/repositories/",
             "risk_review_web/routes/",
+            "risk_review_web/scheduling/",
             "risk_review_web/services/",
             "risk_review_web/tests/",
+            "risk_review_web/workflows/",
         ))
         or path in {
+            "risk_review_web/app_context.py",
             "risk_review_web/server_v2.py",
             "risk_review_web/artifacts.py",
             "risk_review_web/prompt_builder.py",
@@ -140,7 +145,6 @@ def main() -> int:
         for path in paths
     )
     desktop = args.all or frontend or "risk_review_web/scripts/playwright_desktop_smoke.py" in paths
-    legacy = args.all or "risk_review_web/static/app.js" in paths
     golden = args.all or any(
         path in {
             "risk_review_web/data/examples.json",
@@ -168,9 +172,6 @@ def main() -> int:
             "评审结论解析回归",
             [sys.executable, "-m", "unittest", "risk_review_web.tests.test_review_evaluation"],
         )
-        ran = True
-    if legacy:
-        run("原有功能台语法检查", ["node", "--check", "risk_review_web/static/app.js"])
         ran = True
     if phase1 or phase2:
         run(

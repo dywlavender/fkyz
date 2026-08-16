@@ -60,7 +60,7 @@ export function RegressionTaskCard({
                 <Typography.Text type="secondary">{summary?.currentTitle || ''}</Typography.Text>
               </Space>
             )}
-            description={task.result?.stderr || (active ? '任务仍在后端执行，离开页面不会中断；返回验证集页面会自动恢复。' : '任务结果已保留，可查看每条案例的实际结论和报告。')}
+            description={task.result?.error || (active ? '任务仍在后端执行，离开页面不会中断；返回验证集页面会自动恢复。' : '任务结果已保留，可查看每条案例的实际结论和报告。')}
           />
           <Descriptions bordered column={{ xs: 1, sm: 2, lg: 4 }} size="small">
             <Descriptions.Item label="Task ID">{task.id || '-'}</Descriptions.Item>

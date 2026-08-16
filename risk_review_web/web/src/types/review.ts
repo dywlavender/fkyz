@@ -93,9 +93,9 @@ export interface RequirementReviewRequest {
 }
 
 export interface RequirementReviewResponse extends TaskErrorMetadata {
-  returncode?: number
-  stdout?: string
-  stderr?: string
+  agentStatus?: 'succeeded' | 'failed' | 'cancelled' | string
+  content?: string
+  error?: string | null
   reviewFileId?: string
   reviewMetadataFileId?: string
   conclusion?: 'pass' | 'fail' | string
@@ -133,9 +133,9 @@ export interface Phase1Request {
 }
 
 export interface Phase1Response {
-  returncode?: number
-  stdout?: string
-  stderr?: string
+  agentStatus?: 'succeeded' | 'failed' | 'cancelled' | string
+  content?: string
+  error?: string | null
   checksum?: string
   cacheHit?: boolean
   standardFileId?: string
@@ -174,9 +174,9 @@ export interface Phase2Request {
 }
 
 export interface Phase2Response {
-  returncode?: number
-  stdout?: string
-  stderr?: string
+  agentStatus?: 'succeeded' | 'failed' | 'cancelled' | string
+  content?: string
+  error?: string | null
   reviewFileId?: string
   reviewRawFileId?: string
   reviewChecksum?: string
@@ -503,9 +503,9 @@ export interface RegressionTaskResult {
     currentIndex?: number | null
     currentTitle?: string
   }
-  stdout?: string
-  stderr?: string
-  returncode?: number
+  agentStatus?: 'succeeded' | 'failed' | 'cancelled' | string
+  content?: string
+  error?: string | null
 }
 
 export interface BatchRow {

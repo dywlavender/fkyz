@@ -13,20 +13,20 @@ const CONCLUSION_LABELS: Record<string, string> = {
 }
 
 interface TaskFailureSource {
-  stderr?: string
-  stdout?: string
+  content?: string
+  error?: string | null
   errorCategory?: string
   suggestedAction?: string
 }
 
 export function taskFailureMessage(result: TaskFailureSource | null | undefined, fallback: string): string {
-  const stderr = String(result?.stderr || '').trim()
-  if (stderr) {
+  const error = String(result?.error || '').trim()
+  if (error) {
     const category = String(result?.errorCategory || '').trim()
     const action = String(result?.suggestedAction || '').trim()
-    return [category ? `${category}：${stderr}` : stderr, action].filter(Boolean).join('；')
+    return [category ? `${category}：${error}` : error, action].filter(Boolean).join('；')
   }
-  const explicitError = String(result?.stdout || '')
+  const explicitError = String(result?.content || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) => /^(?:API Error|Error|错误)\s*[:：]/i.test(line))

@@ -172,6 +172,16 @@ def main() -> int:
                 raise AssertionError("到期自动触发未产生运行记录。")
             if automatic_finished.get("status") != "success" or automatic_finished.get("trigger") != "scheduler":
                 raise AssertionError(f"到期自动触发失败：{automatic_finished}")
+            scheduled_records = api_data(request_json(
+                base_url,
+                "/api/review-records?source=scheduled&page=1&pageSize=20",
+            )) or {}
+            scheduled_record_ids = {
+                str(record.get("taskId") or "")
+                for record in scheduled_records.get("items") or []
+            }
+            if str(manual_finished.get("runId")) not in scheduled_record_ids or str(automatic_finished.get("runId")) not in scheduled_record_ids:
+                raise AssertionError(f"定时终态未写入统一评审历史：{scheduled_records}")
         finally:
             terminate_process(process)
         print("[PASS] 单一 Agent 运行设置、多行批量、单案例回归、定时任务手动与到期自动触发")

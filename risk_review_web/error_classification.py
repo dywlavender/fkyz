@@ -9,7 +9,7 @@ def classify_task_error(message: str) -> dict[str, str]:
     rules = (
         (r"缺少要素|不能为空|请填写|至少选择|未找到|无法映射|输入冲突", "INPUT_INVALID", "输入缺少必要要素或存在冲突", "检查需求内容、接口文档和待评审内容后重新提交。"),
         (r"schema_version|元数据.*(?:格式无效|无法解析|版本不兼容)|JSONDecodeError", "SCHEMA_INVALID", "标准元数据无效", "重新执行 Phase 1 生成 v5 标准加工规范。"),
-        (r"缺少必要章节|stdout 必须以|未输出完整", "OUTPUT_STRUCTURE_INVALID", "模型输出结构无效", "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"),
+        (r"缺少必要章节|未输出完整", "OUTPUT_STRUCTURE_INVALID", "模型输出结构无效", "检查模型输出是否包含当前阶段要求的最小 Markdown 结构。"),
         (r"必须以「?#|缺少必要章节|缺少可识别|未输出.*正文|输出格式", "OUTPUT_FORMAT_INVALID", "模型产物格式无效", "重新执行当前阶段；如重复出现，请检查对应 Prompt 和 Skill。"),
         (r"LangChain|Agent 执行失败|API Error|调用超时|Authentication|RateLimit|退出码", "MODEL_CALL_FAILED", "模型调用失败", "检查 Agent 模型连接配置、网络和超时设置后重试。"),
         (r"取消|终止", "TASK_CANCELLED", "任务已终止", "如需继续，请重新提交任务。"),
@@ -26,6 +26,6 @@ def classify_task_error(message: str) -> dict[str, str]:
 
 def attach_error_metadata(result: dict, fallback: str = "") -> dict:
     """Attach normalized error metadata to a task result in place."""
-    message = str(result.get("stderr") or result.get("error") or fallback or "").strip()
+    message = str(result.get("error") or fallback or "").strip()
     result.update(classify_task_error(message))
     return result

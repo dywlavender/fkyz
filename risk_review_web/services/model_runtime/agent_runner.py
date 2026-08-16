@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from risk_review_web.domain.agent_result import AgentResult
 from .agent_runtime import run_agent
 
 
@@ -13,10 +14,10 @@ def run_agent_call(
     workspace: Path,
     cancelled,
     event_callback=None,
-) -> tuple[str, dict]:
-    """Normalize an in-process Agent call to the platform task-result contract."""
+) -> AgentResult:
+    """Run one in-process Agent call and return the typed model result."""
     if cancelled():
-        return "cancelled", {"content": "", "stderr": f"{phase_label} 已取消。", "returncode": 130}
+        return AgentResult.cancelled(f"{phase_label} 已取消。")
     try:
         content = run_agent(
             prompt,
@@ -27,13 +28,9 @@ def run_agent_call(
             cancelled=cancelled,
         )
         if cancelled():
-            return "cancelled", {"content": content, "stderr": f"{phase_label} 已取消。", "returncode": 130}
-        return "done", {"content": content, "stderr": "", "returncode": 0}
+            return AgentResult.cancelled(f"{phase_label} 已取消。", metadata={"partial_content": content})
+        return AgentResult.succeeded(content)
     except InterruptedError as exc:
-        return "cancelled", {"content": "", "stderr": str(exc), "returncode": 130}
+        return AgentResult.cancelled(str(exc))
     except Exception as exc:
-        return "error", {
-            "content": "",
-            "stderr": f"Agent 执行失败：{type(exc).__name__}: {exc}",
-            "returncode": 1,
-        }
+        return AgentResult.failed(f"Agent 执行失败：{type(exc).__name__}: {exc}")

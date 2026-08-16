@@ -22,7 +22,8 @@
 ├── start_v2.sh                      # 启动脚本（端口 / 释放占用端口）
 ├── AGENTS.md                        # 平台开发约定与验证要求
 ├── risk_review_web/                 # 平台主代码
-│   ├── server_v2.py                 # 后端入口（HTTP 服务 + Agent 调用 + 文件落盘）
+│   ├── server_v2.py                 # 后端入口（HTTP Server 启动）
+│   ├── app_context.py               # 应用依赖、任务与工作流编排
 │   ├── paths.py                     # 路径常量
 │   ├── prompt_builder.py            # Prompt 组装
 │   ├── artifacts.py                 # 产物校验 / checksum / 缓存
@@ -30,9 +31,10 @@
 │   ├── api_docs.py                  # 接口文档加载与缓存
 │   ├── utils.py
 │   ├── task_pool.py                 # 单后端进程全局任务池
-│   ├── scheduled_tasks.py           # 定时任务调度与持久化
+│   ├── routes/                      # HTTP 路由与 Handler
+│   ├── scheduling/                  # 定时任务模型、解析、仓储、服务与扫描器
 │   ├── web/src/                     # React 前端源码
-│   ├── static/                      # React 构建产物及原有功能台
+│   ├── static/                      # React 构建产物及 Markdown 查看器共享资源
 │   ├── data/
 │   │   ├── business_rules.json      # 业务规则数据
 │   │   └── examples.json            # 验证集数据
@@ -61,7 +63,7 @@
 
 启动脚本会：
 
-1. 检查关键文件（Skill、`server_v2.py`、`index.html`）是否就位；
+1. 检查关键文件（Skill、`server_v2.py`、`static/dist/index.html`）是否就位；
 2. 创建 `outputs/` 目录；
 3. 释放被占用的目标端口；
 4. 以 `/opt/miniconda3/envs/langchain1.2/bin/python -m risk_review_web.server_v2` 启动 HTTP 服务。
@@ -111,5 +113,5 @@ Agent 的最终响应正文直接作为 Markdown 结果交给现有校验与落�
 ## 开发约定
 
 - **输出目录**：运行产物统一写入项目根目录 `outputs/`，不要写入 `wiki/outputs/`。
-- **后端入口**：`risk_review_web/server_v2.py`；**React 前端**：`risk_review_web/web/src/`；**原有功能台**：`static/index.html` / `static/app.js`。
-- **修改后至少执行**：Python 语法检查、前端 JS 语法检查、Mock 模式 Phase 1 / Phase 2 冒烟；如涉及验证集再跑一条回归验证。
+- **后端入口**：`risk_review_web/server_v2.py`；**React 前端**：`risk_review_web/web/src/`；**构建产物**：`risk_review_web/static/dist/`。
+- **修改后至少执行**：Python 编译、React typecheck/build、Mock 模式 Phase 1 / Phase 2 冒烟；如涉及验证集再跑一条回归验证。

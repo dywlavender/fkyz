@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 from collections.abc import Callable
 from urllib.parse import parse_qs, unquote
 
 from risk_review_web.services.http_responses import error_response, json_response, success_response
-from risk_review_web.services.tabular_import import parse_csv_rows, parse_xlsx
+from risk_review_web.services.tabular_import import TabularImportError, decode_import_rows
 from risk_review_web.services.validation_store import (
     EXAMPLES_LOCK,
     REVIEW_MODE_EXPERIMENTS_LOCK,
@@ -124,18 +122,11 @@ def handle_post(
             encoded = str(payload.get("data") or "")
             if not encoded:
                 raise ValueError("导入文件内容为空")
-            raw = base64.b64decode(encoded)
-            if file_name.lower().endswith((".xlsx", ".xls")):
-                rows = parse_xlsx(raw)
-            else:
-                try:
-                    rows = parse_csv_rows(raw.decode("utf-8-sig"))
-                except UnicodeDecodeError:
-                    rows = parse_csv_rows(raw.decode("gb18030"))
+            rows = decode_import_rows(file_name, encoded)
             success_response(handler, import_validation_rows(file_name, rows))
         except json.JSONDecodeError:
             error_response(handler, 400, "invalid json")
-        except (ValueError, TypeError, binascii.Error) as exc:
+        except (TabularImportError, ValueError, TypeError) as exc:
             error_response(handler, 400, str(exc))
         return True
     if path == "/api/validation-cases/batch-delete":

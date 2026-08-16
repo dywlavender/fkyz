@@ -272,19 +272,19 @@ export function SingleReview(props: SingleReviewProps) {
     }))
 
     const debugLogs = (task.debugLogs || [])
-      .filter((log) => String(log.stream || '').toLowerCase() !== 'stderr' || Boolean(log.message))
+      .filter((log) => String(log.stream || '').toLowerCase() !== 'error' || Boolean(log.message))
       .map((log, index) => {
         const stream = String(log.stream || '').toLowerCase()
         const labels: Record<string, string> = {
           prompt: '模型实际输入',
-          stdout: '模型最终输出',
-          stderr: '模型错误输出',
+          content: '模型最终输出',
+          error: '模型错误输出',
         }
         return {
           id: taskLogId(taskId, phase, 'debug', index, log),
           time: taskLogTime(log),
           phase,
-          level: (stream === 'stderr' && log.message ? 'error' : 'info') as ExecutionLogItem['level'],
+          level: (stream === 'error' && log.message ? 'error' : 'info') as ExecutionLogItem['level'],
           message: labels[stream] || 'Agent 交互',
           detail: log.message || '',
           stream,
@@ -628,7 +628,7 @@ export function SingleReview(props: SingleReviewProps) {
     setPhase2(taskResult)
 
     try {
-      let reviewMarkdown = taskResult.stdout || ''
+      let reviewMarkdown = taskResult.content || ''
       if (taskResult.reviewFileId) {
         try {
           reviewMarkdown = await fetchOutputText(taskResult.reviewFileId)

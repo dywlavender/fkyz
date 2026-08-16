@@ -82,7 +82,7 @@ def execute_round(base_url: str, case_ids: list[str], timeout: float) -> list[di
     )
     task = wait_task(base_url, str(response["taskId"]), timeout)
     if task.get("status") != "done":
-        raise RuntimeError(f"黄金验证任务失败：{(task.get('result') or {}).get('stderr') or task}")
+        raise RuntimeError(f"黄金验证任务失败：{(task.get('result') or {}).get('error') or task}")
     items = (task.get("result") or {}).get("items") or []
     if len(items) != len(case_ids):
         raise AssertionError(f"黄金验证结果数量不完整：期望 {len(case_ids)}，实际 {len(items)}")

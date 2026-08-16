@@ -4,7 +4,7 @@
   "reviewed": true,
   "description": "首批人工确认的黄金案例，复用 examples.json 中的案例正文并冻结案例版本。",
   "case_versions": {
-    "case-01": "e4065c2ab72f",
+    "case-01": "d16613a6b261",
     "case-02": "4da76cfa12fa",
     "case-03": "2cf0e8be63d1",
     "case-04": "48f8d1f45d68",

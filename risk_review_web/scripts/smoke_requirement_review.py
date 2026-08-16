@@ -82,7 +82,7 @@ def main() -> int:
             persisted_log = log_files[0].read_text(encoding="utf-8")
             if f"traceId={trace_id}" not in persisted_log or f"taskId={task_id}" not in persisted_log:
                 raise AssertionError("需求评审文件日志未按 traceId 串联任务")
-            for message in ("需求评审开始", "需求评审完成"):
+            for message in ("需求评审 开始", "需求评审 完成"):
                 if message not in persisted_log:
                     raise AssertionError(f"需求评审文件日志缺少关键步骤：{message}")
             review_records = request_json(base_url, "/api/review-records").get("data") or {}

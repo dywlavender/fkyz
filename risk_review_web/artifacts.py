@@ -503,7 +503,7 @@ def find_cached_phase1_standard(checksum: str, allow_mock: bool = False) -> dict
             return {
                 "standardFileId": path.name,
                 "standardMetadataFileId": metadata_name,
-                "stdout": text,
+                "content": text,
                 "checksum": checksum,
                 "cacheHit": True,
             }

@@ -39,23 +39,43 @@ def serve_output(handler, outputs_dir: Path, name: str) -> None:
     text_response(handler, 200, path.read_bytes(), "text/markdown; charset=utf-8")
 
 
+REACT_ROUTE_PREFIXES = (
+    "/review/single",
+    "/review/batch",
+    "/review/scheduled",
+    "/requirement-review",
+    "/quality/runs",
+    "/quality/cases",
+    "/quality/experiment",
+    "/records",
+    "/system/apis",
+    "/system/spec",
+    "/system/settings",
+)
+
+
+def _is_react_route(path: str) -> bool:
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in REACT_ROUTE_PREFIXES)
+
+
+def _serve_react_app(handler, static_dir: Path) -> None:
+    """Serve the built React entry point and fail explicitly when it is absent."""
+    react_index = static_dir / "dist" / "index.html"
+    if not react_index.exists():
+        json_response(handler, 503, {"error": "React build is missing: static/dist/index.html"})
+        return
+    serve_static(handler, static_dir, "dist/index.html")
+
+
 def handle_get(handler, path: str, static_dir: Path, outputs_dir: Path) -> bool:
-    """Route frontend entry points, generated artifacts, and legacy static assets."""
-    if path == "/":
-        react_index = static_dir / "dist" / "index.html"
-        serve_static(handler, static_dir, "dist/index.html" if react_index.exists() else "index.html")
-        return True
-    if path in ("/legacy", "/legacy/"):
-        serve_static(handler, static_dir, "index.html")
+    """Route the built React app, generated artifacts, and shared static assets."""
+    if path == "/" or _is_react_route(path):
+        _serve_react_app(handler, static_dir)
         return True
     if path == "/favicon.ico":
         text_response(handler, 204, b"", "image/x-icon")
         return True
     if path.startswith("/outputs/"):
         serve_output(handler, outputs_dir, path[len("/outputs/"):])
-        return True
-    if any(path.startswith(prefix) for prefix in ("/review/", "/requirement-review", "/quality/", "/records", "/system/")):
-        react_index = static_dir / "dist" / "index.html"
-        serve_static(handler, static_dir, "dist/index.html" if react_index.exists() else "index.html")
         return True
     return False

@@ -94,11 +94,11 @@ export function RequirementReviewPage({ apiDocs, onNotice }: RequirementReviewPa
     }))
     const debug = (task.debugLogs || []).map((item, index) => {
       const stream = String(item.stream || '').toLowerCase()
-      const labels: Record<string, string> = { prompt: '模型实际输入', stdout: '模型最终输出', stderr: '模型错误输出' }
+      const labels: Record<string, string> = { prompt: '模型实际输入', content: '模型最终输出', error: '模型错误输出' }
       return {
         id: `${currentTaskId}-debug-${item.time ?? index}-${index}`,
         time: taskLogTime(item),
-        level: (stream === 'stderr' && item.message ? 'error' : 'info') as RequirementExecutionLog['level'],
+        level: (stream === 'error' && item.message ? 'error' : 'info') as RequirementExecutionLog['level'],
         message: labels[stream] || 'Agent 交互',
         detail: item.message || '',
         stream,
@@ -165,8 +165,8 @@ export function RequirementReviewPage({ apiDocs, onNotice }: RequirementReviewPa
       if (runTokenRef.current !== runToken) return
       const result = task.result || {}
       if (String(task.status).toLowerCase() === 'cancelled') throw new Error('需求评审已停止')
-      if (String(task.status).toLowerCase() !== 'done') throw new Error(result.stderr || '需求评审执行失败')
-      let markdown = result.stdout || ''
+      if (String(task.status).toLowerCase() !== 'done') throw new Error(result.error || '需求评审执行失败')
+      let markdown = result.content || ''
       if (result.reviewFileId) {
         markdown = await fetchOutputText(result.reviewFileId)
         setReviewFileId(result.reviewFileId)

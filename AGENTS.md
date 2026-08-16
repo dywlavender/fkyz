@@ -12,7 +12,7 @@
 - HTTP 路由分组：`risk_review_web/routes/`
 - 无状态解析、持久化与领域服务：`risk_review_web/services/`
 - 全局任务池：`risk_review_web/task_pool.py`
-- 定时任务调度与持久化：`risk_review_web/scheduled_tasks.py`
+- 定时任务调度与持久化：`risk_review_web/scheduling/`
 - 标准与报告校验：`risk_review_web/artifacts.py`
 - 统一任务错误分类：`risk_review_web/error_classification.py`
 - Prompt 装配：`risk_review_web/prompt_builder.py`
@@ -26,9 +26,7 @@
 - 验证集功能模块：`risk_review_web/web/src/features/validation-set/`
 - React 前端构建配置：`risk_review_web/web/vite.config.ts`
 - React 前端构建产物：`risk_review_web/static/dist/`
-- 原有功能台页面：`risk_review_web/static/index.html`
-- 原有功能台逻辑：`risk_review_web/static/app.js`
-- 原有功能台样式：`risk_review_web/static/style.css`
+- React Markdown 查看器共享资源：`risk_review_web/static/vendor/marked.min.js`、`highlight.min.js`、`github.min.css`
 - 公共业务规则：`risk_review_web/data/business_rules.json`
 - 验证集案例：`risk_review_web/data/examples.json`
 - 本地运行状态：`risk_review_web/.local/state/`
@@ -36,6 +34,9 @@
 - 定时任务运行记录：`risk_review_web/.local/state/scheduled_runs.json`
 - 统一并发设置：`risk_review_web/.local/state/runtime_settings.json`
 - 验证运行与评审记录：`risk_review_web/.local/state/validation_runs.json`、`review_records.json`
+
+`server_v2.py` 只负责 HTTP Server 启动；应用依赖组装在 `app_context.py`，HTTP Handler 在 `routes/http.py`。
+定时任务实现位于 `scheduling/models.py`、`schedule_parser.py`、`repository.py` 和 `service.py`；旧的 `scheduled_tasks.py` 入口已删除。
 
 不要在 `server_v2.py` 中复制一套与 `artifacts.py`、`prompt_builder.py` 或 `task_pool.py` 重复的规则。
 
@@ -106,7 +107,7 @@ outputs/
 - 批量评审和定时任务的并发上限不得超过全局上限；业务页面不得另行提供并发输入。
 - 不得在接口处理器、批量任务或验证任务中新增 `ThreadPoolExecutor`、裸 `threading.Thread` 或其他私有执行池。
 - 固定 Worker 只能在 `task_pool.py` 中创建。
-- `scheduled_tasks.py` 只允许保留一个不执行业务加工的计时扫描线程；到期因子必须提交到 `GLOBAL_TASK_POOL`，不得在调度线程内调用 Agent。
+- `scheduling/service.py` 只允许保留一个不执行业务加工的计时扫描线程；到期因子必须提交到 `GLOBAL_TASK_POOL`，不得在调度线程内调用 Agent。
 - 批量任务必须按父任务公平轮询，不能一次占满全局队列导致其他登录用户长期饥饿。
 - 已排队任务取消时从全局队列移除；运行中任务设置取消标记，在当前模型网络请求返回后停止后续轮次和阶段。Python 线程不得通过非安全手段强杀。
 - 不得从全局 Worker 内同步提交并等待同一个全局池的子任务，避免线程池死锁。批量/案例流水线应在已占用的 Worker 内顺序执行 Phase 1 和 Phase 2。
@@ -128,7 +129,7 @@ outputs/
 - 保留用户已有的无关改动，不覆盖或重置脏工作区。
 - 不主动删除历史运行产物；若明确要求“不保留旧版”，应先识别旧 schema 标准及其关联报告，再成组清理。
 - 运行测试生成的临时标准和报告必须在交付前从 `outputs/` 清理。
-- 当前前端采用渐进式迁移：新 React 页面缺少的原有页面、按钮、开关和调试入口必须继续通过“原有功能台”可访问。
+- 当前前端以 React 构建产物为唯一页面入口；未迁移的旧页面、旧页面壳和旧功能台接口不再保留。
 - 定时任务及其类型、API 和组件不得删除。CRUD、启停、导入预览、立即执行、取消未执行项、运行记录和自动调度必须保持前后端契约一致。
 - 定时任务并发数是统一运行设置中的单次运行组内上限；同一任务不得重入执行。
 - 业务契约不采用兼容分支；前端能力保留不等于允许 v2/v3/v4 Schema、因子输出字段或旧 Prompt 重新进入 v5 主链。
@@ -140,7 +141,6 @@ outputs/
 | 修改范围 | 必须验证 |
 |---|---|
 | Python 后端 | 对相关模块执行 `python3 -m py_compile` |
-| 原有功能台 | 执行 `node --check risk_review_web/static/app.js` |
 | React 前端源码、依赖或构建配置 | 在 `risk_review_web/web/` 执行 `npm run typecheck` 和 `npm run build` |
 | Phase 1 Prompt、Skill 或规则 | 重新生成或核对派生规范展示 Markdown，执行 Phase 1 Mock 冒烟 |
 | Phase 2 Prompt、Skill 或规则 | 重新生成或核对派生规范展示 Markdown，执行 Phase 2 Mock 冒烟 |

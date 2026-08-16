@@ -9,7 +9,7 @@ echo "==========================================="
 echo "  风控评审平台 Risk Review Server v2"
 echo "==========================================="
 
-for f in risk_review_web/server_v2.py risk_review_web/static/index.html; do
+for f in risk_review_web/server_v2.py risk_review_web/static/dist/index.html; do
     [ -f "$f" ] && echo "✓ $f" || { echo "✗ $f 缺失"; exit 1; }
 done
 

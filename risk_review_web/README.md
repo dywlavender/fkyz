@@ -65,6 +65,7 @@ python3 risk_review_web/prompts/risk-review-skill/build/build_prompt.py
 ## 版本数据与运行状态
 
 - `data/examples.json`、`data/business_rules.json` 是需要版本管理的案例和公共规则。
+- 案例维护通过 React 的验证案例页面和 `/api/validation-cases` 完成；公共业务规则是 Phase 1 的配置输入，通过 `data/business_rules.json` 维护，不提供页面编辑接口。
 - 任务、评审记录、验证运行、定时任务和运行设置保存在 `risk_review_web/.local/state/`，不进入 Git。
 - 运行日志按日写入 `risk_review_web/.local/logs/application-YYYY-MM-DD.log`，同一任务及其子任务通过 `traceId` 串联，自动保留最近 10 个自然日。
 - 首次启动会从旧 `data/` 状态文件复制一次；之后只读写独立状态目录。
@@ -73,14 +74,12 @@ python3 risk_review_web/prompts/risk-review-skill/build/build_prompt.py
 ## 页面
 
 - 需求评审：选择一个或多个接口文档、输入需求并执行独立的单阶段评审；页面展示执行日志和完整 Markdown 报告，不维护需求评审历史列表
-- 工作台：今日评审指标和常用入口
 - 单因子评审：填写输入、一键或分阶段执行、查看标准加工规范和评审报告
 - 批量评审：模板下载、CSV/XLSX 导入、并发执行、任务恢复和历史记录
 - 定时任务：任务 CRUD、启停、导入预览、立即执行、取消和运行详情
 - 验证集：案例维护、批量回归、期望结论与问题模式校验
 - 评审模式对比：直接评审和两阶段评审实验
 - 评审历史：查看或删除标准与报告产物
-- 原有功能台：保留渐进迁移期间尚未进入 React 页面的入口
 
 评审结果页面直接渲染评审 Markdown，不再维护旧式规则检查、步骤检查或 review JSON 展示。
 
@@ -119,12 +118,13 @@ python3 risk_review_web/scripts/playwright_desktop_smoke.py
 ```bash
 python3 -m py_compile \
   risk_review_web/server_v2.py \
+  risk_review_web/app_context.py \
+  risk_review_web/routes/http.py \
+  risk_review_web/workflows/*.py \
   risk_review_web/task_pool.py \
   risk_review_web/artifacts.py \
   risk_review_web/prompt_builder.py \
-  risk_review_web/scheduled_tasks.py
-
-node --check risk_review_web/static/app.js
+  risk_review_web/scheduling/*.py
 
 cd risk_review_web/web
 npm run typecheck

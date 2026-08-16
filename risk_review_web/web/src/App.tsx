@@ -11,7 +11,6 @@ import { Settings } from './pages/Settings'
 import { SingleReview } from './pages/SingleReview'
 import { QualityValidation } from './pages/QualityValidation'
 import { ReviewModeExperimentPage } from './pages/ReviewModeExperiment'
-import { LegacyWorkbench } from './pages/LegacyWorkbench'
 import { DevelopmentSpec } from './pages/DevelopmentSpec'
 import { RequirementReviewPage } from './features/requirement-review'
 import { cancelTask, fetchApiDocs, fetchExamples, fetchGlobalPoolStatus, fetchHealth, fetchTasks } from './api/reviewApi'
@@ -48,7 +47,6 @@ const PAGE_PATHS: Record<PageKey, string> = {
   'api-docs': '/system/apis',
   'development-spec': '/system/spec',
   settings: '/system/settings',
-  legacy: '/system/legacy',
 }
 
 function pageFromLocation(): PageKey {
@@ -64,7 +62,6 @@ function pageFromLocation(): PageKey {
   if (path.startsWith('/records')) return 'history'
   if (path.startsWith('/system/settings')) return 'settings'
   if (path.startsWith('/system/spec')) return 'development-spec'
-  if (path.startsWith('/system/legacy')) return 'legacy'
   if (path.startsWith('/system/')) return 'api-docs'
   return 'single-review'
 }
@@ -269,11 +266,6 @@ export default function App() {
           </KeptPage>
         ) : null}
 
-        {keep('legacy') ? (
-          <KeptPage active={page === 'legacy'}>
-            <LegacyWorkbench />
-          </KeptPage>
-        ) : null}
       </>
     )
   }

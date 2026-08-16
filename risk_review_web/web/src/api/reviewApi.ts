@@ -194,11 +194,6 @@ export async function fetchExamples(): Promise<ExampleItem[]> {
   return data.examples || []
 }
 
-export async function fetchBusinessRules(): Promise<Array<Record<string, unknown>>> {
-  const data = await requestJson<{ rules: Array<Record<string, unknown>> }>('/api/business-rules')
-  return data.rules || []
-}
-
 export async function fetchFactorProcessingSpec(): Promise<FactorProcessingSpecResponse> {
   return requestApiData<FactorProcessingSpecResponse>('/api/factor-processing-spec')
 }

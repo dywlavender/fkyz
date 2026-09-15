@@ -10,9 +10,9 @@ from risk_review_web.paths import (
     DATA_DIR,
     EXAMPLES_PATH,
     REVIEW_MODE_EXPERIMENTS_PATH,
-    VALIDATION_RUNS_PATH,
     resolve_validation_set_path,
 )
+from risk_review_web.repositories.runtime_database import RuntimeDatabase, get_runtime_database
 from risk_review_web.services.review_evaluation import (
     optional_nonnegative_int as _optional_nonnegative_int,
     string_list as _string_list,
@@ -26,6 +26,7 @@ EXAMPLES_LOCK = threading.Lock()
 VALIDATION_RUNS_LOCK = threading.Lock()
 REVIEW_MODE_EXPERIMENTS_LOCK = threading.Lock()
 VALIDATION_SET_PATH = resolve_validation_set_path()
+RUNTIME_DATABASE: RuntimeDatabase = get_runtime_database()
 
 
 def parse_examples():
@@ -165,96 +166,38 @@ def normalize_example(payload: dict, existing_id: str | None = None) -> dict:
 
 def parse_validation_runs() -> list[dict]:
     """Load persisted validation runs, treating malformed state as empty."""
-    if not VALIDATION_RUNS_PATH.exists():
-        return []
-    try:
-        data = json.loads(read_text(VALIDATION_RUNS_PATH))
-        return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
-        return []
+    return RUNTIME_DATABASE.list_validation_runs()
 
 
 def query_validation_run_groups(query: dict[str, list[str]]) -> dict:
     """Group validation runs by batch and apply server-side pagination."""
-    with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-    grouped: dict[str, list[dict]] = {}
-    for run in runs:
-        grouped.setdefault(str(run.get("groupId") or run.get("runId")), []).append(run)
-    items = []
-    for group_id, group_runs in grouped.items():
-        terminal = [
-            item for item in group_runs
-            if str(item.get("status") or "") in {"success", "failed", "cancelled"}
-        ]
-        matched = sum(1 for item in terminal if item.get("matched") is True)
-        mismatched = sum(
-            1 for item in terminal
-            if item.get("status") == "success" and item.get("matched") is False
-        )
-        failed = sum(1 for item in terminal if item.get("status") in {"failed", "cancelled"})
-        running = any(
-            str(item.get("status") or "") in {"pending", "queued", "running"}
-            for item in group_runs
-        )
-        started_at = min((str(item.get("startedAt") or "") for item in group_runs), default="")
-        finished_at = max((str(item.get("finishedAt") or "") for item in group_runs), default="")
-        items.append({
-            "groupId": group_id,
-            "runs": group_runs,
-            "startedAt": started_at,
-            "finishedAt": finished_at,
-            "total": len(group_runs),
-            "matched": matched,
-            "mismatched": mismatched,
-            "failed": failed,
-            "status": "running" if running else "error" if failed == len(group_runs) else "done",
-            "agreementRate": round(matched / len(group_runs) * 100, 1) if group_runs else 0,
-        })
-    items.sort(
-        key=lambda item: str(item.get("finishedAt") or item.get("startedAt") or ""),
-        reverse=True,
-    )
     try:
         page = max(1, int((query.get("page") or ["1"])[0]))
         page_size = max(1, min(100, int((query.get("pageSize") or ["20"])[0])))
     except ValueError:
         page, page_size = 1, 20
-    start = (page - 1) * page_size
-    return {
-        "items": items[start:start + page_size],
-        "page": page,
-        "pageSize": page_size,
-        "total": len(items),
-    }
+    return RUNTIME_DATABASE.query_validation_groups(page=page, page_size=page_size)
 
 
 def save_validation_runs(runs: list[dict]):
     """Persist at most the newest 1,000 validation-run records."""
-    VALIDATION_RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    trimmed = sorted(
-        runs,
-        key=lambda item: item.get("finishedAt") or item.get("startedAt") or "",
-        reverse=True,
-    )[:1000]
-    atomic_write_text(VALIDATION_RUNS_PATH, json.dumps(trimmed, ensure_ascii=False, indent=2))
+    RUNTIME_DATABASE.replace_validation_runs(runs, max_count=1000)
 
 
 def batch_delete_validation_run_groups(group_ids: list[str]) -> dict:
     """Delete selected terminal run groups while protecting active executions."""
     ordered_group_ids = list(dict.fromkeys(str(item).strip() for item in group_ids if str(item).strip()))
+    if not ordered_group_ids:
+        return {"total": 0, "success": 0, "failed": 0, "items": []}
     with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-        grouped: dict[str, list[dict]] = {}
-        for run in runs:
-            group_id = str(run.get("groupId") or run.get("runId") or "")
-            if group_id:
-                grouped.setdefault(group_id, []).append(run)
-
+        grouped = {
+            group_id: RUNTIME_DATABASE.list_validation_runs(group_id=group_id)
+            for group_id in ordered_group_ids
+        }
         removable: set[str] = set()
         items: list[dict] = []
         for group_id in ordered_group_ids:
-            group_runs = grouped.get(group_id)
+            group_runs = grouped.get(group_id) or []
             if not group_runs:
                 items.append({"id": group_id, "success": False, "error": "验证批次不存在"})
                 continue
@@ -266,13 +209,7 @@ def batch_delete_validation_run_groups(group_ids: list[str]) -> dict:
                 continue
             removable.add(group_id)
             items.append({"id": group_id, "success": True})
-
-        if removable:
-            save_validation_runs([
-                run
-                for run in runs
-                if str(run.get("groupId") or run.get("runId") or "") not in removable
-            ])
+        RUNTIME_DATABASE.delete_validation_groups(removable)
 
     success_count = sum(1 for item in items if item["success"])
     return {
@@ -286,67 +223,53 @@ def batch_delete_validation_run_groups(group_ids: list[str]) -> dict:
 def recover_stale_validation_runs():
     """Close runs left active by a previous backend process."""
     with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-        changed = False
-        for run in runs:
-            if run.get("status") not in ("pending", "running"):
-                continue
-            run.update({
+        RUNTIME_DATABASE.update_validation_runs(
+            "status IN ('pending', 'running')",
+            (),
+            lambda run: {
+                **run,
                 "status": "failed",
                 "finishedAt": _iso_time(),
                 "error": "后端服务已重启，原执行任务无法继续，请重新运行该案例",
-            })
-            changed = True
-        if changed:
-            save_validation_runs(runs)
+            },
+        )
 
 
 def cancel_validation_runs_for_task(task_id: str):
     """Mark all unfinished validation runs owned by a cancelled task."""
     with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-        changed = False
-        for run in runs:
-            if run.get("taskId") != task_id or run.get("status") not in ("pending", "running"):
-                continue
-            run.update({
+        RUNTIME_DATABASE.update_validation_runs(
+            "task_id = ? AND status IN ('pending', 'running')",
+            (str(task_id),),
+            lambda run: {
+                **run,
                 "status": "cancelled",
                 "finishedAt": _iso_time(),
                 "error": "验证任务已终止",
-            })
-            changed = True
-        if changed:
-            save_validation_runs(runs)
+            },
+        )
 
 
 def upsert_validation_run(run: dict) -> dict:
     """Insert or merge a validation run under the shared persistence lock."""
     with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
-        run_id = str(run.get("runId") or "")
-        for index, current in enumerate(runs):
-            if current.get("runId") == run_id:
-                runs[index] = {**current, **run}
-                saved = runs[index]
-                break
-        else:
-            runs.append(run)
-            saved = run
-        save_validation_runs(runs)
+        current = RUNTIME_DATABASE.get_validation_run(str(run.get("runId") or ""))
+        saved = {**current, **run} if current else dict(run)
+        RUNTIME_DATABASE.upsert_validation_run(saved)
     return saved
 
 
 def get_validation_run(run_id: str) -> dict | None:
     """Return one persisted validation run by identifier."""
     with VALIDATION_RUNS_LOCK:
-        return next((item for item in parse_validation_runs() if item.get("runId") == run_id), None)
+        return RUNTIME_DATABASE.get_validation_run(run_id)
 
 
 def latest_validation_runs_by_case() -> dict[str, dict]:
     """Index the latest known run for each validation case."""
     latest = {}
     with VALIDATION_RUNS_LOCK:
-        runs = parse_validation_runs()
+        runs = RUNTIME_DATABASE.list_validation_runs(latest_by_case=True)
     for run in runs:
         case_id = str(run.get("caseId") or "")
         if not case_id:

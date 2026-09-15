@@ -68,6 +68,10 @@ class TaskRepository:
         with self.lock:
             return [task.to_dict() for task in self._tasks.values()]
 
+    def summary_snapshots(self) -> list[dict[str, Any]]:
+        with self.lock:
+            return [task.to_summary() for task in self._tasks.values()]
+
     def snapshot(self, task_id: str) -> dict[str, Any] | None:
         task = self.get(task_id)
         return task.to_dict() if task else None
@@ -354,6 +358,9 @@ class TaskRegistryView(Mapping[str, Mapping[str, Any]]):
 
     def values(self):
         return (self[key] for key in self)
+
+    def summary_values(self):
+        return (MappingProxyType(snapshot) for snapshot in self.repository.summary_snapshots())
 
     def items(self):
         return ((key, self[key]) for key in self)

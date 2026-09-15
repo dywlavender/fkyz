@@ -3,7 +3,7 @@ import { App as AntdApp, Button, Drawer, Progress, Space, Table, Tag, Typography
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useState } from 'react'
 
-import { batchDeleteValidationRunGroups, fetchValidationRunGroups } from '../api/reviewApi'
+import { batchDeleteValidationRunGroups, fetchValidationRunGroupRuns, fetchValidationRunGroups } from '../api/reviewApi'
 import { EmptyState } from '../components/EmptyState'
 import { HeaderActions, usePageActive } from '../components/AppLayout'
 import { StatusBadge } from '../components/StatusBadge'
@@ -20,7 +20,6 @@ interface QualityValidationProps {
 
 interface ValidationBatch {
   groupId: string
-  runs: ValidationRun[]
   startedAt?: string
   finishedAt?: string
   total: number
@@ -42,6 +41,11 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
   const [deleting, setDeleting] = useState(false)
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([])
   const [activeBatch, setActiveBatch] = useState<ValidationBatch | null>(null)
+  const [activeRuns, setActiveRuns] = useState<ValidationRun[]>([])
+  const [activeRunPage, setActiveRunPage] = useState(1)
+  const [activeRunPageSize, setActiveRunPageSize] = useState(20)
+  const [activeRunTotal, setActiveRunTotal] = useState(0)
+  const [activeRunLoading, setActiveRunLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -58,6 +62,24 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
 
   useEffect(() => { void load() }, [load])
 
+  async function openBatch(batch: ValidationBatch, nextPage = 1, nextPageSize = activeRunPageSize) {
+    setActiveBatch(batch)
+    setActiveRunPage(nextPage)
+    setActiveRunPageSize(nextPageSize)
+    setActiveRunLoading(true)
+    try {
+      const result = await fetchValidationRunGroupRuns(batch.groupId, nextPage, nextPageSize)
+      setActiveRuns(result.items || [])
+      setActiveRunPage(result.page || nextPage)
+      setActiveRunPageSize(result.pageSize || nextPageSize)
+      setActiveRunTotal(result.total || 0)
+    } catch (caught) {
+      onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '验证批次详情加载失败' })
+    } finally {
+      setActiveRunLoading(false)
+    }
+  }
+
   function confirmBatchDelete() {
     modal.confirm({
       title: '确认删除验证结果？',
@@ -73,6 +95,7 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
           setSelectedGroupIds([])
           if (activeBatch && result.items.some((item) => item.id === activeBatch.groupId && item.success)) {
             setActiveBatch(null)
+            setActiveRuns([])
           }
           onNotice({
             type: result.failed ? 'warning' : 'success',
@@ -116,7 +139,18 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
       title: '操作',
       fixed: 'right',
       width: 90,
-      render: (_value, record) => <Button type="link" icon={<EyeOutlined />} onClick={() => setActiveBatch(record)}>查看</Button>,
+      render: (_value, record) => (
+        <Button
+          type="link"
+          icon={<EyeOutlined />}
+          onClick={(event) => {
+            event.stopPropagation()
+            void openBatch(record)
+          }}
+        >
+          查看
+        </Button>
+      ),
     },
   ]
 
@@ -159,7 +193,7 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
               name: record.groupId,
             }),
           }}
-          onRow={(record) => ({ onClick: () => setActiveBatch(record) })}
+          onRow={(record) => ({ onClick: () => void openBatch(record) })}
           pagination={{
             current: page,
             pageSize,
@@ -180,15 +214,22 @@ function ValidationRunsView({ onNotice }: { onNotice: (notice: AppNotice) => voi
         title="验证批次详情"
         width="min(1120px, 86vw)"
         open={pageActive && !!activeBatch}
-        onClose={() => setActiveBatch(null)}
+        onClose={() => { setActiveBatch(null); setActiveRuns([]) }}
       >
         {activeBatch ? (
           <Table
             rowKey="runId"
             className="compact-table"
             columns={runColumns}
-            dataSource={activeBatch.runs}
-            pagination={false}
+            loading={activeRunLoading}
+            dataSource={activeRuns}
+            pagination={{
+              current: activeRunPage,
+              pageSize: activeRunPageSize,
+              total: activeRunTotal,
+              showSizeChanger: true,
+              onChange: (nextPage, nextPageSize) => void openBatch(activeBatch, nextPage, nextPageSize),
+            }}
             scroll={{ x: 900 }}
           />
         ) : null}

@@ -150,6 +150,59 @@ class Task:
             "persistenceTargetStatus": self.persistence_target_status,
         }
 
+    def to_summary(self) -> dict[str, Any]:
+        """Expose only fields needed by the global task center.
+
+        Result items, model content, logs and debug logs can be much larger
+        than the task-center row.  Detail endpoints continue to use
+        ``to_dict``; this projection keeps the high-frequency task poll small.
+        """
+        result_data = self.result.data if self.result is not None else {}
+        items = result_data.get("items") if isinstance(result_data, Mapping) else None
+        if isinstance(items, list):
+            terminal = {"done", "pass", "fail", "error", "skip", "cancelled"}
+            progress = {
+                "total": len(items),
+                "completed": sum(1 for item in items if isinstance(item, dict) and str(item.get("status") or "") in terminal),
+                "failed": sum(1 for item in items if isinstance(item, dict) and str(item.get("status") or "") in {"error", "skip"}),
+            }
+        else:
+            progress = {
+                "total": 1,
+                "completed": int(self.status in {TaskStatus.DONE, TaskStatus.ERROR, TaskStatus.CANCELLED}),
+                "failed": int(self.status is TaskStatus.ERROR),
+            }
+        context = {
+            key: self.context[key]
+            for key in ("taskName", "factorName", "standardFileId")
+            if key in self.context
+        }
+        return {
+            "id": self.id,
+            "traceId": self.trace_id,
+            "taskType": self.task_type,
+            "parentTaskId": self.parent_task_id,
+            "clientId": self.client_id,
+            "groupConcurrency": self.group_concurrency,
+            "context": context,
+            "status": self.status.value,
+            "cancel_requested": self.cancel_requested,
+            "result": {"summary": deepcopy(result_data.get("summary"))}
+            if isinstance(result_data, Mapping) and result_data.get("summary") is not None else None,
+            "outputs": list(self.output_ids),
+            "logs": [],
+            "debugLogs": [],
+            "debug_agent": self.debug_agent,
+            "created": self.created_at,
+            "updated": self.updated_at,
+            "caseIds": list(self.case_ids),
+            "experimentId": self.experiment_id,
+            "progress": progress,
+            "persistenceError": self.persistence_error,
+            "unpersisted": self.unpersisted,
+            "persistenceTargetStatus": self.persistence_target_status,
+        }
+
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Task":
         return cls(

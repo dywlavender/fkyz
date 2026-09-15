@@ -37,6 +37,9 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
   const pageActive = usePageActive()
   const { task, onNotice, onRefreshTask } = props
   const [runs, setRuns] = useState<ScheduledRun[]>([])
+  const [runPage, setRunPage] = useState(1)
+  const [runPageSize, setRunPageSize] = useState(8)
+  const [runTotal, setRunTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerTitle, setDrawerTitle] = useState('执行详情')
@@ -50,12 +53,16 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
   const [documentContent, setDocumentContent] = useState('')
   const [documentError, setDocumentError] = useState('')
   const hasActiveRun = runs.some((run) => run.status === 'pending' || run.status === 'running')
+    || ['pending', 'running'].includes(String(selectedRun?.status || ''))
 
-  async function loadRuns() {
+  async function loadRuns(nextPage = runPage, nextPageSize = runPageSize) {
     setLoading(true)
     try {
-      const data = await fetchScheduledRuns(task.taskId)
-      setRuns(data)
+      const data = await fetchScheduledRuns(task.taskId, nextPage, nextPageSize)
+      setRuns(data.items || [])
+      setRunPage(data.page || nextPage)
+      setRunPageSize(data.pageSize || nextPageSize)
+      setRunTotal(data.total || 0)
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : '加载执行记录失败'
       onNotice({ type: 'error', message })
@@ -65,19 +72,24 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
   }
 
   useEffect(() => {
-    void loadRuns()
+    setRunPage(1)
+    void loadRuns(1, runPageSize)
   }, [task.taskId])
 
   useEffect(() => {
+    if (!pageActive) return
     if (!hasActiveRun && selectedRun?.status !== 'pending' && selectedRun?.status !== 'running') return
     const timer = window.setInterval(() => {
-      void fetchScheduledRuns(task.taskId).then(setRuns).catch(() => undefined)
+      void fetchScheduledRuns(task.taskId, runPage, runPageSize).then((data) => {
+        setRuns(data.items || [])
+        setRunTotal(data.total || 0)
+      }).catch(() => undefined)
       if (selectedRun?.runId) {
         void fetchScheduledRun(selectedRun.runId).then(setSelectedRun).catch(() => undefined)
       }
     }, 2000)
     return () => window.clearInterval(timer)
-  }, [task.taskId, hasActiveRun, selectedRun?.runId, selectedRun?.status])
+  }, [pageActive, task.taskId, runPage, runPageSize, hasActiveRun, selectedRun?.runId, selectedRun?.status])
 
   useEffect(() => {
     if (!cancellingRunId) return
@@ -94,7 +106,7 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
       setDrawerOpen(true)
       onNotice({ type: 'success', message: `任务已提交执行${run.runId ? `：${run.runId}` : ''}` })
       await onRefreshTask()
-      await loadRuns()
+      await loadRuns(1, runPageSize)
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : '立即执行失败'
       onNotice({ type: 'error', message })
@@ -126,7 +138,7 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
       const run = await cancelScheduledRun(targetRun.runId)
       if (selectedRun?.runId === targetRun.runId) setSelectedRun(run)
       onNotice({ type: 'warning', message: '已请求终止：排队项已取消，正在运行的模型调用正在停止。' })
-      await loadRuns()
+      await loadRuns(runPage, runPageSize)
     } catch (caught) {
       setCancellingRunId(undefined)
       onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '终止执行失败' })
@@ -270,7 +282,27 @@ export function ScheduledTaskDetail(props: ScheduledTaskDetailProps) {
         {!runs.length && !loading ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行记录，后端暂未产生该任务的运行结果。" />
         ) : (
-          <Table rowKey="runId" className="compact-table" size="small" loading={loading} dataSource={runs} columns={runColumns} pagination={{ pageSize: 8, size: 'small' }} scroll={{ x: 860 }} />
+          <Table
+            rowKey="runId"
+            className="compact-table"
+            size="small"
+            loading={loading}
+            dataSource={runs}
+            columns={runColumns}
+            pagination={{
+              current: runPage,
+              pageSize: runPageSize,
+              total: runTotal,
+              size: 'small',
+              showSizeChanger: true,
+              onChange: (nextPage, nextPageSize) => {
+                setRunPage(nextPage)
+                setRunPageSize(nextPageSize)
+                void loadRuns(nextPage, nextPageSize)
+              },
+            }}
+            scroll={{ x: 860 }}
+          />
         )}
       </Card>
 

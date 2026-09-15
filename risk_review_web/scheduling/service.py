@@ -22,7 +22,7 @@ from risk_review_web.task_pool import GLOBAL_TASK_POOL
 from risk_review_web.utils import atomic_write_text, read_text
 from risk_review_web.services.tabular_import import TabularImportError, decode_import_rows as decode_tabular_import_rows
 from risk_review_web.services.review_history import scheduled_run_to_review_record
-from risk_review_web.scheduling.repository import ScheduledTaskStore, _atomic_write_json, _read_json_list
+from risk_review_web.scheduling.repository import ScheduledTaskStore
 
 JsonDict = dict[str, Any]
 RunItemExecutor = Callable[[JsonDict, JsonDict, str, int], JsonDict]
@@ -347,42 +347,25 @@ class ScheduledTaskService:
     def _recover_interrupted_runs(self) -> None:
         """A process restart cannot resume in-flight Agent calls; close them explicitly."""
         now_text = _iso_now()
-        recovered: list[JsonDict] = []
-        with self.store.lock:
-            runs = _read_json_list(self.store.runs_path)
-            changed = False
-            for run in runs:
-                if run.get("status") not in {"pending", "running"}:
-                    continue
-                run.update({
-                    "status": "failed",
-                    "finishedAt": now_text,
-                    "error": "服务重启，原执行上下文已丢失。",
-                    **classify_task_error("服务重启，原执行上下文已丢失。"),
-                })
-                recovered.append(dict(run))
-                changed = True
-            if changed:
-                _atomic_write_json(self.store.runs_path, runs)
+        recovered = self.store.recover_runs(
+            now_text,
+            "服务重启，原执行上下文已丢失。",
+            classify_task_error("服务重启，原执行上下文已丢失。"),
+        )
         for run in recovered:
             task = self.store.get_task(str(run.get("taskId") or "")) or {}
             self._persist_terminal_review_record(run, task)
 
     def list_tasks(self) -> list[JsonDict]:
         """Return tasks enriched with item counts and latest-run status."""
-        tasks = self.store.list_tasks()
-        runs = self.store.list_runs()
-        latest_by_task: dict[str, JsonDict] = {}
-        for run in runs:
-            task_id = str(run.get("taskId") or "")
-            if task_id and task_id not in latest_by_task:
-                latest_by_task[task_id] = run
+        tasks = self.store.list_tasks(summaries=True)
+        latest_by_task = self.store.latest_runs_by_task()
         enriched: list[JsonDict] = []
         for task in tasks:
             latest_run = latest_by_task.get(str(task.get("taskId") or ""))
             enriched.append({
                 **task,
-                "itemCount": len(task.get("items") or []),
+                "itemCount": int(task.get("itemCount") or len(task.get("items") or [])),
                 "lastRunStatus": latest_run.get("status") if latest_run else None,
                 "lastRunAt": task.get("lastRunAt") or (latest_run.get("startedAt") if latest_run else task.get("lastRunAt")),
             })
@@ -393,14 +376,11 @@ class ScheduledTaskService:
         return preview_import(name, data_base64, mode=mode, task_standard_file=task_standard_file)
 
     def get_task(self, task_id: str) -> JsonDict:
-        """Return one task together with its complete run history."""
+        """Return task definition; run history is paged through the runs endpoint."""
         task = self.store.get_task(task_id)
         if not task:
             raise ScheduledTaskError("任务不存在。")
-        return {
-            **task,
-            "runs": self.store.list_runs(task_id),
-        }
+        return task
 
     def create_task(self, payload: JsonDict) -> JsonDict:
         """Validate and persist a new scheduled task."""
@@ -411,28 +391,21 @@ class ScheduledTaskService:
         task["updatedAt"] = now_text
         task["lastRunAt"] = ""
         task["nextRunAt"] = compute_next_run_at(task) if task.get("enabled") else ""
-        with self.store.lock:
-            tasks = _read_json_list(self.store.tasks_path)
-            tasks.append(task)
-            _atomic_write_json(self.store.tasks_path, tasks)
+        self.store.upsert_task(task)
         return task
 
     def update_task(self, task_id: str, payload: JsonDict) -> JsonDict:
         """Merge, validate, and persist an existing scheduled task."""
-        with self.store.lock:
-            tasks = _read_json_list(self.store.tasks_path)
-            for index, existing in enumerate(tasks):
-                if existing.get("taskId") != task_id:
-                    continue
-                normalized = self._normalize_task_payload({**existing, **payload, "taskId": task_id})
-                normalized["taskId"] = task_id
-                normalized["createdAt"] = existing.get("createdAt") or _iso_now()
-                normalized["updatedAt"] = _iso_now()
-                normalized["lastRunAt"] = existing.get("lastRunAt") or ""
-                normalized["nextRunAt"] = compute_next_run_at(normalized) if normalized.get("enabled") else ""
-                tasks[index] = normalized
-                _atomic_write_json(self.store.tasks_path, tasks)
-                return normalized
+        existing = self.store.get_task(task_id)
+        if existing:
+            normalized = self._normalize_task_payload({**existing, **payload, "taskId": task_id})
+            normalized["taskId"] = task_id
+            normalized["createdAt"] = existing.get("createdAt") or _iso_now()
+            normalized["updatedAt"] = _iso_now()
+            normalized["lastRunAt"] = existing.get("lastRunAt") or ""
+            normalized["nextRunAt"] = compute_next_run_at(normalized) if normalized.get("enabled") else ""
+            self.store.upsert_task(normalized)
+            return normalized
         raise ScheduledTaskError("任务不存在。")
 
     def delete_task(self, task_id: str) -> None:
@@ -440,35 +413,26 @@ class ScheduledTaskService:
         with self.execution_lock:
             if task_id in self.running_task_ids:
                 raise ScheduledTaskError("任务正在执行，请先取消对应运行。")
-            with self.store.lock:
-                tasks = _read_json_list(self.store.tasks_path)
-                filtered = [task for task in tasks if task.get("taskId") != task_id]
-                if len(filtered) == len(tasks):
-                    raise ScheduledTaskError("任务不存在。")
-                _atomic_write_json(self.store.tasks_path, filtered)
-                runs = _read_json_list(self.store.runs_path)
-                _atomic_write_json(self.store.runs_path, [run for run in runs if run.get("taskId") != task_id])
+            if not self.store.delete_task(task_id):
+                raise ScheduledTaskError("任务不存在。")
 
     def set_enabled(self, task_id: str, enabled: bool) -> JsonDict:
         """Enable or disable a task and recompute its next execution time."""
-        with self.store.lock:
-            tasks = _read_json_list(self.store.tasks_path)
-            for task in tasks:
-                if task.get("taskId") != task_id:
-                    continue
-                task["enabled"] = enabled
-                task["updatedAt"] = _iso_now()
-                next_run_at = compute_next_run_at(task) if enabled else ""
-                if enabled and not next_run_at:
-                    raise ScheduledTaskError("该单次任务已经执行；请修改执行日期后再启用。")
-                task["nextRunAt"] = next_run_at
-                _atomic_write_json(self.store.tasks_path, tasks)
-                return task
+        task = self.store.get_task(task_id)
+        if task:
+            task["enabled"] = enabled
+            task["updatedAt"] = _iso_now()
+            next_run_at = compute_next_run_at(task) if enabled else ""
+            if enabled and not next_run_at:
+                raise ScheduledTaskError("该单次任务已经执行；请修改执行日期后再启用。")
+            task["nextRunAt"] = next_run_at
+            self.store.upsert_task(task)
+            return task
         raise ScheduledTaskError("任务不存在。")
 
-    def list_runs(self, task_id: str) -> list[JsonDict]:
-        """Return all runs belonging to one scheduled task."""
-        return self.store.list_runs(task_id)
+    def list_runs(self, task_id: str, *, page: int = 1, page_size: int = 20) -> JsonDict:
+        """Return one page of lightweight runs belonging to a task."""
+        return self.store.list_runs(task_id, page=page, page_size=page_size, summaries=True)
 
     def get_run(self, run_id: str) -> JsonDict:
         """Return one run enriched with conclusions from report artifacts."""
@@ -562,34 +526,19 @@ class ScheduledTaskService:
             "items": [],
             "createdAt": _iso_now(),
         }
-        with self.store.lock:
-            runs = _read_json_list(self.store.runs_path)
-            runs.append(run)
-            if len(runs) > SCHEDULED_RUN_MAX_COUNT:
-                runs = runs[-SCHEDULED_RUN_MAX_COUNT:]
-            _atomic_write_json(self.store.runs_path, runs)
+        self.store.upsert_run(run)
         return run
 
     def _update_run(self, run_id: str, patch: JsonDict) -> JsonDict:
-        with self.store.lock:
-            runs = _read_json_list(self.store.runs_path)
-            for index, current in enumerate(runs):
-                if current.get("runId") != run_id:
-                    continue
-                runs[index] = {**current, **patch}
-                _atomic_write_json(self.store.runs_path, runs)
-                return runs[index]
+        updated = self.store.update_run(run_id, patch)
+        if updated is not None:
+            return updated
         raise ScheduledTaskError("执行记录不存在。")
 
     def _update_task_record(self, task_id: str, patch: JsonDict) -> JsonDict:
-        with self.store.lock:
-            tasks = _read_json_list(self.store.tasks_path)
-            for index, task in enumerate(tasks):
-                if task.get("taskId") != task_id:
-                    continue
-                tasks[index] = {**task, **patch}
-                _atomic_write_json(self.store.tasks_path, tasks)
-                return tasks[index]
+        updated = self.store.update_task(task_id, patch)
+        if updated is not None:
+            return updated
         raise ScheduledTaskError("任务不存在。")
 
     def _persist_terminal_review_record(self, run: JsonDict, task: JsonDict) -> None:

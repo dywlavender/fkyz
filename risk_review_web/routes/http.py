@@ -36,7 +36,7 @@ class Handler(BaseHTTPRequestHandler):
         """Dispatch read requests across system, validation, task, and static routes."""
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
-        if scheduled_routes.handle_get(self, path, app.get_scheduled_task_service):
+        if scheduled_routes.handle_get(self, path, app.get_scheduled_task_service, parsed.query):
             return
         if system_routes.handle_get(
             self,
@@ -54,7 +54,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/review-history":
             try:
-                success_response(self, app.review_history_records())
+                success_response(self, app.review_history_records(summaries=True))
+            except ReviewRecordRepositoryError as exc:
+                error_response(self, 503, str(exc))
+        elif path.startswith("/api/review-records/"):
+            record_id = unquote(path.split("/")[-1])
+            try:
+                record = app.review_record_detail(record_id)
+                if record is None:
+                    error_response(self, 404, "评审记录不存在")
+                else:
+                    success_response(self, record)
             except ReviewRecordRepositoryError as exc:
                 error_response(self, 503, str(exc))
         elif path == "/api/review-records":
@@ -67,9 +77,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/tasks":
             query = parse_qs(parsed.query)
             include_history = (query.get("scope") or ["active"])[0].lower() == "all"
+            summary = (query.get("summary") or ["false"])[0].lower() == "true"
             try:
                 json_response(self, 200, {
-                    "tasks": app.task_history(include_history=include_history),
+                    "tasks": app.task_history(include_history=include_history, summary=summary),
                     "pool": app.GLOBAL_TASK_POOL.snapshot(),
                 })
             except ReviewRecordRepositoryError as exc:

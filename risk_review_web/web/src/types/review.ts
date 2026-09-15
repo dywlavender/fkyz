@@ -659,6 +659,13 @@ export interface ScheduledRun {
   items: ScheduledRunItem[]
 }
 
+export interface ScheduledRunPage {
+  items: ScheduledRun[]
+  page: number
+  pageSize: number
+  total: number
+}
+
 export interface ImportPreviewError {
   rowNumber: number
   factorName?: string

@@ -8,14 +8,22 @@ from risk_review_web.scheduling.models import ScheduledTaskError
 from risk_review_web.services.http_responses import error_response, success_response
 
 
-def handle_get(handler, path: str, get_service: Callable):
+def handle_get(handler, path: str, get_service: Callable, query_string: str = ""):
     """Handle scheduled-task and scheduled-run read endpoints."""
     if path == "/api/scheduled-tasks":
         success_response(handler, get_service().list_tasks())
         return True
     if path.startswith("/api/scheduled-tasks/") and path.endswith("/runs"):
         task_id = unquote(path.split("/")[-2])
-        success_response(handler, get_service().list_runs(task_id))
+        from urllib.parse import parse_qs
+
+        query = parse_qs(query_string)
+        try:
+            page = max(1, int((query.get("page") or ["1"])[0]))
+            page_size = max(1, min(100, int((query.get("pageSize") or ["20"])[0])))
+        except ValueError:
+            page, page_size = 1, 20
+        success_response(handler, get_service().list_runs(task_id, page=page, page_size=page_size))
         return True
     if path.startswith("/api/scheduled-tasks/"):
         task_id = unquote(path.split("/")[-1])

@@ -46,25 +46,6 @@
     "updatedAt": 1784041793
   },
   {
-    "id": "case-03",
-    "title": "投资人最近一次变更距今月份数 03 正向",
-    "kind": "正向",
-    "factorName": "投资人最近一次变更距今月份数",
-    "apiNames": [
-      "授信申请接口",
-      "EDAP_企业详情查询API接口"
-    ],
-    "requirement": "筛选变更类型属于：投资人（包括出资额、出资方式、出资日期、投资人名称等）、股东变更、投资人（股权）变更、投资人（包括出资额、出资方式、出资日期、投资人名称等）计算最近一次投资人变更距离申请的月份数，月份差的绝对值向上取整。",
-    "paramFields": "授信申请接口.applyTime | 业务申请时点\nEDAP_企业详情查询API接口.ent_info.alter[].ALTITEM | 筛选变更类型\nEDAP_企业详情查询API接口.ent_info.alter[].ALTDATE | 计算月份差",
-    "procLogic": "1. 取授信申请接口.applyTime 作为申请时点。\n2. 遍历 EDAP_企业详情查询API接口.ent_info.alter[]，筛选 ALTITEM 命中投资人、股东变更、投资人（股权）变更的记录。\n3. 取最近一次变更日期 ALTDATE。\n4. 计算 ALTDATE 距申请时点的月份数，结果向上取整。",
-    "defaultValues": "NULL",
-    "draft": "【因子加工输入字段】\n授信申请接口.applyTime | 业务申请时点\nEDAP_企业详情查询API接口.ent_info.alter[].ALTITEM | 筛选变更类型\nEDAP_企业详情查询API接口.ent_info.alter[].ALTDATE | 计算月份差\n\n【加工逻辑】\n1. 取授信申请接口.applyTime 作为申请时点。\n2. 遍历 EDAP_企业详情查询API接口.ent_info.alter[]，筛选 ALTITEM 命中投资人、股东变更、投资人（股权）变更的记录。\n3. 取最近一次变更日期 ALTDATE。\n4. 计算 ALTDATE 距申请时点的月份数，结果向上取整。\n\n【默认值】\nNULL",
-    "expected": "`✅ 通过`",
-    "maxIssueCount": 0,
-    "version": "2cf0e8be63d1",
-    "updatedAt": 1781877976
-  },
-  {
     "id": "case-04",
     "title": "投资人最近一次变更距今月份数 04 反向",
     "kind": "反向",

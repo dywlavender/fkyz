@@ -5,6 +5,7 @@ from collections.abc import Callable
 from urllib.parse import parse_qs, unquote
 
 from risk_review_web.services.http_responses import error_response, json_response, success_response
+from risk_review_web.services.validation_store import RUNTIME_DATABASE
 from risk_review_web.services.tabular_import import TabularImportError, decode_import_rows
 from risk_review_web.services.validation_store import (
     EXAMPLES_LOCK,
@@ -43,16 +44,43 @@ def handle_get(handler, path: str, query_string: str) -> bool:
             success_response(handler, validation_case_from_example(example, latest_runs.get(case_id)))
         return True
     if path == "/api/validation-runs":
-        case_id = (parse_qs(query_string).get("caseId") or [""])[0]
-        with VALIDATION_RUNS_LOCK:
-            runs = parse_validation_runs()
-        if case_id:
-            runs = [item for item in runs if item.get("caseId") == case_id]
-        runs.sort(key=lambda item: item.get("finishedAt") or item.get("startedAt") or "", reverse=True)
-        success_response(handler, runs)
+        query = parse_qs(query_string)
+        case_id = (query.get("caseId") or [""])[0]
+        group_id = (query.get("groupId") or [""])[0]
+        latest = (query.get("latest") or [""])[0].lower() == "true"
+        if group_id:
+            try:
+                page = max(1, int((query.get("page") or ["1"])[0]))
+                page_size = max(1, min(100, int((query.get("pageSize") or ["20"])[0])))
+            except ValueError:
+                page, page_size = 1, 20
+            success_response(handler, RUNTIME_DATABASE.list_validation_runs(
+                group_id=group_id,
+                page=page,
+                page_size=page_size,
+            ))
+        else:
+            success_response(handler, RUNTIME_DATABASE.list_validation_runs(
+                case_id=case_id or None,
+                latest_by_case=latest,
+            ))
         return True
     if path == "/api/validation-run-groups":
         success_response(handler, query_validation_run_groups(parse_qs(query_string)))
+        return True
+    if path.startswith("/api/validation-run-groups/") and path.endswith("/runs"):
+        group_id = unquote(path.split("/")[-2])
+        query = parse_qs(query_string)
+        try:
+            page = max(1, int((query.get("page") or ["1"])[0]))
+            page_size = max(1, min(100, int((query.get("pageSize") or ["20"])[0])))
+        except ValueError:
+            page, page_size = 1, 20
+        success_response(handler, RUNTIME_DATABASE.list_validation_runs(
+            group_id=group_id,
+            page=page,
+            page_size=page_size,
+        ))
         return True
     if path.startswith("/api/validation-runs/"):
         run = get_validation_run(unquote(path.split("/")[-1]))

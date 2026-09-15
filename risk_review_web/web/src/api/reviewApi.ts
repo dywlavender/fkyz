@@ -21,6 +21,7 @@ import type {
   RequirementReviewResponse,
   RuntimeSettings,
   ScheduledRun,
+  ScheduledRunPage,
   ScheduledTask,
   SystemHealth,
   TaskRecord,
@@ -171,6 +172,10 @@ export async function fetchReviewRecords(query: ReviewRecordQuery = {}): Promise
   return requestApiData<ReviewRecordPage>(`/api/review-records?${params.toString()}`)
 }
 
+export async function fetchReviewRecord(recordId: string): Promise<ReviewHistoryRecord> {
+  return requestApiData<ReviewHistoryRecord>(`/api/review-records/${encodeURIComponent(recordId)}`)
+}
+
 export async function setReviewRecordArchived(recordId: string, archived: boolean): Promise<ReviewHistoryRecord> {
   return requestApiData<ReviewHistoryRecord>(`/api/review-records/${encodeURIComponent(recordId)}/archive`, {
     method: 'POST',
@@ -203,7 +208,7 @@ export async function fetchHealth(): Promise<SystemHealth> {
 }
 
 export async function fetchTasks(): Promise<TaskRecord[]> {
-  const data = await requestJson<{ tasks: TaskRecord[] }>('/api/tasks?scope=all')
+  const data = await requestJson<{ tasks: TaskRecord[] }>('/api/tasks?scope=all&summary=true')
   return data.tasks || []
 }
 
@@ -337,14 +342,15 @@ export async function batchRunValidationCases(caseIds: string[]): Promise<BatchV
 }
 
 export async function fetchValidationRuns(caseId?: string): Promise<ValidationRun[]> {
-  const suffix = caseId ? `?caseId=${encodeURIComponent(caseId)}` : ''
+  const suffix = caseId
+    ? `?caseId=${encodeURIComponent(caseId)}`
+    : '?latest=true'
   return requestApiData<ValidationRun[]>(`/api/validation-runs${suffix}`)
 }
 
 export async function fetchValidationRunGroups(page = 1, pageSize = 20): Promise<{
   items: Array<{
     groupId: string
-    runs: ValidationRun[]
     startedAt?: string
     finishedAt?: string
     total: number
@@ -359,6 +365,15 @@ export async function fetchValidationRunGroups(page = 1, pageSize = 20): Promise
   total: number
 }> {
   return requestApiData(`/api/validation-run-groups?page=${page}&pageSize=${pageSize}`)
+}
+
+export async function fetchValidationRunGroupRuns(groupId: string, page = 1, pageSize = 20): Promise<{
+  items: ValidationRun[]
+  page: number
+  pageSize: number
+  total: number
+}> {
+  return requestApiData(`/api/validation-run-groups/${encodeURIComponent(groupId)}/runs?page=${page}&pageSize=${pageSize}`)
 }
 
 export async function batchDeleteValidationRunGroups(groupIds: string[]): Promise<BatchOperationResult> {
@@ -471,8 +486,8 @@ export async function runScheduledTaskNow(taskId: string): Promise<ScheduledRun>
   })
 }
 
-export async function fetchScheduledRuns(taskId: string): Promise<ScheduledRun[]> {
-  return requestApiData<ScheduledRun[]>(`/api/scheduled-tasks/${encodeURIComponent(taskId)}/runs`)
+export async function fetchScheduledRuns(taskId: string, page = 1, pageSize = 20): Promise<ScheduledRunPage> {
+  return requestApiData<ScheduledRunPage>(`/api/scheduled-tasks/${encodeURIComponent(taskId)}/runs?page=${page}&pageSize=${pageSize}`)
 }
 
 export async function fetchScheduledRun(runId: string): Promise<ScheduledRun> {

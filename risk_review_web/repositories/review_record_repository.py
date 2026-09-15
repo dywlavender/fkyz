@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from risk_review_web.paths import OUTPUTS_DIR, REVIEW_RECORDS_PATH, ROOT
+from risk_review_web.repositories.runtime_database import RuntimeDatabase, get_runtime_database
 from risk_review_web.services.artifact_catalog import list_outputs as list_output_artifacts
 from risk_review_web.services.review_history import (
     _review_record_artifact_names,
@@ -32,8 +33,19 @@ class ReviewRecordRepository:
         self.path = Path(path)
         self.outputs_dir = Path(outputs_dir)
         self.lock = threading.RLock()
+        self.database: RuntimeDatabase | None = None
+        if self.path.resolve() == REVIEW_RECORDS_PATH.resolve():
+            self.database = get_runtime_database()
 
     def list(self, *, include_deleted: bool = False, include_archived: bool = True) -> list[dict[str, Any]]:
+        if self.database is not None:
+            return [
+                self._normalize(record)
+                for record in self.database.list_review_records(
+                    include_deleted=include_deleted,
+                    include_archived=include_archived,
+                )
+            ]
         with self.lock:
             records = self._read()
         return [
@@ -43,11 +55,97 @@ class ReviewRecordRepository:
             and (include_archived or not record.get("archived"))
         ]
 
+    def list_summaries(self, *, include_deleted: bool = False, include_archived: bool = True) -> list[dict[str, Any]]:
+        """Return list-safe records without the potentially large ``items`` array."""
+        if self.database is not None:
+            return [
+                self._normalize(record)
+                for record in self.database.list_review_records(
+                    include_deleted=include_deleted,
+                    include_archived=include_archived,
+                    summaries=True,
+                )
+            ]
+        return [
+            {key: value for key, value in self._normalize(record).items() if key != "items"}
+            for record in self.list(include_deleted=include_deleted, include_archived=include_archived)
+        ]
+
+    def query_summaries(self, filters: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+        if self.database is not None:
+            records, total = self.database.query_review_records(filters)
+            return [self._normalize(record) for record in records], total
+        records = self.list(include_archived=True)
+        archived = bool(filters.get("archived"))
+        records = [record for record in records if bool(record.get("archived")) == archived]
+        keyword = str(filters.get("keyword") or "").strip().lower()
+        if keyword:
+            records = [
+                record for record in records
+                if keyword in " ".join(
+                    str(record.get(key) or "")
+                    for key in ("title", "factorName", "recordId", "taskId")
+                ).lower()
+            ]
+        for key, aliases in (
+            ("source", ("source",)),
+            ("taskStatus", ("taskStatus", "task_status")),
+            ("conclusion", ("conclusion",)),
+        ):
+            value = next((str(filters.get(alias) or "").strip() for alias in aliases if filters.get(alias)), "")
+            if value:
+                records = [record for record in records if str(record.get(key) or record.get("status") or "") == value]
+        date_from = str(filters.get("date_from") or "")
+        date_to = str(filters.get("date_to") or "")
+        if date_from:
+            records = [record for record in records if str(record.get("updatedAt") or record.get("createdAt") or "") >= date_from]
+        if date_to:
+            records = [record for record in records if str(record.get("updatedAt") or record.get("createdAt") or "") <= date_to]
+        records.sort(key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
+        page = max(1, int(filters.get("page") or 1))
+        page_size = max(1, min(int(filters.get("page_limit") or 100), int(filters.get("page_size") or 20)))
+        start = (page - 1) * page_size
+        return [
+            {key: value for key, value in record.items() if key != "items"}
+            for record in records[start:start + page_size]
+        ], len(records)
+
     def get(self, record_id: str, *, include_deleted: bool = False) -> dict[str, Any] | None:
+        if self.database is not None:
+            record = self.database.get_review_record(record_id, include_deleted=include_deleted)
+            return self._normalize(record) if record else None
         return next((item for item in self.list(include_deleted=include_deleted) if str(item.get("recordId") or "") == str(record_id)), None)
+
+    def get_by_task_id(self, task_id: str, *, include_archived: bool = True) -> dict[str, Any] | None:
+        if self.database is not None:
+            record = self.database.get_review_record_by_task(task_id, include_archived=include_archived)
+            return self._normalize(record) if record else None
+        return next(
+            (
+                item for item in self.list(include_archived=include_archived)
+                if str(item.get("taskId") or "") == str(task_id)
+            ),
+            None,
+        )
 
     def health(self) -> dict[str, Any]:
         """Check the index without changing or repairing it."""
+        if self.database is not None:
+            try:
+                return {
+                    "ok": True,
+                    "path": str(self.database.path),
+                    "records": self.database.review_record_count(),
+                    "error": "",
+                }
+            except RuntimeError as exc:
+                return {
+                    "ok": False,
+                    "path": str(self.database.path),
+                    "records": 0,
+                    "errorType": type(exc).__name__,
+                    "error": str(exc),
+                }
         with self.lock:
             try:
                 records = self._read()
@@ -65,6 +163,18 @@ class ReviewRecordRepository:
         record_id = str(record.get("recordId") or "").strip()
         if not record_id:
             raise ValueError("历史记录缺少 recordId。")
+        if self.database is not None:
+            with self.lock:
+                existing = self.database.get_review_record(record_id, include_deleted=True)
+                if existing and existing.get("deleted"):
+                    return existing
+                saved = (
+                    {**existing, **record, "archived": bool(record.get("archived", existing.get("archived")))}
+                    if existing
+                    else dict(record)
+                )
+                self.database.upsert_review_record(saved)
+            return dict(saved)
         with self.lock:
             records = self._read()
             by_id = {str(item.get("recordId") or ""): index for index, item in enumerate(records)}
@@ -85,6 +195,11 @@ class ReviewRecordRepository:
         return self.upsert(record) if record else None
 
     def archive(self, record_id: str, archived: bool) -> dict[str, Any]:
+        if self.database is not None:
+            updated = self.database.archive_review_record(record_id, archived)
+            if updated is None:
+                raise FileNotFoundError("评审记录不存在")
+            return updated
         with self.lock:
             records = self._read()
             for index, record in enumerate(records):
@@ -96,6 +211,61 @@ class ReviewRecordRepository:
         raise FileNotFoundError("评审记录不存在")
 
     def delete(self, record_id: str) -> dict[str, Any]:
+        if self.database is not None:
+            with self.lock:
+                target = self.database.get_review_record(record_id)
+                if target is None:
+                    raise FileNotFoundError("评审历史记录不存在")
+                if str(target.get("taskStatus") or target.get("status") or "") in {"queued", "running", "cancelling"}:
+                    raise ValueError("执行中的评审记录不能删除，请先终止任务")
+                references = self.database.review_artifact_references(record_id)
+                candidates = sorted(_review_record_artifact_names(target) - references)
+                for file_name in candidates:
+                    safe_name = Path(file_name)
+                    if safe_name.is_absolute() or len(safe_name.parts) != 1 or safe_name.name != file_name:
+                        raise ValueError(f"非法产物文件名：{file_name}")
+                deleted_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                tombstone = {
+                    "recordId": str(record_id),
+                    "deleted": True,
+                    "deletedAt": deleted_at,
+                    "deletedFiles": [],
+                    "pendingArtifactCleanup": candidates,
+                }
+                self.database.replace_review_tombstone(record_id, tombstone)
+
+                deleted_files: list[str] = []
+                pending: list[str] = []
+                cleanup_errors: dict[str, str] = {}
+                for file_name in candidates:
+                    artifact = self.outputs_dir / file_name
+                    try:
+                        if not artifact.exists():
+                            continue
+                        if not artifact.is_file():
+                            pending.append(file_name)
+                            cleanup_errors[file_name] = "关联路径不是文件"
+                            continue
+                        artifact.unlink()
+                        deleted_files.append(file_name)
+                    except OSError as exc:
+                        pending.append(file_name)
+                        cleanup_errors[file_name] = str(exc)
+                updated_tombstone = {
+                    **tombstone,
+                    "deletedFiles": deleted_files,
+                    "pendingArtifactCleanup": pending,
+                }
+                try:
+                    self.database.replace_review_tombstone(record_id, updated_tombstone)
+                except RuntimeError:
+                    pending = sorted(set(pending) | set(candidates))
+                return {
+                    "recordId": str(record_id),
+                    "deletedFiles": deleted_files,
+                    "cleanupPending": pending,
+                    **({"cleanupErrors": cleanup_errors} if cleanup_errors else {}),
+                }
         with self.lock:
             records = self._read()
             target = next((item for item in records if str(item.get("recordId") or "") == str(record_id) and not item.get("deleted")), None)

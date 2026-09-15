@@ -223,7 +223,7 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
   }, [pageActive])
 
   useEffect(() => {
-    if (!regressionTaskId) return
+    if (!pageActive || !regressionTaskId) return
     const activeTaskId = regressionTaskId
     let disposed = false
     let timer: number | undefined
@@ -260,7 +260,7 @@ export function ValidationSet({ headerPage = 'validation-set', examples, onNotic
       disposed = true
       if (timer) window.clearTimeout(timer)
     }
-  }, [regressionTaskId])
+  }, [pageActive, regressionTaskId])
 
   const latestRunByCase = useMemo(() => {
     const map = new Map<string, ValidationRun>()

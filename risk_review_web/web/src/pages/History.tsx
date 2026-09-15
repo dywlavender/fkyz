@@ -4,7 +4,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { deleteReviewHistoryRecord, fetchReviewRecords, setReviewRecordArchived } from '../api/reviewApi'
+import { deleteReviewHistoryRecord, fetchReviewRecord, fetchReviewRecords, setReviewRecordArchived } from '../api/reviewApi'
 import { HeaderActions, usePageActive } from '../components/AppLayout'
 import { ReviewHistoryDrawer, sourceLabel } from '../components/ReviewHistoryDrawer'
 import { StatusBadge } from '../components/StatusBadge'
@@ -49,6 +49,15 @@ export function History(props: HistoryProps) {
   const [deleteRecordIds, setDeleteRecordIds] = useState<string[]>([])
   const [deleting, setDeleting] = useState(false)
 
+  async function openRecord(record: ReviewHistoryRecord) {
+    try {
+      const detail = await fetchReviewRecord(record.recordId)
+      setActiveRecord(detail)
+    } catch (caught) {
+      onNotice({ type: 'error', message: caught instanceof Error ? caught.message : '评审详情加载失败' })
+    }
+  }
+
   const loadRecords = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     try {
@@ -88,7 +97,7 @@ export function History(props: HistoryProps) {
   useEffect(() => {
     if (!selectedRecordId) return
     const matched = records.find((item) => item.recordId === selectedRecordId)
-    if (matched) setActiveRecord(matched)
+    if (matched) void openRecord(matched)
     onSelectedRecordConsumed?.()
   }, [records, selectedRecordId, onSelectedRecordConsumed])
 
@@ -219,7 +228,7 @@ export function History(props: HistoryProps) {
         const downloadFile = firstDownloadFile(record)
         return (
           <Space onClick={(event) => event.stopPropagation()}>
-            <Button type="link" onClick={() => setActiveRecord(record)}>查看</Button>
+            <Button type="link" onClick={() => void openRecord(record)}>查看</Button>
             <Dropdown
               menu={{
                 items: [
@@ -350,7 +359,7 @@ export function History(props: HistoryProps) {
             disabled: ['queued', 'running', 'cancelling'].includes(String(record.taskStatus || '')),
           }),
         }}
-        onRow={(record) => ({ onClick: () => setActiveRecord(record) })}
+        onRow={(record) => ({ onClick: () => void openRecord(record) })}
         pagination={{
           current: page,
           pageSize,

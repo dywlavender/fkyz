@@ -135,6 +135,7 @@ normalize_task_record_view = REVIEW_HISTORY_SERVICE.normalize_task_record_view
 review_record_to_task = REVIEW_HISTORY_SERVICE.record_to_task
 find_persisted_task = REVIEW_HISTORY_SERVICE.find_persisted_task
 query_review_records = REVIEW_HISTORY_SERVICE.query
+review_record_detail = REVIEW_HISTORY_SERVICE.record_detail
 archive_review_record = REVIEW_HISTORY_SERVICE.archive
 delete_review_history_record = REVIEW_HISTORY_SERVICE.delete_record
 decorate_task = REVIEW_HISTORY_SERVICE.decorate_task

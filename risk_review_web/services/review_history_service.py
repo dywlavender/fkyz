@@ -31,8 +31,8 @@ class ReviewHistoryService:
     def repository(self) -> ReviewRecordRepository:
         return self.dependencies.repository
 
-    def records(self, include_archived: bool = False) -> list[dict]:
-        records = self.repository.list(include_archived=include_archived)
+    def records(self, include_archived: bool = False, *, summaries: bool = False) -> list[dict]:
+        records = self.repository.list_summaries(include_archived=include_archived) if summaries else self.repository.list(include_archived=include_archived)
         return sorted(records, key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
 
     @staticmethod
@@ -85,10 +85,17 @@ class ReviewHistoryService:
         except ValueError:
             return 0.0
 
-    def record_to_task(self, record: dict) -> dict:
+    def record_to_task(self, record: dict, *, summary: bool = False) -> dict:
         normalized = self.normalize_task_record_view(record)
         standard_artifacts = normalized.get("standardArtifacts") or {}
         review_artifacts = normalized.get("reviewArtifacts") or {}
+        context = normalized.get("context") or {}
+        if summary:
+            context = {
+                key: context[key]
+                for key in ("taskName", "factorName", "standardFileId")
+                if key in context
+            }
         result = {
             "items": normalized.get("items") or [],
             **({"standardFileId": standard_artifacts.get("md")} if standard_artifacts.get("md") else {}),
@@ -103,7 +110,7 @@ class ReviewHistoryService:
             "parentTaskId": normalized.get("parentTaskId"),
             "clientId": normalized.get("clientId") or "",
             "status": normalized.get("status"),
-            "context": normalized.get("context") or {},
+            "context": context,
             "progress": normalized.get("progress") or {},
             "result": result,
             "created": self._timestamp_from_iso(normalized.get("createdAt")),
@@ -117,49 +124,42 @@ class ReviewHistoryService:
         }
 
     def find_persisted_task(self, task_id: str) -> dict | None:
-        for record in self.records(include_archived=True):
-            if str(record.get("taskId") or "") == task_id:
-                return self.record_to_task(record)
+        record = self.repository.get_by_task_id(task_id, include_archived=True)
+        if record:
+            return self.record_to_task(record)
         return None
+
+    def record_detail(self, record_id: str) -> dict | None:
+        """Load one history record with its detail items on demand."""
+        return self.repository.get(record_id, include_deleted=False)
 
     def query(self, query: dict[str, list[str]]) -> dict:
         archived_only = (query.get("archived") or ["false"])[0].lower() == "true"
-        records = [item for item in self.records(include_archived=True) if bool(item.get("archived")) == archived_only]
         keyword = (query.get("keyword") or [""])[0].strip().lower()
         source = (query.get("source") or [""])[0].strip()
         task_status = (query.get("taskStatus") or [""])[0].strip()
         conclusion = (query.get("conclusion") or [""])[0].strip()
         date_from = (query.get("dateFrom") or [""])[0].strip()
         date_to = (query.get("dateTo") or [""])[0].strip()
-        if keyword:
-            records = [
-                item for item in records
-                if keyword in " ".join([
-                    str(item.get("title") or ""),
-                    str(item.get("factorName") or ""),
-                    str(item.get("recordId") or ""),
-                    str(item.get("taskId") or ""),
-                ]).lower()
-            ]
-        if source:
-            records = [item for item in records if item.get("source") == source]
-        if task_status:
-            records = [item for item in records if item.get("taskStatus") == task_status]
-        if conclusion:
-            records = [item for item in records if item.get("conclusion") == conclusion]
-        if date_from:
-            records = [item for item in records if str(item.get("updatedAt") or item.get("createdAt") or "") >= date_from]
-        if date_to:
-            records = [item for item in records if str(item.get("updatedAt") or item.get("createdAt") or "") <= date_to]
         try:
             page = max(1, int((query.get("page") or ["1"])[0]))
             page_size_limit = 5000 if (query.get("export") or ["false"])[0].lower() == "true" else 100
             page_size = max(1, min(page_size_limit, int((query.get("pageSize") or ["20"])[0])))
         except ValueError:
             page, page_size = 1, 20
-        total = len(records)
-        start = (page - 1) * page_size
-        return {"items": records[start:start + page_size], "page": page, "pageSize": page_size, "total": total}
+        records, total = self.repository.query_summaries({
+            "archived": archived_only,
+            "keyword": keyword,
+            "source": source,
+            "task_status": task_status,
+            "conclusion": conclusion,
+            "date_from": date_from,
+            "date_to": date_to,
+            "page": page,
+            "page_size": page_size,
+            "page_limit": page_size_limit,
+        })
+        return {"items": records, "page": page, "pageSize": page_size, "total": total}
 
     def archive(self, record_id: str, archived: bool) -> dict:
         return self.repository.archive(record_id, archived)
@@ -189,24 +189,28 @@ class ReviewHistoryService:
             }
         else:
             status = str(snapshot.get("status") or "")
-            snapshot["progress"] = {
-                "total": 1,
-                "completed": int(status in {"done", "error", "cancelled"}),
-                "failed": int(status == "error"),
-            }
+            if not isinstance(snapshot.get("progress"), dict):
+                snapshot["progress"] = {
+                    "total": 1,
+                    "completed": int(status in {"done", "error", "cancelled"}),
+                    "failed": int(status == "error"),
+                }
         snapshot["taskId"] = task_id
         snapshot["persisted"] = False
         return snapshot
 
-    def history(self, *, include_history: bool = False) -> list[dict]:
+    def history(self, *, include_history: bool = False, summary: bool = False) -> list[dict]:
         self.dependencies.gc_tasks()
         with self.dependencies.task_lock:
-            tasks = [self.decorate_task(task) for task in self.dependencies.task_registry.values()]
+            if summary and hasattr(self.dependencies.task_registry, "summary_values"):
+                tasks = [self.decorate_task(task) for task in self.dependencies.task_registry.summary_values()]
+            else:
+                tasks = [self.decorate_task(task) for task in self.dependencies.task_registry.values()]
         if include_history:
             known_ids = {str(task.get("id") or "") for task in tasks}
             tasks.extend(
-                self.record_to_task(record)
-                for record in self.repository.list(include_archived=False)
+                self.record_to_task(record, summary=summary)
+                for record in self.repository.list_summaries(include_archived=False)
                 if str(record.get("taskId") or "") not in known_ids
             )
         return sorted(tasks, key=lambda item: item.get("created", 0), reverse=True)[:50]
@@ -216,7 +220,7 @@ class ReviewHistoryService:
             task = self.dependencies.task_registry.get(task_id)
             if task and not self._is_terminal(str(task.get("status") or "")):
                 raise ValueError("执行中的任务不能删除，请先终止任务")
-        record = next((item for item in self.records(include_archived=True) if str(item.get("taskId") or "") == task_id), None)
+        record = self.repository.get_by_task_id(task_id, include_archived=True)
         if not record:
             raise FileNotFoundError("任务记录不存在")
         deleted = self.delete_record(str(record.get("recordId") or ""))

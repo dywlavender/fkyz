@@ -131,7 +131,7 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
   }, [rows, taskId])
 
   useEffect(() => {
-    if (!taskId || !running) return
+    if (!pageActive || !taskId || !running) return
 
     let cancelled = false
     const activeTaskId = taskId
@@ -183,7 +183,7 @@ export function BatchReview({ onNotice }: BatchReviewProps) {
       cancelled = true
       if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current)
     }
-  }, [taskId, running, onNotice])
+  }, [pageActive, taskId, running, onNotice])
 
   async function beforeUpload(file: File) {
     if (inputLocked) {
